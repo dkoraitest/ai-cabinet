@@ -68,7 +68,7 @@ jobs:
           done
           kill "$pid" || true
           test "$ok" = 1
-          grep -q 'data-cabinet="ok"' "$RUNNER_TEMP/page.html"
+          grep -q 'data-cabinet=.ok.' "$RUNNER_TEMP/page.html"
           out=$(node tools/update.mjs)
           echo "$out"
           echo "$out" | grep -q 'Обновлений нет'
@@ -99,7 +99,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "first install failed ($LASTEXITCODE)" }
           $out = (git clone "$env:GITHUB_WORKSPACE" "$env:PROFILE_DIR\ai-cabinet" 2>&1 | Out-String)
           Write-Host $out
-          if ($out -notmatch 'already exists') { throw 'second install: no 'already exists' text' }
+          if ($out -notmatch 'already exists') { throw 'second install: git did not report already exists' }
           if (-not (Test-Path -LiteralPath "$env:PROFILE_DIR\ai-cabinet\START.md")) { throw 'cabinet is damaged: START.md missing' }
           exit 0
 
@@ -134,7 +134,7 @@ jobs:
             }
             if (-not $resp) { throw 'page did not respond within 20 seconds' }
             if ($resp.StatusCode -ne 200) { throw "status $($resp.StatusCode)" }
-            if ($resp.Content -notmatch 'data-cabinet="ok"') { throw 'marker data-cabinet="ok" not found' }
+            if ($resp.Content -notmatch 'data-cabinet=.ok.') { throw 'page marker not found' }
             Write-Host 'page opens'
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
