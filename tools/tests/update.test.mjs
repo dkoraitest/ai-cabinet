@@ -1,13 +1,14 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pickBackupDir, updateCabinet } from '../update.mjs';
 import { ensureParticipantFiles } from '../init.mjs';
 import { defaultExec } from '../check.mjs';
+import { copyDir } from './copy-dir.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -31,8 +32,8 @@ function makeWorld() {
   const upstream = join(home, 'upstream.git');
   const cabinet = join(home, 'ai-cabinet');
   mkdirSync(seed, { recursive: true });
-  cpSync(join(ROOT, 'templates'), join(seed, 'templates'), { recursive: true });
-  cpSync(join(ROOT, '.gitignore'), join(seed, '.gitignore'));
+  copyDir(join(ROOT, 'templates'), join(seed, 'templates'));
+  copyFileSync(join(ROOT, '.gitignore'), join(seed, '.gitignore'));
   writeFileSync(join(seed, 'CLAUDE.md'), '# Правила кабинета\nверсия 1\n');
   writeFileSync(join(seed, 'START.md'), '# Ваш кабинет\n');
   for (const d of ['input', 'output']) {

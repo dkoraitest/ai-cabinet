@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST, ensureParticipantFiles } from '../init.mjs';
+import { copyDir } from './copy-dir.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -13,7 +14,7 @@ function makeCabinet() {
   const base = mkdtempSync(join(tmpdir(), 'init-'));
   const dir = join(base, 'Айгуль Н', 'ai-cabinet');
   mkdirSync(dir, { recursive: true });
-  cpSync(join(ROOT, 'templates'), join(dir, 'templates'), { recursive: true });
+  copyDir(join(ROOT, 'templates'), join(dir, 'templates'));
   return { base, dir };
 }
 
@@ -50,7 +51,7 @@ test('init: MANIFEST берёт шаблоны из templates и кладёт в
 test('init: CLI из пути с кириллицей и пробелом называет созданные файлы', () => {
   const { base, dir } = makeCabinet();
   try {
-    cpSync(join(ROOT, 'tools'), join(dir, 'tools'), { recursive: true });
+    copyDir(join(ROOT, 'tools'), join(dir, 'tools'));
     const run = () => spawnSync(process.execPath, [join(dir, 'tools', 'init.mjs')], { encoding: 'utf8', cwd: base });
     let r = run();
     assert.equal(r.status, 0, r.stderr);

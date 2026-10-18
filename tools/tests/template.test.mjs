@@ -132,3 +132,9 @@ test('шаблоны me/ начинаются со строки-заглушки
   assert.ok(read('CLAUDE.md').includes(`«${MARK}»`));
   assert.ok(read('.claude/skills/about-me/SKILL.md').includes(`«${MARK}»`));
 });
+
+test('в tools нет системного копирования папок (падает на кириллице в Node 22 на Windows)', () => {
+  const word = ['cp', 'Sync'].join('');
+  const bad = files.filter((f) => f.startsWith('tools/') && read(f).includes(word));
+  assert.deepEqual(bad, []);
+});

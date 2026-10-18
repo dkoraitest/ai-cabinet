@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, symlinkSync, cpSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runChecks, formatReport, parseVersion, exitCodeFor, buildExecCall, classifyGitFailure } from '../check.mjs';
+import { copyDir } from './copy-dir.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -250,8 +251,8 @@ test('CLI через символическую ссылку из другого
   try {
     const real = join(base, 'Айгуль Н', 'кабинет');
     mkdirSync(real, { recursive: true });
-    cpSync(join(ROOT, 'tools'), join(real, 'tools'), { recursive: true });
-    cpSync(join(ROOT, 'templates'), join(real, 'templates'), { recursive: true });
+    copyDir(join(ROOT, 'tools'), join(real, 'tools'));
+    copyDir(join(ROOT, 'templates'), join(real, 'templates'));
     mkdirSync(join(real, 'input'));
     const link = join(base, 'ссылка на кабинет');
     symlinkSync(real, link, 'junction');
