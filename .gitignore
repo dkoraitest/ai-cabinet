@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+*.tmp
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+/me/
+/site/
+.claude/settings.local.json
+/.claude/worktrees/
