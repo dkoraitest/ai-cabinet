@@ -146,17 +146,19 @@ test('describeListenError: русские фразы с кодом в скобк
 });
 
 test('CLI --port на занятом порту: русское сообщение и exit 1', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'busy-'));
   const blocker = http.createServer();
   await new Promise((res) => blocker.listen(18740, '127.0.0.1', res));
   try {
-    const r = await new Promise((res) => {
-      const c = spawnSync(process.execPath, [join(ROOT, 'tools', 'serve.mjs'), '--port', '18740'], { encoding: 'utf8' });
-      res(c);
-    });
+    // Копия кабинета во временной папке: сервер создаёт me/page-token.txt, в репозитории его оставлять нельзя.
+    copyDir(join(ROOT, 'tools'), join(tmp, 'tools'));
+    copyDir(join(ROOT, 'templates'), join(tmp, 'templates'));
+    const r = spawnSync(process.execPath, [join(tmp, 'tools', 'serve.mjs'), '--port', '18740'], { encoding: 'utf8' });
     assert.equal(r.status, 1);
     assert.match(r.stderr, /занят/);
     assert.match(r.stderr, /--port 18741/);
   } finally {
+    rmSync(tmp, { recursive: true, force: true });
     await close(blocker);
   }
 });
