@@ -86,6 +86,12 @@ test('тексты участника без тире (U+2012-U+2015) и python3
   assert.deepEqual(bad, []);
 });
 
+// Неразрывный пробел из образца в скилле Claude переписывает в программу обычным: разбор чисел ломается.
+test('скиллы без неразрывных и невидимых пробелов', () => {
+  const bad = files.filter((f) => f.startsWith('.claude/skills/') && /[\u00a0\u2007\u202f\u200b]/.test(read(f)));
+  assert.deepEqual(bad, []);
+});
+
 test('скиллы: name совпадает с папкой, description есть', (t) => {
   const skills = files.filter((f) => /^\.claude\/skills\/[^/]+\/SKILL\.md$/.test(f));
   if (skills.length === 0) return t.skip('нет скиллов');
