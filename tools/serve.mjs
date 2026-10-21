@@ -1,6 +1,9 @@
 // Локальный сервер страницы кабинета. Без зависимостей, слушает только 127.0.0.1.
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { userInfo } from 'node:os';
 import { spawn } from 'node:child_process';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +32,61 @@ function send(res, status, type, body) {
 const notFound = (res) =>
   send(res, 404, 'text/plain; charset=utf-8', 'Такого файла нет в папке site.');
 
-export function createSiteServer(rootDir) {
+const forbidden = (res) =>
+  send(
+    res,
+    403,
+    'text/plain; charset=utf-8',
+    'Страница кабинета открывается только по своей ссылке. Её показывает Claude или команда node tools/serve.mjs.',
+  );
+
+const PORT_MIN = 20000;
+const PORT_SPAN = 10000;
+
+// Порт зависит от имени пользователя Windows: на общем сервере у каждого свой стартовый порт.
+export function portForUser(username) {
+  const h = createHash('sha256').update(String(username).toLowerCase()).digest();
+  return PORT_MIN + (h.readUInt32BE(0) % PORT_SPAN);
+}
+
+export function currentUser() {
+  try {
+    return userInfo().username;
+  } catch {
+    return process.env.USERNAME || process.env.USER || '';
+  }
+}
+
+const TOKEN_RE = /^[0-9a-f]{32}$/;
+
+// Личный секрет адреса страницы. Лежит в me/ (папка участника, не в Git).
+export function pageToken(root) {
+  const file = resolve(root, 'me', 'page-token.txt');
+  try {
+    const saved = readFileSync(file, 'utf8').trim();
+    if (TOKEN_RE.test(saved)) return saved;
+  } catch {
+    // Файла нет или он не читается: создадим новый.
+  }
+  const token = randomBytes(16).toString('hex');
+  mkdirSync(resolve(root, 'me'), { recursive: true });
+  writeFileSync(file, token + '\n');
+  return token;
+}
+
+function sameToken(a, b) {
+  const x = createHash('sha256').update(a).digest();
+  const y = createHash('sha256').update(b).digest();
+  return timingSafeEqual(x, y);
+}
+
+// Страница отдаётся только под /<token>/. Остальные пути: 403.
+// Необязательный api(req, res, sub) вызывается для /<token>/api/<sub>; вернёт true или промис
+// с true, если ответ отправлен. Так задача V10 добавит свои маршруты под тем же токеном.
+export function createSiteServer(rootDir, { token, api } = {}) {
+  if (typeof token !== 'string' || token.length < 8) {
+    throw new Error('Для страницы нужен токен (личная часть адреса).');
+  }
   const root = resolve(rootDir);
   return http.createServer(async (req, res) => {
     try {
@@ -37,10 +94,22 @@ export function createSiteServer(rootDir) {
       try {
         pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
       } catch {
-        return notFound(res);
+        return forbidden(res);
       }
-      if (pathname.includes('\0')) return notFound(res);
-      let file = resolve(root, '.' + pathname);
+      const first = pathname.split('/')[1] ?? '';
+      if (!sameToken(first, token)) return forbidden(res);
+      if (pathname === `/${first}`) {
+        res.writeHead(301, { Location: `/${token}/`, 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      const rel = pathname.slice(first.length + 1);
+      if (api && (rel === '/api' || rel.startsWith('/api/'))) {
+        if (await api(req, res, rel.slice('/api/'.length))) return;
+        if (!res.headersSent) return notFound(res);
+        return;
+      }
+      if (rel.includes('\0')) return notFound(res);
+      let file = resolve(root, '.' + rel);
       if (file !== root && !file.startsWith(root + sep)) return notFound(res);
       let info = await stat(file).catch(() => null);
       if (info?.isDirectory()) {
@@ -51,7 +120,7 @@ export function createSiteServer(rootDir) {
       const body = await readFile(file);
       send(res, 200, TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', body);
     } catch {
-      send(res, 500, 'text/plain; charset=utf-8', 'Не удалось отдать файл.');
+      if (!res.headersSent) send(res, 500, 'text/plain; charset=utf-8', 'Не удалось отдать файл.');
     }
   });
 }
@@ -67,8 +136,15 @@ function tryListen(server, host, port) {
   });
 }
 
-export async function listenFirstFree(server, { host = '127.0.0.1', from = 8000, to = 8019 } = {}) {
-  for (let port = from; port <= to; port++) {
+// Пробует порты по кругу в диапазоне from..to, начиная со start, не больше attempts попыток.
+export async function listenFirstFree(
+  server,
+  { host = '127.0.0.1', from = PORT_MIN, to = PORT_MIN + PORT_SPAN - 1, start = from, attempts = 50 } = {},
+) {
+  const size = to - from + 1;
+  const tries = Math.min(attempts, size);
+  for (let i = 0; i < tries; i++) {
+    const port = from + ((start - from + i) % size);
     try {
       return await tryListen(server, host, port);
     } catch (e) {
@@ -130,18 +206,25 @@ async function main() {
   } catch (e) {
     console.error(`Не удалось создать файлы кабинета из шаблонов (${e.code ?? e.message}).`);
   }
-  const server = createSiteServer(resolve(root, 'site'));
+  let token;
+  try {
+    token = pageToken(root);
+  } catch (e) {
+    console.error(`Не удалось сохранить личный адрес страницы в папке me (${e.code ?? e.message}).`);
+    process.exit(1);
+  }
+  const server = createSiteServer(resolve(root, 'site'), { token });
   let port;
   try {
     port = fixed
       ? await tryListen(server, '127.0.0.1', fixed)
-      : await listenFirstFree(server, {});
+      : await listenFirstFree(server, { start: portForUser(currentUser()) });
   } catch (e) {
     // Диапазон занят целиком: у этой ошибки уже есть русский текст и нет code.
-    console.error(e.code ? describeListenError(e, fixed ?? 8000) : e.message);
+    console.error(e.code ? describeListenError(e, fixed ?? PORT_MIN) : e.message);
     process.exit(1);
   }
-  const url = `http://localhost:${port}`;
+  const url = `http://localhost:${port}/${token}/`;
   console.log(`Страница работает: ${url}`);
   console.log('Остановить: Ctrl+C');
   if (open) openBrowser(url);
