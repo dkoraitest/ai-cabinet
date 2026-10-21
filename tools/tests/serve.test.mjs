@@ -300,3 +300,29 @@ test('CLI: печатает адрес с токеном, 403 без него, �
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('pageToken: два одновременных запуска на пустом me/ получают один токен', async () => {
+  const { spawn } = await import('node:child_process');
+  const tmp = mkdtempSync(join(tmpdir(), 'race-'));
+  try {
+    const mod = new URL('../serve.mjs', import.meta.url).href;
+    const code = `import(${JSON.stringify(mod)}).then(m => console.log(m.pageToken(${JSON.stringify(tmp)})))`;
+    const run = () =>
+      new Promise((res, rej) => {
+        const c = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
+        let out = '';
+        c.stdout.on('data', (d) => (out += d));
+        c.on('error', rej);
+        c.on('exit', () => res(out.trim()));
+      });
+    for (let round = 0; round < 5; round++) {
+      rmSync(join(tmp, 'me'), { recursive: true, force: true });
+      const tokens = await Promise.all([run(), run(), run(), run()]);
+      assert.match(tokens[0], /^[0-9a-f]{32}$/);
+      assert.deepEqual(new Set(tokens).size, 1, tokens.join(' '));
+      assert.equal(readFileSync(join(tmp, 'me', 'page-token.txt'), 'utf8').trim(), tokens[0]);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
