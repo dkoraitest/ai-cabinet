@@ -124,6 +124,8 @@ test('settings: sonnet, без обхода, PYTHONUTF8, input защищён, �
   // через окно разрешения: правка processes/ всегда спрашивает человека.
   assert.ok(s.permissions.allow.includes('Bash(node tools/processes.mjs*)'), 'нужно разрешение Bash(node tools/processes.mjs*)');
   assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
+  // Демо копирует templates/processes в processes/ и запускается той же разрешённой командой: шаблоны не правятся.
+  assert.ok(s.permissions.deny.includes('Edit(./templates/**)'), 'нужен запрет Edit(./templates/**)');
 });
 
 test('lint: каждый @import из CLAUDE.md есть в репо или в MANIFEST.to', (t) => {

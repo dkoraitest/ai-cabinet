@@ -232,6 +232,18 @@ test('list: процессы с названием, папкой, фразой, 
   assert.doesNotMatch(r.out, /[\u2012-\u2015]/);
 });
 
+test('list: старая страница без карточек (нет render.js) называется отдельной строкой', () => {
+  const html = join(cab, 'site', 'index.html');
+  const current = readFileSync(html, 'utf8');
+  try {
+    assert.doesNotMatch(cli(['list']).out, /старой версии/);
+    writeFileSync(html, '<!doctype html><body data-cabinet="ok">Кабинет работает</body>');
+    assert.match(cli(['list']).out, /^Страница site\/index\.html старой версии: на ней нет карточек процессов\.$/m);
+  } finally {
+    writeFileSync(html, current);
+  }
+});
+
 test('list: без процессов → подсказка «добавь процесс», код 0', () => {
   const b = mkdtempSync(join(tmpdir(), 'cli0-'));
   try {
@@ -307,6 +319,32 @@ test('CLI остановили (Ctrl+C, конец команды) → расч�
   assert.match(readFileSync(join(cab, 'output', 'zavis', 'last-run.log'), 'utf8'), /прерван/);
 });
 
+test('input: копия файла учебного кейса помечена, свой файл нет', () => {
+  const dir = join(cab, 'input', 'na-keyse');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'prodazhi.csv'), readFileSync(join(cab, 'input', 'case-azs', 'data', 'sales_azs_1c.csv')));
+  writeFileSync(join(dir, 'sales_azs_1c.csv'), 'свой файл с тем же именем\n');
+  const r = cli(['input', 'na-keyse', '--no-open']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /prodazhi\.csv \(копия файла учебного кейса sales_azs_1c\.csv\)/);
+  assert.match(r.out, /sales_azs_1c\.csv(?! \()/);
+  assert.doesNotMatch(r.out, /sales_azs_1c\.csv \(копия/);
+});
+
+test('без трейсбека: неожиданная ошибка даёт короткую русскую строку и код 2; имена вроде constructor не ломают demo', () => {
+  writeFileSync(join(cab, 'input', 'fayl-a-ne-papka'), 'x');
+  const r = cli(['input', 'fayl-a-ne-papka', '--no-open']);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /^Не удалось выполнить/m);
+  assert.doesNotMatch(r.out, /\n\s+at /);
+  for (const name of ['constructor', '__proto__', 'toString']) {
+    const d = cli(['demo', name]);
+    assert.equal(d.code, 2, `${name}: ${d.out}`);
+    assert.match(d.out, /Такого демо нет/);
+    assert.doesNotMatch(d.out, /\n\s+at /);
+  }
+});
+
 test('input: создаёт input/<slug>, печатает полный путь и файлы; неверное имя → код 2', () => {
   const r = cli(['input', 'svodka-prodazh', '--no-open']);
   assert.equal(r.code, 0, r.out);
@@ -358,6 +396,30 @@ test('demo: ставит процесс курса, кладёт копию фа
   assert.equal(again.code, 0, again.out);
   assert.match(again.out, /уже стоит/);
   assert.match(again.out, /Готово/);
+});
+
+test('demo: в input лежит другой файл с именем файла кейса → честно говорит и не считает', () => {
+  const b = mkdtempSync(join(tmpdir(), 'cli-demo2-'));
+  try {
+    const root = join(b, 'ai-cabinet');
+    copyDir(join(ROOT, 'tools'), join(root, 'tools'));
+    copyDir(join(ROOT, 'templates', 'processes'), join(root, 'templates', 'processes'));
+    rmSync(join(root, 'templates', 'processes', 'svetofor-dogovorov', '__pycache__'), { recursive: true, force: true });
+    mkdirSync(join(root, 'input', 'case-azs', 'data'), { recursive: true });
+    writeFileSync(join(root, 'input', 'case-azs', 'data', 'reestr_dogovorov.xlsx'), readFileSync(join(ROOT, 'input', 'case-azs', 'data', 'reestr_dogovorov.xlsx')));
+    mkdirSync(join(root, 'input', 'svetofor-dogovorov'), { recursive: true });
+    writeFileSync(join(root, 'input', 'svetofor-dogovorov', 'reestr_dogovorov.xlsx'), 'мой реестр');
+    const r = spawnSync(process.execPath, [join(root, 'tools', 'processes.mjs'), 'demo', 'svetofor-dogovorov'], { cwd: root, encoding: 'utf8' });
+    const out = r.stdout + r.stderr;
+    assert.equal(r.status, 2, out);
+    assert.match(out, /не совпадает с файлом учебного кейса/);
+    assert.doesNotMatch(out, /Готово|Копия файла учебного кейса/);
+    assert.equal(readFileSync(join(root, 'input', 'svetofor-dogovorov', 'reestr_dogovorov.xlsx'), 'utf8'), 'мой реестр');
+    assert.equal(existsSync(join(root, 'output', 'svetofor-dogovorov')), false, 'расчёт запускался');
+    assert.equal(existsSync(join(root, 'processes', 'svetofor-dogovorov')), false, 'демо поставлено');
+  } finally {
+    rmSync(b, { recursive: true, force: true });
+  }
 });
 
 test('demo: свой процесс с тем же именем не перезаписывается; неизвестное демо → код 2', () => {

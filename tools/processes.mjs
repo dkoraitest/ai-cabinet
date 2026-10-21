@@ -652,30 +652,45 @@ const sameBytes = (a, b) => {
 };
 
 // Ставит демо: процесс из шаблона (если его ещё нет), папка input/<slug> и копии файлов кейса (если их там нет).
-// Свой процесс человека с тем же именем не трогает. Возвращает { installed, placed: [путь] }.
+// Сначала все проверки, потом копирование: свой процесс человека с тем же именем и свой файл с именем файла
+// кейса не трогаются, и тогда ничего не ставится и не считается. Возвращает { installed, placed, kept }.
 export function installDemo(root, slug) {
+  if (!Object.hasOwn(DEMOS, slug)) {
+    throw processError('ENODEMO', `Такого демо нет: ${slug}. Есть: ${Object.keys(DEMOS).join(', ')}.`);
+  }
   const files = DEMOS[slug];
-  if (!files) throw processError('ENODEMO', `Такого демо нет: ${slug}. Есть: ${Object.keys(DEMOS).join(', ')}.`);
   const tpl = join(root, 'templates', 'processes', slug);
   const dst = join(root, 'processes', slug);
   if (!isFile(join(tpl, 'run.py'))) throw processError('ENODEMO', `Нет шаблона templates/processes/${slug}. Скажите Claude «обнови кабинет».`);
   for (const rel of files) {
     if (!isFile(join(root, rel))) throw processError('ENODEMO', `Нет файла учебного кейса ${rel}. Скажите Claude «обнови кабинет».`);
   }
-  let installed = false;
-  if (existsSync(dst)) {
-    if (!sameBytes(join(tpl, 'run.py'), join(dst, 'run.py'))) {
+  if (existsSync(dst) && !sameBytes(join(tpl, 'run.py'), join(dst, 'run.py'))) {
+    throw processError(
+      'EOWN',
+      `В кабинете уже есть свой процесс processes/${slug}, демо поверх него не ставлю. ` +
+        `Если это прежнее демо курса, удалите папку processes/${slug} и повторите.`,
+    );
+  }
+  const inputDir = join(root, 'input', slug);
+  const kept = [];
+  for (const rel of files) {
+    const target = join(inputDir, basename(rel));
+    if (!existsSync(target)) continue;
+    if (!sameBytes(join(root, rel), target)) {
       throw processError(
-        'EOWN',
-        `В кабинете уже есть свой процесс processes/${slug}, демо поверх него не ставлю. ` +
-          `Если это прежнее демо курса, удалите папку processes/${slug} и повторите.`,
+        'EINPUT',
+        `В папке input/${slug} есть другой файл ${basename(rel)}: он не совпадает с файлом учебного кейса ${rel}. ` +
+          'Демо на нём не считаю. Если это ваш файл, переименуйте его или уберите из этой папки и повторите.',
       );
     }
-  } else {
+    kept.push(`input/${slug}/${basename(rel)}`);
+  }
+  let installed = false;
+  if (!existsSync(dst)) {
     copyTemplate(tpl, dst);
     installed = true;
   }
-  const inputDir = join(root, 'input', slug);
   mkdirSync(inputDir, { recursive: true });
   const placed = [];
   for (const rel of files) {
@@ -684,7 +699,41 @@ export function installDemo(root, slug) {
     copyFileSync(join(root, rel), target, constants.COPYFILE_EXCL);
     placed.push(`input/${slug}/${basename(rel)}`);
   }
-  return { installed, placed };
+  return { installed, placed, kept };
+}
+
+// Файлы учебного кейса (input/case-azs/data, с подпапками): путь от data и размер.
+function caseFiles(root) {
+  const base = join(root, 'input', 'case-azs', 'data');
+  const out = [];
+  const walk = (dir, rel) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(p, r);
+      else if (e.isFile()) out.push({ path: p, rel: r, size: statSync(p).size });
+    }
+  };
+  walk(base, '');
+  return out;
+}
+
+// Копия файла учебного кейса: то же содержимое, имя может быть другим. Возвращает имя файла кейса или null.
+function caseCopyOf(file, cases) {
+  let size;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return null;
+  }
+  const hit = cases.find((c) => c.size === size && sameBytes(c.path, file));
+  return hit ? hit.rel : null;
 }
 
 // ---------- node tools/processes.mjs ----------
@@ -739,9 +788,24 @@ function describeLastRun(root, slug, lastRun, result) {
   return `Последний запуск: ${when}, не удался${code}, журнал output/${slug}/last-run.log.`;
 }
 
+// Страница, поставленная до карточек процессов (site/ не перезаписывается обновлением): нет подключения render.js.
+function oldPageLine(root) {
+  let html;
+  try {
+    html = readFileSync(join(root, 'site', 'index.html'), 'utf8');
+  } catch {
+    return null;
+  }
+  return html.includes('render.js') ? null : 'Страница site/index.html старой версии: на ней нет карточек процессов.';
+}
+
 export function formatList(root) {
   const list = listProcesses(root);
-  if (!list.length) return { text: 'Процессов в кабинете пока нет. Чтобы добавить, скажите Claude «добавь процесс».', code: 0 };
+  const page = oldPageLine(root);
+  if (!list.length) {
+    const empty = 'Процессов в кабинете пока нет. Чтобы добавить, скажите Claude «добавь процесс».';
+    return { text: page ? `${empty}\n${page}` : empty, code: 0 };
+  }
   const lines = [`Процессов в кабинете: ${list.length}.`];
   list.forEach((p, i) => {
     // Скилл называем только у процессов, которые выполняет сам Claude: у программы процесса слово «скилл»
@@ -765,6 +829,7 @@ export function formatList(root) {
     if (last) lines.push(`   ${last}`);
     if (p.error) lines.push(`   Ошибка: ${p.error}`);
   });
+  if (page) lines.push(page);
   return { text: lines.join('\n'), code: list.some((p) => p.error) ? 1 : 0 };
 }
 
@@ -860,9 +925,14 @@ function cliInput(root, slug, open) {
   const dir = join(root, 'input', slug);
   const existed = isDir(dir);
   mkdirSync(dir, { recursive: true });
+  // Копию файла учебного кейса помечаем: она учебная (без вопроса о коммерческих данных, дата легенды).
+  const cases = caseFiles(root);
   const files = readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isFile() && !e.name.startsWith('.') && !e.name.startsWith('~$'))
-    .map((e) => e.name);
+    .map((e) => {
+      const copy = caseCopyOf(join(dir, e.name), cases);
+      return copy ? `${e.name} (копия файла учебного кейса ${copy})` : e.name;
+    });
   const lines = [`Папка ${existed ? 'уже есть' : 'создана'}: ${dir}`];
   lines.push(files.length ? `Файлы в ней: ${files.join(', ')}.` : 'Файлов в ней пока нет.');
   if (open && openFolder(dir)) lines.push(`Папка открыта в ${process.platform === 'darwin' ? 'Finder' : 'Проводнике'}.`);
@@ -880,25 +950,34 @@ async function cliDemo(root, slug) {
   const title = readProcessInfo(root, slug).title;
   const lines = [
     setup.installed ? `Демо «${title}» поставлен в processes/${slug}.` : `Демо «${title}» уже стоит в processes/${slug}.`,
-    setup.placed.length
-      ? `Копия файла учебного кейса положена: ${setup.placed.join(', ')}.`
-      : `Файл учебного кейса уже лежит в input/${slug}.`,
   ];
+  if (setup.placed.length) lines.push(`Копия файла учебного кейса положена: ${setup.placed.join(', ')}.`);
+  if (setup.kept.length) lines.push(`Копия файла учебного кейса уже лежит: ${setup.kept.join(', ')}.`);
   const run = await cliRun(root, slug);
   return { text: `${lines.join('\n')}\n${run.text}`, code: run.code };
 }
 
+async function dispatch(root, argv) {
+  const [cmd, slug] = argv;
+  if (cmd === 'list') return formatList(root);
+  if (cmd === 'run') return cliRun(root, slug);
+  if (cmd === 'input') return cliInput(root, slug, !argv.includes('--no-open'));
+  if (cmd === 'demo') return cliDemo(root, slug);
+  return { text: USAGE, code: cmd ? 2 : 0 };
+}
+
+// Вывод читает Claude: вместо трейсбека одна строка по-русски с кодом ошибки.
 export async function main(argv = process.argv.slice(2)) {
   // Windows не ищет программы (explorer, python) в текущей папке, то есть в кабинете.
   process.env.NoDefaultCurrentDirectoryInExePath = '1';
   const root = fileURLToPath(new URL('..', import.meta.url));
-  const [cmd, slug] = argv;
   let out;
-  if (cmd === 'list') out = formatList(root);
-  else if (cmd === 'run') out = await cliRun(root, slug);
-  else if (cmd === 'input') out = cliInput(root, slug, !argv.includes('--no-open'));
-  else if (cmd === 'demo') out = await cliDemo(root, slug);
-  else out = { text: USAGE, code: cmd ? 2 : 0 };
+  try {
+    out = await dispatch(root, argv);
+  } catch (e) {
+    const what = argv.filter((a) => !a.startsWith('--')).join(' ');
+    out = { text: `Не удалось выполнить «${what}» (${e.code ?? e.message}). Покажите это сообщение тренеру.`, code: 2 };
+  }
   console.log(out.text);
   return out.code;
 }

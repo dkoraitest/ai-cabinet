@@ -150,4 +150,8 @@ test('страница: маркер, заголовок, render.js по отн�
   assert.match(html, /last-run\.log/);
   // 409: ERUNNING ждёт этот процесс или показывает свежую карточку, ELIMIT оставляет кнопку доступной.
   assert.ok(html.includes("j.code === 'ERUNNING'"), 'страница различает коды 409');
+  // Запуск фразой в Claude: пока страница на экране, список перечитывается раз в 10 секунд.
+  assert.ok(html.includes('10000'), 'опрос списка раз в 10 с');
+  assert.match(html, /document\.visibilityState === 'visible'/);
+  assert.match(html, /setInterval\(/);
 });
