@@ -95,6 +95,7 @@ from pathlib import Path
 
 SLUG = "<имя>"
 TITLE = "<Название процесса>"
+LIMIT = 10 ** 6  # сколько строк данных читать; в файле больше: итог об этом скажет
 ROOT = Path(__file__).resolve().parents[2]  # processes/<имя>/run.py: корень кабинета
 sys.path.insert(0, str(ROOT / "tools"))
 import read_table  # кодировка, шапка и листы как у просмотра таблиц
@@ -134,14 +135,17 @@ def write_result(result):
 
 def main():
     src = newest_input()
-    table = read_table.analyze(src, None, 10 ** 6)  # лист: второй аргумент (номер с 1 или имя строкой)
-    columns, rows = table["columns"], table["rows"]  # все строки данных, значения текстом
+    table = read_table.analyze(src, None, LIMIT)  # лист: второй аргумент (номер с 1 или имя)
+    columns, rows = table["columns"], table["rows"]  # строки данных, значения текстом
     # ... расчёт по скиллу ...
+    summary = f"... Файл {src.name}."
+    if table["data_rows"] > len(rows):
+        summary += f" Внимание: в файле {table['data_rows']} строк, посчитаны первые {len(rows)}."
     result = {
         "title": TITLE,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "status": "green",
-        "summary": f"... Файл {src.name}.",
+        "summary": summary,
         "columns": ["..."],
         "rows": [["..."]],
     }

@@ -217,6 +217,39 @@ class XlsxTests(FixtureCase):
         self.assertIn("Астана", out.stderr)
 
 
+    def test_sheet_as_number_from_program(self):
+        # Программа процесса передаёт номер листа числом: read_table.analyze(путь, 2, ...).
+        sys.path.insert(0, str(TOOLS))
+        try:
+            import read_table
+        finally:
+            sys.path.remove(str(TOOLS))
+        p = self.dir / "листы числом.xlsx"
+        wb = openpyxl.Workbook()
+        wb.active.title = "Астана"
+        wb.active.append(["Договор", "Сумма"])
+        wb.active.append(["А-1", 1])
+        ws2 = wb.create_sheet("Караганда")
+        ws2.append(["Договор", "Сумма"])
+        ws2.append(["К-1", 2])
+        ws2.append(["К-2", 3])
+        wb.save(p)
+        r = read_table.analyze(p, 2, 10)
+        self.assertEqual(r["sheet"]["name"], "Караганда")
+        self.assertEqual(r["data_rows"], 2)
+        self.assertEqual(read_table.analyze(p, 1.0, 10)["sheet"]["name"], "Астана")
+        self.assertEqual(read_table.analyze(p, " 2 ", 10)["sheet"]["name"], "Караганда")
+        for bad in (3, 0, -1, 1.5, True, [1]):
+            with self.assertRaises(read_table.UserError) as ctx:
+                read_table.analyze(p, bad, 10)
+            msg = str(ctx.exception)
+            self.assertIn("Астана", msg, bad)
+            self.assertRegex(msg, "[А-Яа-я]")
+        with self.assertRaises(read_table.UserError) as ctx:
+            read_table.analyze(p, 3, 10)
+        self.assertIn("номера с 1", str(ctx.exception))
+
+
 class ErrorTests(FixtureCase):
     def test_missing_file(self):
         out = run(self.dir / "нет.csv")
