@@ -114,6 +114,10 @@ test('settings: sonnet, без обхода, PYTHONUTF8, input защищён, �
   assert.ok(s.permissions.deny.includes('Edit(./tools/**)'), 'нужен запрет Edit(./tools/**)');
   // «Запомни» пишется только в мои правила: автопамять проекта не читается и не пишется.
   assert.equal(s.autoMemoryEnabled, false, 'нужен "autoMemoryEnabled": false');
+  // Процесс запускается фразой без вопроса, как кнопкой. Поэтому программу процесса Claude пишет только
+  // через окно разрешения: правка processes/ всегда спрашивает человека.
+  assert.ok(s.permissions.allow.includes('Bash(node tools/processes.mjs*)'), 'нужно разрешение Bash(node tools/processes.mjs*)');
+  assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
 });
 
 test('lint: каждый @import из CLAUDE.md есть в репо или в MANIFEST.to', (t) => {
