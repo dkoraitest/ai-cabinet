@@ -291,7 +291,14 @@ test('runProcess: run.py-ссылка или папка-ссылка наруж�
 test('runProcess: второй запуск того же процесса, пока идёт первый → ERUNNING; другой процесс можно', async () => {
   const c = makeCabinet();
   try {
-    c.add('dolgiy', script('dolgiy'), 'import time\ntime.sleep(1.5)\n');
+    // Первый запуск ждёт файла-сигнала, а не фиксированное время: холодный старт Python у второго
+    // процесса может идти дольше любой паузы.
+    const go = join(c.root, 'output', 'dolgiy', 'go');
+    c.add(
+      'dolgiy',
+      script('dolgiy'),
+      'import os, time\ngo = os.path.join("output", "dolgiy", "go")\nfor _ in range(1200):\n    if os.path.exists(go):\n        break\n    time.sleep(0.05)\n',
+    );
     c.add('bystryi', script('bystryi'), 'print("ok")\n');
     const first = runProcess(c.root, 'dolgiy');
     assert.equal(processStatus(c.root, 'dolgiy').running, true);
@@ -299,6 +306,7 @@ test('runProcess: второй запуск того же процесса, по
     await assert.rejects(runProcess(c.root, 'dolgiy'), (e) => e.code === 'ERUNNING');
     assert.equal((await runProcess(c.root, 'bystryi')).ok, true);
     assert.equal(listProcesses(c.root).find((p) => p.slug === 'dolgiy').running, true);
+    writeFileSync(go, '');
     assert.equal((await first).ok, true);
     assert.equal(processStatus(c.root, 'dolgiy').running, false);
     assert.equal((await runProcess(c.root, 'dolgiy')).ok, true);
@@ -322,8 +330,9 @@ time.sleep(60)
 `,
     );
     const started = Date.now();
-    const r = await runProcess(c.root, 'zavis', { timeoutMs: 3000 });
-    assert.ok(Date.now() - started < 15000, `шёл ${Date.now() - started} мс`);
+    // Два холодных старта Python (процесс и его дочерний) должны успеть до остановки по времени.
+    const r = await runProcess(c.root, 'zavis', { timeoutMs: 8000 });
+    assert.ok(Date.now() - started < 25000, `шёл ${Date.now() - started} мс`);
     assert.equal(r.ok, false);
     const log = readFileSync(r.logPath, 'utf8');
     assert.match(log, /жду/);
