@@ -472,7 +472,7 @@ test('runProcess: не больше двух расчётов одновреме
     for (const s of ['odin', 'dva', 'tri']) c.add(s, script(s), 'import time\ntime.sleep(1.5)\n');
     const first = runProcess(c.root, 'odin');
     const second = runProcess(c.root, 'dva');
-    assert.throws(() => startRun(c.root, 'tri'), (e) => e.code === 'EBUSY' && /[А-Яа-я]/.test(e.message));
+    assert.throws(() => startRun(c.root, 'tri'), (e) => e.code === 'ELIMIT' && /[А-Яа-я]/.test(e.message));
     // Другой кабинет на том же сервере считается отдельно.
     const d = makeCabinet();
     try {

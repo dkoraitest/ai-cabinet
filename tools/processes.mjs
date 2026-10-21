@@ -38,7 +38,14 @@ const active = new Set();
 const lastRuns = new Map();
 const keyOf = (root, slug) => `${resolve(root)}\0${slug}`;
 const runningIn = (root) => [...active].filter((k) => k.startsWith(`${resolve(root)}\0`)).length;
-const inside = (path, dir) => path.startsWith(dir + sep);
+
+// path лежит внутри dir. На Windows регистр букв в путях не важен, поэтому сравнение без него.
+export function isInside(path, dir, platform = process.platform) {
+  const win = platform === 'win32';
+  const norm = (p) => (win ? p.toLowerCase() : p);
+  return norm(path).startsWith(norm(dir) + (win ? '\\' : '/'));
+}
+const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 
 function processError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -217,7 +224,7 @@ function checkRunnable(root, slug, maxConcurrent) {
   }
   if (runningIn(root) >= maxConcurrent) {
     throw processError(
-      'EBUSY',
+      'ELIMIT',
       `Одновременно можно запускать не больше ${maxConcurrent} расчётов. Дождитесь, пока один закончится, и запустите снова.`,
     );
   }
@@ -230,7 +237,7 @@ function checkRunnable(root, slug, maxConcurrent) {
   } catch {
     throw processError('ENORUN', `Нет файла processes/${slug}/run.py.`);
   }
-  if (!inside(file, base)) {
+  if (!isInside(file, base)) {
     throw processError('EOUTSIDE', `Файл processes/${slug}/run.py ведёт за пределы папки processes, такой процесс не запускается.`);
   }
   if (!isFile(file)) throw processError('ENORUN', `Нет файла processes/${slug}/run.py.`);
@@ -255,29 +262,55 @@ function isOutsideCabinet(exe, root) {
   } catch {
     // кабинета нет: сравниваем с путём как есть
   }
-  return ![exe, real].some((p) => p === top || inside(p, top) || inside(p, resolve(root)));
+  return ![exe, real].some((p) => samePath(p, top) || isInside(p, top) || isInside(p, resolve(root)));
+}
+
+// Путь к Python из вывода пробы: последняя непустая строка, строка JSON. Юникод в пути приходит
+// экранированным (\uXXXX), поэтому кодовая страница канала его не искажает. Не строка JSON: null.
+export function parseExecutable(out) {
+  const line = String(out ?? '')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .pop();
+  if (!line) return null;
+  try {
+    const value = JSON.parse(line);
+    return typeof value === 'string' && value ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 // Абсолютный путь к Python: тот же выбор, что в проверке сетапа (python или py -3 на Windows, python3 или python
-// на остальных), затем sys.executable. Путь внутри кабинета не принимается. null: подходящего Python нет.
+// на остальных), затем sys.executable. Путь принимается, только если это файл вне кабинета. null: подходящего нет.
+// Проба печатает путь через json.dumps (только ASCII) в UTF-8: на Windows Python пишет в канал в кодовой
+// странице ANSI, и профиль «Айгуль Н» или казахские буквы иначе превращаются в мусор или в ошибку.
 export async function resolvePython(root) {
   const { defaultExec, detectPython } = await import('./check.mjs');
   const cwd = outsideCwd();
   const exec = (cmd, args, o = {}) => defaultExec(cmd, args, { ...o, cwd });
   const py = await detectPython(exec, process.platform);
   if (!py) return null;
-  const r = await exec(py.cmd, [...py.pre, '-c', 'import sys;print(sys.executable)'], { timeout: 15000 });
-  const exe = r.code === 0 ? r.stdout.trim().split(/\r?\n/).pop().trim() : '';
-  return isOutsideCabinet(exe, root) ? exe : null;
+  const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+  const r = await exec(py.cmd, [...py.pre, '-c', 'import json, sys; print(json.dumps(sys.executable))'], { timeout: 15000, env });
+  const exe = r.code === 0 ? parseExecutable(r.stdout) : null;
+  return exe && isFile(exe) && isOutsideCabinet(exe, root) ? exe : null;
 }
 
 let foundPython = null;
 
 async function findPython(root) {
-  if (foundPython && isOutsideCabinet(foundPython, root)) return foundPython;
+  if (foundPython && isFile(foundPython) && isOutsideCabinet(foundPython, root)) return foundPython;
   const exe = await resolvePython(root);
-  if (exe) foundPython = exe;
+  foundPython = exe;
   return exe;
+}
+
+// Python не запустился по запомненному пути: забываем путь, следующий запуск найдёт Python заново.
+function forgetPython(exe) {
+  if (foundPython === exe) foundPython = null;
 }
 
 // На Windows дерево процессов останавливает taskkill (полный путь: не из папки кабинета), на остальных
@@ -313,6 +346,7 @@ function spawnRun(root, exe, runFile, fd, logPath, opts) {
   return new Promise((done) => {
     let settled = false;
     let stopped = null;
+    let spawnFailed = false;
     let timer = null;
     let grace = null;
     let watch = null;
@@ -332,7 +366,7 @@ function spawnRun(root, exe, runFile, fd, logPath, opts) {
         }
         writeLine(fd, `Процесс остановлен: слишком большой журнал (больше ${Math.round(logLimitBytes / 1048576)} МБ).`);
       }
-      done({ code, stopped });
+      done({ code, stopped, spawnFailed });
     };
     // Остановка: всё дерево процессов; не закончился за killGraceMs, значит добиваем сам процесс
     // и считаем запуск неудачным, чтобы процесс не остался «идёт» навсегда.
@@ -363,10 +397,14 @@ function spawnRun(root, exe, runFile, fd, logPath, opts) {
         env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' },
       });
     } catch (e) {
+      spawnFailed = true;
       writeLine(fd, `Не удалось запустить Python (${e.code ?? e.message}).`);
       return finish(null);
     }
     child.on('error', (e) => {
+      // Процесс уже запущен (есть pid): это ошибка остановки, ждём выхода или паузы добивания.
+      if (child.pid !== undefined) return;
+      spawnFailed = true;
       writeLine(fd, `Не удалось запустить Python «${exe}» (${e.code ?? e.message}).`);
       finish(null);
     });
@@ -416,7 +454,9 @@ export function startRun(
       if (!exe) {
         writeLine(fd, 'Python не найден. Скажите Claude «проверь сетап».');
       } else {
-        ({ code, stopped } = await spawnRun(root, exe, runFile, fd, logPath, { timeoutMs, logLimitBytes, killGraceMs, stopTree }));
+        let spawnFailed;
+        ({ code, stopped, spawnFailed } = await spawnRun(root, exe, runFile, fd, logPath, { timeoutMs, logLimitBytes, killGraceMs, stopTree }));
+        if (spawnFailed) forgetPython(exe);
       }
     } catch (e) {
       writeLine(fd, `Не удалось запустить расчёт (${e.code ?? e.message}).`);
