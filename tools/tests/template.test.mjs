@@ -153,7 +153,7 @@ test('хук .claude/hooks/guard.mjs отслеживается, имя ASCII, �
   const ignored = (p) => spawnSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: ROOT }).status === 0;
   assert.equal(ignored('.claude/hooks/guard.mjs'), false);
   const s = JSON.parse(read('.claude/settings.json'));
-  const cmds = (s.hooks?.PreToolUse ?? []).flatMap((h) => h.hooks.map((x) => x.command));
+  const cmds = (s.hooks?.PreToolUse ?? []).flatMap((h) => h.hooks.map((x) => [x.command, ...(x.args ?? [])].join(' ')));
   assert.ok(cmds.some((c) => c.includes('.claude/hooks/guard.mjs')), 'хук не зарегистрирован');
   assert.ok(s.permissions.deny.includes('Edit(./.claude/hooks/**)'), 'нужен запрет Edit(./.claude/hooks/**)');
 });
