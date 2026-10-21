@@ -232,8 +232,11 @@ jobs:
           Set-Location -LiteralPath $dest
           python -m pip install --user openpyxl python-docx
           if ($LASTEXITCODE -ne 0) { throw "pip install failed ($LASTEXITCODE)" }
-          python -m unittest discover -s tools/tests -p "test_*.py"
-          if ($LASTEXITCODE -ne 0) { throw "python tests failed ($LASTEXITCODE)" }
+          # main may not have the Python tests yet: run them only when present.
+          if (Test-Path -LiteralPath 'tools/tests/test_read_table.py') {
+            python -m unittest discover -s tools/tests -p "test_*.py"
+            if ($LASTEXITCODE -ne 0) { throw "python tests failed ($LASTEXITCODE)" }
+          }
           $json = (node tools/check.mjs --net --json | Out-String)
           Write-Host $json
           $bad = @(($json | ConvertFrom-Json) | Where-Object { $_.status -eq 'fail' })
