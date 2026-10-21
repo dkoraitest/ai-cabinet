@@ -26,9 +26,31 @@ const PARTICIPANT = (f) =>
   f === 'START.md' ||
   ['.claude/skills/', 'templates/', 'me/', 'site/'].some((p) => f.startsWith(p));
 
+// Учебный кейс: тексты Практики, стилевые правила участника на него не распространяются.
+const CASE_DIR = 'input/case-azs/';
+const isCase = (f) => f.startsWith(CASE_DIR);
+const TEXT_EXT = /\.(md|csv|txt|json|html)$/i;
+
 test('имена файлов только латиница без пробелов', () => {
-  const bad = files.filter((f) => f.split('/').some((s) => !/^[A-Za-z0-9._-]+$/.test(s)));
+  const bad = files.filter((f) => f.split('/').some((s) => !/^[A-Za-z0-9._-]+$/.test(s)) && !isCase(f));
   assert.deepEqual(bad, []);
+});
+
+test('имена файлов кейса только ASCII (скопированные выгрузки могут быть с пробелом и скобками)', () => {
+  const bad = files.filter((f) => isCase(f) && f.split('/').some((s) => !/^[A-Za-z0-9._ ()-]+$/.test(s)));
+  assert.deepEqual(bad, []);
+});
+
+test('кейс входит в репо и не игнорируется: input/case-azs/README.md отслеживается', () => {
+  const tracked = execFileSync('git', ['ls-files', '--cached', '-z'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean);
+  assert.ok(tracked.includes('input/case-azs/README.md'), 'README кейса не отслеживается');
+  assert.ok(tracked.some((f) => f.startsWith('input/case-azs/data/')), 'нет data кейса');
+  assert.ok(!tracked.some((f) => /(^|\/)(trainer|_gen)(\/|$)|trainer-key/.test(f)), 'в репо попали trainer/_gen');
+  const ignored = (p) => spawnSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: ROOT }).status === 0;
+  assert.equal(ignored('input/case-azs/README.md'), false);
+  assert.equal(ignored('input/moi-fayl.xlsx'), true);
 });
 
 // Имя клиента не должно попасть в публичный репозиторий, поэтому в тесте только хеши.
@@ -53,7 +75,7 @@ function hasClientName(text) {
 
 test('нет имени клиента (по хешам)', () => {
   assert.equal(hasClientName('Hello world'), false);
-  const bad = files.filter((f) => hasClientName(f) || hasClientName(read(f)));
+  const bad = files.filter((f) => hasClientName(f) || ((!isCase(f) || TEXT_EXT.test(f)) && hasClientName(read(f))));
   assert.deepEqual(bad, []);
 });
 
@@ -109,7 +131,7 @@ test('файлы участника вне репо: обновление их �
     .split('\0')
     .filter(Boolean);
   const own = tracked.filter(
-    (f) => ['me/', 'site/', 'input/', 'output/'].some((p) => f.startsWith(p)) && !f.endsWith('/.gitkeep'),
+    (f) => ['me/', 'site/', 'input/', 'output/'].some((p) => f.startsWith(p)) && !f.endsWith('/.gitkeep') && !isCase(f),
   );
   assert.deepEqual(own, []);
   const ignored = (p) => spawnSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: ROOT }).status === 0;
