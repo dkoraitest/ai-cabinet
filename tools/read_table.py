@@ -328,13 +328,26 @@ def iter_sheet_rows(ws):
 
 
 def resolve_sheet(names, wanted):
+    """Лист по имени или номеру с 1. Номер можно дать строкой («2») или числом (2, из программы процесса)."""
     if wanted is None:
         return 0
+    listing = "; ".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+    if isinstance(wanted, bool) or not isinstance(wanted, (str, int, float)):
+        raise UserError(f"Лист нужно указать номером с 1 или именем. Есть листы: {listing}.")
+    if isinstance(wanted, (int, float)):
+        if wanted != int(wanted):
+            raise UserError(f"Номер листа {wanted} не целый. Есть листы: {listing}.")
+        number = int(wanted)
+        if 1 <= number <= len(names):
+            return number - 1
+        if str(number) in names:
+            return names.index(str(number))
+        raise UserError(f"Листа с номером {number} нет: в файле {len(names)}, номера с 1. Есть листы: {listing}.")
     if wanted in names:
         return names.index(wanted)
-    if wanted.isdigit() and 1 <= int(wanted) <= len(names):
-        return int(wanted) - 1
-    listing = "; ".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+    text = wanted.strip()
+    if text.isdigit() and 1 <= int(text) <= len(names):
+        return int(text) - 1
     raise UserError(f"Лист «{wanted}» не найден. Есть листы: {listing}.")
 
 

@@ -193,6 +193,8 @@ test('без токена в пути: 403 с русским текстом, ф�
       const r = await get(port, p);
       assert.equal(r.status, 403, p);
       assert.match(r.body, /только по своей ссылке/, p);
+      assert.match(r.body, /Скажите Claude «открой страницу»\./, p);
+      assert.doesNotMatch(r.body, /node|serve\.mjs|[\u2012-\u2015]/, p);
       assert.ok(!r.body.includes('data-cabinet'), p);
     }
   });
