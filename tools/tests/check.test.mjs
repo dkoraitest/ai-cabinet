@@ -267,6 +267,18 @@ test('CLI через символическую ссылку из другого
   }
 });
 
+test('localhost-проверка: порт от системы, токен одноразовый, me/page-token.txt не создаётся', async () => {
+  const { base, dir } = makeCabinet();
+  try {
+    const r = (await runChecks({ cwd: dir, exec: stub({}) })).find((x) => x.id === 'localhost');
+    assert.equal(r.status, 'ok');
+    assert.ok(!existsSync(join(dir, 'me', 'page-token.txt')));
+    assert.ok(!existsSync(join(dir, 'me')));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('net-проверки передают ограничения таймаута инструментам', async () => {
   const { base, dir } = makeCabinet();
   try {

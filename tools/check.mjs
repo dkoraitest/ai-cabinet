@@ -6,7 +6,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { ensureParticipantFiles } from './init.mjs';
-import { createSiteServer, listenFirstFree, describeListenError } from './serve.mjs';
+import { randomBytes } from 'node:crypto';
+import { createSiteServer, describeListenError } from './serve.mjs';
 
 const TLS_RE = /SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_|CERTIFICATE_VERIFY_FAILED/;
 const NET_RE = /ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ConnectTimeout|NewConnectionError|Max retries exceeded|timeout|timed out/i;
@@ -131,9 +132,9 @@ async function checkWrite(cwd) {
   }
 }
 
-function httpGet(port) {
+function httpGet(port, path = '/') {
   return new Promise((done, bad) => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 5000 }, (res) => {
+    const req = http.get({ host: '127.0.0.1', port, path, timeout: 5000 }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c) => (body += c));
@@ -145,19 +146,25 @@ function httpGet(port) {
 }
 
 // Отдаём служебную страницу из templates/site: свою страницу в site/ участник меняет сам.
+// Порт 0: систему выбирает сама, токен одноразовый, me/page-token.txt не трогаем.
 async function checkLocalhost(cwd) {
-  const server = createSiteServer(join(cwd, 'templates', 'site'));
-  let port;
+  const token = randomBytes(16).toString('hex');
+  const server = createSiteServer(join(cwd, 'templates', 'site'), { token });
   try {
+    let port;
     try {
-      port = await listenFirstFree(server, {});
+      port = await new Promise((done, bad) => {
+        server.once('error', bad);
+        server.listen(0, '127.0.0.1', () => done(server.address().port));
+      });
     } catch (e) {
-      const text = e.code ? describeListenError(e, 8000) : e.message;
+      const text = e.code ? describeListenError(e, 0) : e.message;
       return fail('localhost', 'Страница на localhost не запускается', text);
     }
     try {
-      const { status, body } = await httpGet(port);
-      if (status === 200 && body.includes('data-cabinet="ok"')) {
+      const { status, body } = await httpGet(port, `/${token}/`);
+      const guard = await httpGet(port, '/');
+      if (status === 200 && body.includes('data-cabinet="ok"') && guard.status === 403) {
         return ok('localhost', `Страница на localhost открывается (порт ${port})`);
       }
       return fail(
