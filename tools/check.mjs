@@ -101,7 +101,7 @@ async function checkGit(exec) {
   return fail('git', 'Git не найден', 'установите Git for Windows с git-scm.com или попросите ИТ');
 }
 
-async function detectPython(exec, platform) {
+export async function detectPython(exec, platform) {
   const candidates =
     platform === 'win32'
       ? [['python', []], ['py', ['-3']]]
