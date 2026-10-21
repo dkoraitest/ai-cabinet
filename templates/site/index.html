@@ -129,9 +129,32 @@
   var REFRESH_MS = 10000;
   var shown = '';
   var OFFLINE = 'Страница не отвечает. Скажите Claude «открой страницу».';
+  var STOPPED = 'Страница остановлена. Скажите Claude «открой страницу».';
+  // После трёх неудачных запросов подряд вкладка больше ничего не спрашивает: страница остановлена,
+  // а на её номере может работать чужая программа. Адрес с новым токеном даёт Claude.
+  var MAX_FAILS = 3;
+  var fails = 0;
+  var stopped = false;
+  var timer = null;
+
+  // true: запросов больше не будет.
+  function failed() {
+    fails += 1;
+    if (fails < MAX_FAILS) return false;
+    stopped = true;
+    if (timer !== null) clearInterval(timer);
+    shown = '';
+    box.innerHTML = '<p class="empty">' + STOPPED + '</p>';
+    return true;
+  }
+
+  function answered() {
+    fails = 0;
+  }
 
   // Перерисовываем, только если что-то поменялось: иначе прокрутка таблиц сбрасывалась бы раз в 10 секунд.
   function draw() {
+    if (stopped) return;
     var html = window.CabinetRender.renderPage(list, messages);
     if (html === shown) return;
     shown = html;
@@ -149,12 +172,15 @@
   }
 
   function load() {
+    if (stopped) return;
     return fetch('api/processes', { cache: 'no-store' })
       .then(function (r) {
         if (!r.ok) throw new Error(String(r.status));
         return r.json();
       })
       .then(function (data) {
+        if (!Array.isArray(data)) throw new Error('не список');
+        answered();
         list = data;
         draw();
         list.forEach(function (p) {
@@ -162,6 +188,7 @@
         });
       })
       .catch(function () {
+        if (failed()) return;
         shown = '';
         box.innerHTML = '<p class="empty">' + OFFLINE + '</p>';
       });
@@ -171,14 +198,17 @@
 
   // Раз в 2 секунды спрашиваем, идёт ли расчёт; по окончании перерисовываем карточки.
   function poll(slug) {
-    if (polling[slug]) return;
+    if (stopped || polling[slug]) return;
     polling[slug] = true;
     setTimeout(function () {
+      if (stopped) return;
       fetch('api/status/' + encodeURIComponent(slug), { cache: 'no-store' })
         .then(function (r) {
+          if (r.status === 403) throw new Error('403');
           return r.json();
         })
         .then(function (s) {
+          answered();
           polling[slug] = false;
           if (s.running) return poll(slug);
           if (s.lastRun && !s.lastRun.ok) {
@@ -190,6 +220,7 @@
         })
         .catch(function () {
           polling[slug] = false;
+          if (failed()) return;
           messages[slug] = OFFLINE;
           setRunning(slug, false);
           draw();
@@ -198,6 +229,7 @@
   }
 
   function run(slug) {
+    if (stopped) return;
     delete messages[slug];
     setRunning(slug, true);
     draw();
@@ -207,8 +239,14 @@
       body: '{}',
     })
       .then(function (r) {
-        if (r.status === 202) return poll(slug);
+        if (r.status === 202) {
+          answered();
+          return poll(slug);
+        }
         return r.json().catch(function () { return {}; }).then(function (j) {
+          // 403 без текста ошибки: адрес с этим токеном уже не страница кабинета.
+          if (r.status === 403 && !j.error) throw new Error('403');
+          answered();
           messages[slug] = j.error || 'Не получилось запустить расчёт.';
           // 409 ERUNNING: этот процесс уже идёт, ждём его; успел закончиться, показываем свежую карточку.
           // 409 ELIMIT (идут два других расчёта) и прочие ошибки: текст остаётся, кнопка снова доступна.
@@ -229,6 +267,7 @@
         });
       })
       .catch(function () {
+        if (failed()) return;
         messages[slug] = OFFLINE;
         setRunning(slug, false);
         draw();
@@ -237,13 +276,13 @@
 
   box.addEventListener('click', function (e) {
     var b = e.target.closest('button[data-run]');
-    if (b && !b.disabled) run(b.getAttribute('data-run'));
+    if (b && !b.disabled && !stopped) run(b.getAttribute('data-run'));
   });
   // Вернулись на страницу (например, после запуска фразой в Claude): показываем свежие карточки.
   window.addEventListener('focus', load);
   // Запуск фразой в Claude: пока страница на экране, список перечитывается раз в 10 секунд, и время на карточке
   // обновляется без перезагрузки. Скрытая вкладка не опрашивает.
-  setInterval(function () {
+  timer = setInterval(function () {
     if (document.visibilityState === 'visible') load();
   }, REFRESH_MS);
   document.addEventListener('visibilitychange', function () {

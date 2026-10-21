@@ -166,7 +166,7 @@ function httpGet(port, path = '/') {
 }
 
 // Отдаём служебную страницу из templates/site: свою страницу в site/ участник меняет сам.
-// Порт 0: систему выбирает сама, токен одноразовый, me/page-token.txt не трогаем.
+// Порт 0: его выбирает система. Токен одноразовый, как у страницы при каждом запуске.
 async function checkLocalhost(cwd) {
   const token = randomBytes(16).toString('hex');
   const server = createSiteServer(join(cwd, 'templates', 'site'), { token });

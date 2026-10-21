@@ -155,3 +155,84 @@ test('страница: маркер, заголовок, render.js по отн�
   assert.match(html, /document\.visibilityState === 'visible'/);
   assert.match(html, /setInterval\(/);
 });
+
+// Скрипт страницы в песочнице: fetch, таймеры и DOM подставные, запросы считаются.
+function pageSandbox(respond) {
+  const html = readFileSync(join(SITE, 'index.html'), 'utf8');
+  const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  const box = { innerHTML: '', addEventListener() {} };
+  const intervals = new Map();
+  const timeouts = [];
+  const calls = [];
+  let nextId = 1;
+  const sandbox = {
+    window: { CabinetRender: { renderPage: (list) => `карточек: ${list.length}` }, addEventListener() {} },
+    document: { getElementById: () => box, visibilityState: 'visible', addEventListener() {} },
+    fetch: (url, opts) => {
+      calls.push(url);
+      return respond(url, opts);
+    },
+    setTimeout: (fn) => timeouts.push(fn),
+    setInterval: (fn) => {
+      intervals.set(nextId, fn);
+      return nextId++;
+    },
+    clearInterval: (id) => intervals.delete(id),
+    encodeURIComponent,
+    Error,
+    Array,
+    String,
+  };
+  runInNewContext(code, sandbox);
+  const settle = () => new Promise((r) => setImmediate(r));
+  return {
+    box,
+    calls,
+    intervals,
+    async tick() {
+      for (const fn of [...intervals.values()]) fn();
+      await settle();
+      await settle();
+    },
+    settle,
+  };
+}
+
+test('страница: после трёх неудачных запросов подряд опрос останавливается с подсказкой', async () => {
+  const p = pageSandbox(() => Promise.reject(new TypeError('Failed to fetch')));
+  await p.settle();
+  await p.settle();
+  assert.equal(p.calls.length, 1);
+  assert.match(p.box.innerHTML, /Страница не отвечает/);
+  await p.tick();
+  assert.equal(p.calls.length, 2);
+  await p.tick();
+  assert.equal(p.calls.length, 3);
+  assert.match(p.box.innerHTML, /Страница остановлена\. Скажите Claude «открой страницу»\./);
+  assert.equal(p.intervals.size, 0, 'опрос раз в 10 секунд не снят');
+  await p.tick();
+  assert.equal(p.calls.length, 3, 'после остановки вкладка снова спрашивает');
+});
+
+test('страница: ответ 403 (чужой или старый токен) считается неудачей; удачный ответ обнуляет счёт', async () => {
+  let mode = 'fail';
+  const p = pageSandbox(() => {
+    if (mode === 'ok') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+    return Promise.resolve({ ok: false, status: 403, json: () => Promise.reject(new SyntaxError('не JSON')) });
+  });
+  await p.settle();
+  await p.settle();
+  await p.tick();
+  assert.equal(p.calls.length, 2);
+  mode = 'ok';
+  await p.tick();
+  assert.match(p.box.innerHTML, /карточек: 0/);
+  mode = 'fail';
+  await p.tick();
+  await p.tick();
+  assert.equal(p.intervals.size, 1, 'остановилась раньше трёх неудач подряд');
+  await p.tick();
+  assert.equal(p.calls.length, 6);
+  assert.match(p.box.innerHTML, /Страница остановлена/);
+  assert.equal(p.intervals.size, 0);
+});

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyDir } from './copy-dir.mjs';
-import { createSiteServer, listenFirstFree, describeListenError, portForUser, pageToken } from '../serve.mjs';
+import { createSiteServer, listenFirstFree, listenFixed, describeListenError, portForUser, newPageToken, twinServer } from '../serve.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SITE = join(ROOT, 'templates', 'site');
@@ -102,18 +102,32 @@ test('порт занят: берёт следующий', async () => {
   }
 });
 
-test('все порты диапазона заняты: русская ошибка с диапазоном', async () => {
+test('все порты диапазона заняты: порт выбирает система', async () => {
   const blocker = http.createServer();
   await new Promise((res) => blocker.listen(18720, '127.0.0.1', res));
   const server = createSiteServer(SITE, { token: TOKEN });
   try {
-    await assert.rejects(
-      listenFirstFree(server, { from: 18720, to: 18720 }),
-      (e) => e instanceof Error && /18720/.test(e.message) && /[А-Яа-я]/.test(e.message),
-    );
+    const port = await listenFirstFree(server, { from: 18720, to: 18720 });
+    assert.notEqual(port, 18720);
+    assert.equal(server.address().port, port);
+    assert.equal((await get(port, `${T}/`)).status, 200);
   } finally {
+    server.closeAllConnections?.();
+    await close(server);
     await close(blocker);
   }
+});
+
+test('диапазон занят и система не дала порт: русская ошибка с диапазоном', async () => {
+  const server = createSiteServer(SITE, { token: TOKEN });
+  server.listen = () => {
+    process.nextTick(() => server.emit('error', Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' })));
+    return server;
+  };
+  await assert.rejects(
+    listenFirstFree(server, { from: 18721, to: 18722 }),
+    (e) => e instanceof Error && /18721/.test(e.message) && /[А-Яа-я]/.test(e.message),
+  );
 });
 
 test('порт, зарезервированный системой (EACCES): пропускается', async () => {
@@ -150,7 +164,7 @@ test('CLI --port на занятом порту: русское сообщени
   const blocker = http.createServer();
   await new Promise((res) => blocker.listen(18740, '127.0.0.1', res));
   try {
-    // Копия кабинета во временной папке: сервер создаёт me/page-token.txt, в репозитории его оставлять нельзя.
+    // Копия кабинета во временной папке: сервер создаёт файлы участника из шаблонов, в репозитории их оставлять нельзя.
     copyDir(join(ROOT, 'tools'), join(tmp, 'tools'));
     copyDir(join(ROOT, 'templates'), join(tmp, 'templates'));
     const r = spawnSync(process.execPath, [join(tmp, 'tools', 'serve.mjs'), '--port', '18740'], { encoding: 'utf8' });
@@ -243,84 +257,133 @@ test('listenFirstFree: начинает с start и идёт по кругу в�
   }
 });
 
-test('pageToken: 32 hex, сохраняется между вызовами, создаёт me/', () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'tok-'));
+// IPv6 на петле: есть ли [::1] в этой системе.
+async function hasIpv6() {
+  const probe = http.createServer();
   try {
-    const a = pageToken(tmp);
-    assert.match(a, /^[0-9a-f]{32}$/);
-    assert.equal(readFileSync(join(tmp, 'me', 'page-token.txt'), 'utf8').trim(), a);
-    assert.equal(pageToken(tmp), a);
-    writeFileSync(join(tmp, 'me', 'page-token.txt'), 'мусор\n');
-    const b = pageToken(tmp);
-    assert.match(b, /^[0-9a-f]{32}$/);
-    assert.notEqual(b, a);
+    await new Promise((res, rej) => {
+      probe.once('error', rej);
+      probe.listen(0, '::1', res);
+    });
+    return true;
+  } catch {
+    return false;
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    if (probe.listening) await close(probe);
+  }
+}
+
+function get6(port, path) {
+  return new Promise((res, rej) => {
+    http
+      .get({ host: '::1', family: 6, port, path, agent: false }, (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => res({ status: r.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+      })
+      .on('error', rej);
+  });
+}
+
+test('newPageToken: 32 hex, каждый раз новый', () => {
+  const a = newPageToken();
+  const b = newPageToken();
+  assert.match(a, /^[0-9a-f]{32}$/);
+  assert.match(b, /^[0-9a-f]{32}$/);
+  assert.notEqual(a, b);
+});
+
+test('twin: тот же порт на 127.0.0.1 и [::1], на обоих тот же обработчик с токеном', async (t) => {
+  if (!(await hasIpv6())) return t.skip('IPv6 на петле нет');
+  const server = createSiteServer(SITE, { token: TOKEN });
+  const twin = twinServer(server);
+  try {
+    const port = await listenFirstFree(server, { from: 18760, to: 18769, twin });
+    assert.equal(twin.address().port, port);
+    assert.equal(twin.address().address, '::1');
+    assert.equal(server.address().address, '127.0.0.1');
+    assert.equal((await get6(port, `${T}/`)).status, 200);
+    assert.equal((await get6(port, '/')).status, 403);
+    assert.equal((await get(port, `${T}/`)).status, 200);
+  } finally {
+    for (const s of [server, twin]) {
+      s.closeAllConnections?.();
+      if (s.listening) await close(s);
+    }
   }
 });
 
-test('CLI: печатает адрес с токеном, 403 без него, токен тот же при втором запуске', async () => {
+test('[::1] того же порта занят чужой программой: порт пропускается на обоих адресах', async (t) => {
+  if (!(await hasIpv6())) return t.skip('IPv6 на петле нет');
+  // Чужая программа слушает только [::1]:18770 и ждёт адрес с токеном.
+  const thief = http.createServer((req, res) => res.end('чужой'));
+  await new Promise((res) => thief.listen(18770, '::1', res));
+  const server = createSiteServer(SITE, { token: TOKEN });
+  const twin = twinServer(server);
+  try {
+    const port = await listenFirstFree(server, { from: 18770, to: 18775, twin });
+    assert.equal(port, 18771);
+    assert.equal(twin.address().port, 18771);
+    await assert.rejects(listenFixed(createSiteServer(SITE, { token: TOKEN }), 18770, { twin: twinServer(server) }), (e) => e.code === 'EADDRINUSE');
+  } finally {
+    for (const s of [server, twin, thief]) {
+      s.closeAllConnections?.();
+      if (s.listening) await close(s);
+    }
+  }
+});
+
+test('CLI: адрес с 127.0.0.1 и токеном, 403 без него; новый запуск: новый токен, старый получает 403', async () => {
   const { spawn } = await import('node:child_process');
   const { existsSync } = await import('node:fs');
   const tmp = mkdtempSync(join(tmpdir(), 'cli-'));
   try {
     copyDir(join(ROOT, 'tools'), join(tmp, 'tools'));
     copyDir(join(ROOT, 'templates'), join(tmp, 'templates'));
+    // Файл токена от прошлой версии кабинета: новый запуск его не читает и удаляет.
+    mkdirSync(join(tmp, 'me'), { recursive: true });
+    writeFileSync(join(tmp, 'me', 'page-token.txt'), `${TOKEN}\n`);
     const run = () =>
       new Promise((res, rej) => {
         const c = spawn(process.execPath, [join(tmp, 'tools', 'serve.mjs')], { stdio: ['ignore', 'pipe', 'pipe'] });
         let out = '';
         c.stdout.on('data', (d) => {
           out += d;
-          const m = /http:\/\/localhost:(\d+)\/([0-9a-f]{32})\//.exec(out);
-          if (m) res({ c, port: Number(m[1]), token: m[2] });
+          const m = /http:\/\/127\.0\.0\.1:(\d+)\/([0-9a-f]{32})\//.exec(out);
+          if (m) res({ c, out, port: Number(m[1]), token: m[2] });
         });
         c.on('error', rej);
-        c.on('exit', () => rej(new Error(`serve завершился: ${out}`)));
+        c.on('close', () => rej(new Error(`serve завершился: ${out}`)));
       });
+    const stop = async (x) => {
+      x.c.removeAllListeners('close');
+      const closed = new Promise((r) => x.c.once('close', r));
+      x.c.kill();
+      await closed;
+    };
     const one = await run();
     try {
+      assert.doesNotMatch(one.out, /localhost/);
+      assert.notEqual(one.token, TOKEN);
       assert.equal((await get(one.port, `/${one.token}/`)).status, 200);
       assert.equal((await get(one.port, '/')).status, 403);
-      assert.ok(existsSync(join(tmp, 'me', 'page-token.txt')));
+      assert.equal((await get(one.port, `/${TOKEN}/`)).status, 403);
+      assert.ok(!existsSync(join(tmp, 'me', 'page-token.txt')), 'файл токена от прошлой версии остался');
+      // Тот же номер на [::1] тоже держит страница: адрес localhost у браузера не уйдёт чужой программе.
+      if (await hasIpv6()) assert.equal((await get6(one.port, `/${one.token}/`)).status, 200);
     } finally {
-      one.c.removeAllListeners('exit');
-      one.c.kill();
-      await new Promise((r) => one.c.once('exit', r));
+      await stop(one);
     }
     const two = await run();
     try {
-      assert.equal(two.token, one.token);
+      assert.notEqual(two.token, one.token);
+      assert.equal((await get(two.port, `/${two.token}/`)).status, 200);
+      // Старая вкладка со старым токеном на том же или другом порту ничего не получает.
+      assert.equal((await get(two.port, `/${one.token}/`)).status, 403);
+      assert.equal((await get(two.port, `/${one.token}/api/processes`)).status, 403);
+      assert.ok(!existsSync(join(tmp, 'me', 'page-token.txt')), 'токен записан в файл');
     } finally {
-      two.c.removeAllListeners('exit');
-      two.c.kill();
-      await new Promise((r) => two.c.once('exit', r));
-    }
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('pageToken: два одновременных запуска на пустом me/ получают один токен', async () => {
-  const { spawn } = await import('node:child_process');
-  const tmp = mkdtempSync(join(tmpdir(), 'race-'));
-  try {
-    const mod = new URL('../serve.mjs', import.meta.url).href;
-    const code = `import(${JSON.stringify(mod)}).then(m => console.log(m.pageToken(${JSON.stringify(tmp)})))`;
-    const run = () =>
-      new Promise((res, rej) => {
-        const c = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
-        let out = '';
-        c.stdout.on('data', (d) => (out += d));
-        c.on('error', rej);
-        c.on('exit', () => res(out.trim()));
-      });
-    for (let round = 0; round < 5; round++) {
-      rmSync(join(tmp, 'me'), { recursive: true, force: true });
-      const tokens = await Promise.all([run(), run(), run(), run()]);
-      assert.match(tokens[0], /^[0-9a-f]{32}$/);
-      assert.deepEqual(new Set(tokens).size, 1, tokens.join(' '));
-      assert.equal(readFileSync(join(tmp, 'me', 'page-token.txt'), 'utf8').trim(), tokens[0]);
+      await stop(two);
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });

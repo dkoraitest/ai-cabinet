@@ -1,7 +1,8 @@
-// Локальный сервер страницы кабинета. Без зависимостей, слушает только 127.0.0.1.
+// Локальный сервер страницы кабинета. Без зависимостей. Слушает только петлевые адреса 127.0.0.1 и [::1]
+// одного номера порта, адрес печатает с 127.0.0.1.
 import http from 'node:http';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { spawn } from 'node:child_process';
@@ -76,42 +77,10 @@ export function currentUser() {
   }
 }
 
-const TOKEN_RE = /^[0-9a-f]{32}$/;
-
-// Личный секрет адреса страницы. Лежит в me/ (папка участника, не в Git).
-// Создание атомарное (flag wx): два одновременных запуска получат один токен.
-function readSavedToken(file) {
-  try {
-    const saved = readFileSync(file, 'utf8').trim();
-    return TOKEN_RE.test(saved) ? saved : null;
-  } catch {
-    return null;
-  }
-}
-
-const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
-export function pageToken(root) {
-  const file = resolve(root, 'me', 'page-token.txt');
-  mkdirSync(resolve(root, 'me'), { recursive: true });
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const saved = readSavedToken(file);
-    if (saved) return saved;
-    const token = randomBytes(16).toString('hex');
-    try {
-      writeFileSync(file, token + '\n', { flag: 'wx', mode: 0o600 });
-      return token;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      // Файл уже есть: либо его пишет другой запуск, либо в нём мусор.
-      pause(25);
-      if (attempt >= 20 && !readSavedToken(file)) {
-        // Мусор или пустой файл надолго: заменяем его.
-        rmSync(file, { force: true });
-      }
-    }
-  }
-  throw new Error('Не удалось получить личный адрес страницы: файл me/page-token.txt занят.');
+// Личный секрет адреса страницы: новый при каждом запуске и только в памяти. Старая вкладка или чужая
+// программа на освободившемся порту получают токен, который уже ничего не открывает.
+export function newPageToken() {
+  return randomBytes(16).toString('hex');
 }
 
 function sameToken(a, b) {
@@ -268,27 +237,74 @@ function tryListen(server, host, port) {
     server.once('error', onError);
     server.listen(port, host, () => {
       server.off('error', onError);
-      ok(port);
+      ok(server.address().port);
     });
   });
 }
 
+const BUSY = new Set(['EADDRINUSE', 'EACCES']);
+
+const closeServer = (server) => new Promise((ok) => server.close(() => ok()));
+
+// Второй сервер с тем же обработчиком запросов: для адреса [::1].
+export function twinServer(server) {
+  const twin = http.createServer();
+  for (const listener of server.listeners('request')) twin.on('request', listener);
+  return twin;
+}
+
+// Один номер порта на 127.0.0.1 и, если есть twin, на [::1]. Браузер по имени localhost часто идёт
+// сначала на ::1: чужая программа на [::1] того же порта получила бы адрес с токеном. Поэтому [::1],
+// занятый кем-то другим, значит, что порт не годится: открытое на 127.0.0.1 закрывается, ошибка уходит
+// наверх (EADDRINUSE или EACCES). Другие ошибки [::1] (EADDRNOTAVAIL, EAFNOSUPPORT: IPv6 в системе нет
+// или выключен) не мешают: туда не попадёт и браузер.
+async function listenLoopback(server, twin, port, host, state) {
+  const got = await tryListen(server, host, port);
+  if (!twin || state.noIpv6) return got;
+  try {
+    await tryListen(twin, '::1', got);
+  } catch (e) {
+    if (!BUSY.has(e.code)) {
+      state.noIpv6 = true;
+      return got;
+    }
+    await closeServer(server);
+    throw e;
+  }
+  return got;
+}
+
 // Пробует порты по кругу в диапазоне from..to, начиная со start, не больше attempts попыток.
+// Все заняты: порт выбирает система (номер вне диапазона, страница всё равно работает).
+// twin: второй сервер (twinServer) для того же номера порта на [::1].
 export async function listenFirstFree(
   server,
-  { host = '127.0.0.1', from = PORT_MIN, to = PORT_MIN + PORT_SPAN - 1, start = from, attempts = 50 } = {},
+  { host = '127.0.0.1', from = PORT_MIN, to = PORT_MIN + PORT_SPAN - 1, start = from, attempts = 50, twin = null } = {},
 ) {
   const size = to - from + 1;
   const tries = Math.min(attempts, size);
+  const state = {};
   for (let i = 0; i < tries; i++) {
     const port = from + ((start - from + i) % size);
     try {
-      return await tryListen(server, host, port);
+      return await listenLoopback(server, twin, port, host, state);
     } catch (e) {
-      if (e.code !== 'EADDRINUSE' && e.code !== 'EACCES') throw e;
+      if (!BUSY.has(e.code)) throw e;
+    }
+  }
+  for (let i = 0; i < 5; i++) {
+    try {
+      return await listenLoopback(server, twin, 0, host, state);
+    } catch (e) {
+      if (!BUSY.has(e.code)) throw e;
     }
   }
   throw new Error(`Все порты с ${from} по ${to} заняты. Закройте другие программы и попробуйте снова.`);
+}
+
+// Ровно этот порт (параметр --port) на 127.0.0.1 и [::1].
+export function listenFixed(server, port, { twin = null, host = '127.0.0.1' } = {}) {
+  return listenLoopback(server, twin, port, host, {});
 }
 
 function openBrowser(url) {
@@ -347,25 +363,27 @@ async function main() {
   } catch (e) {
     console.error(`Не удалось создать файлы кабинета из шаблонов (${e.code ?? e.message}).`);
   }
-  let token;
+  // Файл с токеном от прошлых версий кабинета больше не нужен: токен живёт только в памяти.
   try {
-    token = pageToken(root);
-  } catch (e) {
-    console.error(`Не удалось сохранить личный адрес страницы в папке me (${e.code ?? e.message}).`);
-    process.exit(1);
+    rmSync(resolve(root, 'me', 'page-token.txt'), { force: true });
+  } catch {
+    // Не удалился: он ничего не открывает.
   }
+  const token = newPageToken();
   const server = createCabinetServer(root, { token });
+  const twin = twinServer(server);
   let port;
   try {
     port = fixed
-      ? await tryListen(server, '127.0.0.1', fixed)
-      : await listenFirstFree(server, { start: portForUser(currentUser()) });
+      ? await listenFixed(server, fixed, { twin })
+      : await listenFirstFree(server, { start: portForUser(currentUser()), twin });
   } catch (e) {
     // Диапазон занят целиком: у этой ошибки уже есть русский текст и нет code.
     console.error(e.code ? describeListenError(e, fixed ?? PORT_MIN) : e.message);
     process.exit(1);
   }
-  const url = `http://localhost:${port}/${token}/`;
+  // Адрес с 127.0.0.1, без имени localhost: браузер не пойдёт на [::1] и не спросит DNS.
+  const url = `http://127.0.0.1:${port}/${token}/`;
   console.log(`Страница работает: ${url}`);
   console.log('Остановить: Ctrl+C');
   if (open) openBrowser(url);
