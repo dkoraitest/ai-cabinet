@@ -33,6 +33,7 @@ function makeWorld() {
   const cabinet = join(home, 'ai-cabinet');
   mkdirSync(seed, { recursive: true });
   copyDir(join(ROOT, 'templates'), join(seed, 'templates'));
+  copyDir(join(ROOT, 'tools'), join(seed, 'tools'));
   copyFileSync(join(ROOT, '.gitignore'), join(seed, '.gitignore'));
   writeFileSync(join(seed, 'CLAUDE.md'), '# Правила кабинета\nверсия 1\n');
   writeFileSync(join(seed, 'START.md'), '# Ваш кабинет\n');
@@ -92,6 +93,33 @@ test('update: правка CLAUDE.md участником уходит в output
     assert.equal(read(c, '.claude', 'skills', 'moy-skill', 'SKILL.md'), 'мой скилл');
     assert.equal(git(c, 'status', '--porcelain', '--untracked-files=no'), '');
     assert.doesNotMatch(r.message, /[—–]/);
+  } finally {
+    rmSync(w.base, { recursive: true, force: true });
+  }
+});
+
+test('update: новая версия добавляет шаблон в MANIFEST → файл у участника появляется сразу, его файлы целы', async () => {
+  const w = makeWorld();
+  const c = w.cabinet;
+  try {
+    writeFileSync(join(c, 'me', 'about-me.md'), '# Обо мне\nэкономист\n');
+    writeFileSync(join(c, 'site', 'index.html'), '<p>моя страница</p>');
+    mkdirSync(join(c, 'processes', 'moy-process'), { recursive: true });
+    writeFileSync(join(c, 'processes', 'moy-process', 'run.py'), 'print(1)\n');
+    const init = read(ROOT, 'tools', 'init.mjs');
+    const next = init.replace('export const MANIFEST = [', "export const MANIFEST = [\n  { from: 'templates/novyi.md', to: 'me/novyi.md' },");
+    assert.notEqual(next, init);
+    w.publish({ 'templates/novyi.md': '# Новый шаблон\n', 'tools/init.mjs': next });
+
+    const r = await updateCabinet({ root: c });
+    assert.equal(r.status, 'updated', r.message);
+    assert.equal(read(c, 'me', 'novyi.md'), '# Новый шаблон\n');
+    assert.match(r.message, /me\/novyi\.md/);
+    assert.equal(read(c, 'me', 'about-me.md'), '# Обо мне\nэкономист\n');
+    assert.equal(read(c, 'me', 'rules.md'), read(ROOT, 'templates', 'rules.md'));
+    assert.equal(read(c, 'site', 'index.html'), '<p>моя страница</p>');
+    assert.equal(read(c, 'processes', 'moy-process', 'run.py'), 'print(1)\n');
+    assert.equal(git(c, 'status', '--porcelain', '--untracked-files=no'), '');
   } finally {
     rmSync(w.base, { recursive: true, force: true });
   }

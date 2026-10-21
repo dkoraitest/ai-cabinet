@@ -66,3 +66,18 @@ test('init: CLI из пути с кириллицей и пробелом наз
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('init: --json печатает список созданных файлов', () => {
+  const { base, dir } = makeCabinet();
+  try {
+    copyDir(join(ROOT, 'tools'), join(dir, 'tools'));
+    const run = () => spawnSync(process.execPath, [join(dir, 'tools', 'init.mjs'), '--json'], { encoding: 'utf8', cwd: base });
+    let r = run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout).sort(), MANIFEST.map((m) => m.to).sort());
+    r = run();
+    assert.deepEqual(JSON.parse(r.stdout), []);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
