@@ -1,0 +1,7 @@
+{
+  "title": "Светофор договоров",
+  "phrase": "запусти светофор договоров",
+  "kind": "script",
+  "input": "input/svetofor-dogovorov/",
+  "output": "output/svetofor-dogovorov/"
+}
