@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, sep } from 'node:path';
 import {
@@ -484,6 +485,98 @@ test('runProcess: не больше двух расчётов одновреме
     assert.equal((await first).ok, true);
     assert.equal((await second).ok, true);
     assert.equal((await runProcess(c.root, 'tri')).ok, true);
+  } finally {
+    c.done();
+  }
+});
+
+// Замок output/<slug>/.running и статус output/<slug>/last-run.json общие для страницы и node tools/processes.mjs.
+test('замок: пока идёт расчёт, лежит output/<slug>/.running с pid и временем; после конца снят, last-run.json записан', async () => {
+  const c = makeCabinet();
+  try {
+    c.add('dolgiy', script('dolgiy'), 'import time\ntime.sleep(1)\n');
+    const run = startRun(c.root, 'dolgiy');
+    const lockFile = join(c.root, 'output', 'dolgiy', '.running');
+    const lock = JSON.parse(readFileSync(lockFile, 'utf8'));
+    assert.equal(lock.pid, process.pid);
+    assert.ok(!Number.isNaN(Date.parse(lock.startedAt)));
+    assert.equal(processStatus(c.root, 'dolgiy').running, true);
+    const r = await run.done;
+    assert.equal(r.ok, true, readFileSync(r.logPath, 'utf8'));
+    assert.equal(existsSync(lockFile), false);
+    const last = JSON.parse(readFileSync(join(c.root, 'output', 'dolgiy', 'last-run.json'), 'utf8'));
+    assert.deepEqual(processStatus(c.root, 'dolgiy'), { running: false, lastRun: last });
+    assert.deepEqual([last.ok, last.code], [true, 0]);
+    assert.ok(Number.isInteger(last.durationMs));
+  } finally {
+    c.done();
+  }
+});
+
+test('замок: чужой живой запуск даёт ERUNNING, устаревший (процесса нет или идёт дольше срока) снимается', async () => {
+  const c = makeCabinet();
+  try {
+    c.add('svodka', script('svodka'), 'print("ok")\n');
+    const out = join(c.root, 'output', 'svodka');
+    mkdirSync(out, { recursive: true });
+    const lockFile = join(out, '.running');
+    // Живой процесс: этот тест. Журнал прежнего запуска не трогается.
+    writeFileSync(join(out, 'last-run.log'), 'журнал идущего расчёта\n');
+    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), timeoutMs: 60000, id: 'x' }));
+    assert.throws(() => startRun(c.root, 'svodka'), (e) => e.code === 'ERUNNING');
+    assert.equal(readFileSync(join(out, 'last-run.log'), 'utf8'), 'журнал идущего расчёта\n');
+    assert.equal(listProcesses(c.root)[0].running, true);
+    // Файл замка пишется прямо сейчас (пустой, свежий): тоже «идёт».
+    writeFileSync(lockFile, '');
+    assert.throws(() => startRun(c.root, 'svodka'), (e) => e.code === 'ERUNNING');
+    // Процесса с таким pid уже нет.
+    const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
+    writeFileSync(lockFile, JSON.stringify({ pid: Number(dead.stdout), startedAt: new Date().toISOString(), timeoutMs: 60000, id: 'y' }));
+    assert.equal(processStatus(c.root, 'svodka').running, false);
+    assert.equal((await runProcess(c.root, 'svodka')).ok, true);
+    assert.equal(existsSync(lockFile), false);
+    // Живой pid, но расчёт идёт дольше своего срока с запасом.
+    writeFileSync(lockFile, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 3600 * 1000).toISOString(), timeoutMs: 1000, id: 'z' }));
+    assert.equal(processStatus(c.root, 'svodka').running, false);
+    assert.equal((await runProcess(c.root, 'svodka')).ok, true);
+    // Пустой файл замка, оставшийся надолго.
+    writeFileSync(lockFile, '');
+    const old = new Date(Date.now() - 3600 * 1000);
+    utimesSync(lockFile, old, old);
+    assert.equal((await runProcess(c.root, 'svodka')).ok, true);
+    assert.equal(existsSync(lockFile), false);
+  } finally {
+    c.done();
+  }
+});
+
+test('замок: лимит двух расчётов считает и запуски из других программ (файлы замков)', () => {
+  const c = makeCabinet();
+  try {
+    for (const s of ['odin', 'dva', 'tri']) c.add(s, script(s), 'print(1)\n');
+    for (const s of ['odin', 'dva']) {
+      mkdirSync(join(c.root, 'output', s), { recursive: true });
+      writeFileSync(join(c.root, 'output', s, '.running'), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), timeoutMs: 60000, id: s }));
+    }
+    assert.throws(() => startRun(c.root, 'tri'), (e) => e.code === 'ELIMIT');
+    assert.equal(existsSync(join(c.root, 'output', 'tri', '.running')), false, 'замок отказанного запуска остался');
+  } finally {
+    c.done();
+  }
+});
+
+test('cancel: остановка запуска снимает замок и пишет неудачный last-run.json', async () => {
+  const c = makeCabinet();
+  try {
+    c.add('zavis', script('zavis'), 'import time\nprint("жду", flush=True)\ntime.sleep(60)\n');
+    const run = startRun(c.root, 'zavis');
+    for (let i = 0; i < 200 && !readFileSync(run.logPath, 'utf8').includes('жду'); i++) await sleep(50);
+    run.cancel();
+    const r = await run.done;
+    assert.equal(r.ok, false);
+    assert.match(readFileSync(run.logPath, 'utf8'), /прерван/);
+    assert.equal(existsSync(join(c.root, 'output', 'zavis', '.running')), false);
+    assert.equal(processStatus(c.root, 'zavis').lastRun.ok, false);
   } finally {
     c.done();
   }
