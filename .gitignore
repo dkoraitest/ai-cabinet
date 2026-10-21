@@ -3,6 +3,7 @@ node_modules/
 *.tmp
 input/*
 !input/.gitkeep
+!/input/case-azs/
 output/*
 !output/.gitkeep
 /me/
