@@ -9,7 +9,7 @@ import { basename, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { ensureParticipantFiles } from './init.mjs';
-import { SLUG_RE, hasProcess, listProcesses, processStatus, startRun } from './processes.mjs';
+import { SLUG_RE, hasProcess, isInside, listProcesses, processStatus, startRun } from './processes.mjs';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -133,7 +133,7 @@ async function serveFile(res, base, rel, { top = () => realpath(base), where = '
   }
   if (!info?.isFile()) return notFound(res, where);
   const [real, limit] = await Promise.all([realpath(file), top()]).catch(() => []);
-  if (!real || !real.startsWith(limit + sep)) return notFound(res, where);
+  if (!real || !isInside(real, limit)) return notFound(res, where);
   const body = await readFile(real);
   send(res, 200, TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', body, headers(file));
 }
@@ -204,7 +204,7 @@ const RUN_STATUS = {
   ECLAUDE: 400,
   EBADPROCESS: 400,
   ERUNNING: 409,
-  EBUSY: 409,
+  ELIMIT: 409,
 };
 
 // Запуск только кнопкой со страницы: заголовок X-Cabinet и тип JSON чужая форма или ссылка
@@ -232,7 +232,9 @@ export function createProcessApi(root, { python, timeoutMs } = {}) {
         startRun(root, slug, { python, timeoutMs });
       } catch (e) {
         const status = RUN_STATUS[e.code];
-        return sendJson(res, status ?? 500, { error: status ? e.message : `Не удалось начать расчёт (${e.code ?? e.message}).` });
+        // code (например ERUNNING или ELIMIT) нужен странице, чтобы различать ответы 409.
+        if (status) return sendJson(res, status, { error: e.message, code: e.code });
+        return sendJson(res, 500, { error: `Не удалось начать расчёт (${e.code ?? e.message}).` });
       }
       return sendJson(res, 202, { started: true });
     }

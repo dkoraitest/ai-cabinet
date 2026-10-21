@@ -172,6 +172,7 @@ test('POST api/run: повторный запуск, пока идёт перв�
   const second = await run('dolgiy');
   assert.equal(second.status, 409);
   assert.match(second.json.error, /уже идёт/);
+  assert.equal(second.json.code, 'ERUNNING');
   assert.equal((await get(`${T}/api/status/dolgiy`)).json.running, true);
   assert.equal((await get(`${T}/api/processes`)).json.find((p) => p.slug === 'dolgiy').running, true);
   const st = await waitIdle('dolgiy');
@@ -296,6 +297,7 @@ test('третий одновременный расчёт в кабинете �
       const third = await go('tri');
       assert.equal(third.status, 409);
       assert.match(third.json.error, /не больше 2/);
+      assert.equal(third.json.code, 'ELIMIT');
       for (const slug of ['odin', 'dva']) {
         for (let i = 0; i < 100; i++) {
           const st = await req('GET', `${T}/api/status/${slug}`);

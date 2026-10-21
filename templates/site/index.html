@@ -203,14 +203,18 @@
         if (r.status === 202) return poll(slug);
         return r.json().catch(function () { return {}; }).then(function (j) {
           messages[slug] = j.error || 'Не получилось запустить расчёт.';
-          // 409: этот процесс уже идёт (ждём его) или идут два других расчёта (кнопка снова доступна).
-          if (r.status === 409) {
+          // 409 ERUNNING: этот процесс уже идёт, ждём его; успел закончиться, показываем свежую карточку.
+          // 409 ELIMIT (идут два других расчёта) и прочие ошибки: текст остаётся, кнопка снова доступна.
+          if (r.status === 409 && j.code === 'ERUNNING') {
             return fetch('api/status/' + encodeURIComponent(slug), { cache: 'no-store' })
               .then(function (x) { return x.json(); })
               .then(function (s) {
-                setRunning(slug, Boolean(s.running));
-                draw();
-                if (s.running) poll(slug);
+                if (s.running) {
+                  draw();
+                  return poll(slug);
+                }
+                delete messages[slug];
+                return load();
               });
           }
           setRunning(slug, false);

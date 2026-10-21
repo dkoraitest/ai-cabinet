@@ -148,4 +148,6 @@ test('страница: маркер, заголовок, render.js по отн�
     assert.ok(html.includes(needle), needle);
   }
   assert.match(html, /last-run\.log/);
+  // 409: ERUNNING ждёт этот процесс или показывает свежую карточку, ELIMIT оставляет кнопку доступной.
+  assert.ok(html.includes("j.code === 'ERUNNING'"), 'страница различает коды 409');
 });
