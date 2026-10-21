@@ -126,10 +126,16 @@
   var list = [];
   var messages = {};
   var POLL_MS = 2000;
+  var REFRESH_MS = 10000;
+  var shown = '';
   var OFFLINE = 'Страница не отвечает. Скажите Claude «открой страницу».';
 
+  // Перерисовываем, только если что-то поменялось: иначе прокрутка таблиц сбрасывалась бы раз в 10 секунд.
   function draw() {
-    box.innerHTML = window.CabinetRender.renderPage(list, messages);
+    var html = window.CabinetRender.renderPage(list, messages);
+    if (html === shown) return;
+    shown = html;
+    box.innerHTML = html;
   }
 
   function find(slug) {
@@ -156,6 +162,7 @@
         });
       })
       .catch(function () {
+        shown = '';
         box.innerHTML = '<p class="empty">' + OFFLINE + '</p>';
       });
   }
@@ -234,6 +241,14 @@
   });
   // Вернулись на страницу (например, после запуска фразой в Claude): показываем свежие карточки.
   window.addEventListener('focus', load);
+  // Запуск фразой в Claude: пока страница на экране, список перечитывается раз в 10 секунд, и время на карточке
+  // обновляется без перезагрузки. Скрытая вкладка не опрашивает.
+  setInterval(function () {
+    if (document.visibilityState === 'visible') load();
+  }, REFRESH_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') load();
+  });
   load();
 })();
 </script>
