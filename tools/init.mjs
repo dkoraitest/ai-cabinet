@@ -9,6 +9,7 @@ export const MANIFEST = [
   { from: 'templates/about-me.md', to: 'me/about-me.md' },
   { from: 'templates/rules.md', to: 'me/rules.md' },
   { from: 'templates/site/index.html', to: 'site/index.html' },
+  { from: 'templates/site/render.js', to: 'site/render.js' },
 ];
 
 export function ensureParticipantFiles(root) {
