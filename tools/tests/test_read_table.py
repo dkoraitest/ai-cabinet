@@ -1,0 +1,227 @@
+"""Тесты tools/read_table.py: только стандартная библиотека и openpyxl.
+
+Запуск: python -m unittest discover -s tools/tests -p "test_*.py"
+Фикстуры создаются во временной папке с кириллицей и пробелом в имени.
+"""
+
+import csv
+import json
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+import openpyxl
+
+TOOLS = Path(__file__).resolve().parent.parent
+ROOT = TOOLS.parent
+SCRIPT = TOOLS / "read_table.py"
+CASE_DATA = ROOT / "input" / "case-azs" / "data"
+
+
+def run(*args):
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8", str(SCRIPT), *map(str, args)],
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return proc
+
+
+def run_json(*args):
+    proc = run(*args, "--json")
+    if proc.returncode != 0:
+        raise AssertionError(f"код {proc.returncode}: {proc.stdout}{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+class FixtureCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.dir = Path(cls._tmp.name) / "Папка Айгуль Н"
+        cls.dir.mkdir()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+
+class CsvTests(FixtureCase):
+    def test_cp1251_semicolon_with_title_row(self):
+        p = self.dir / "выгрузка 1с.csv"
+        text = (
+            "Отчёт по продажам за период 01.09.2026 - 07.09.2026\r\n"
+            "\r\n"
+            "Дата;АЗС;Товар;Литры\r\n"
+            "01.09.2026;АЗС-01;АИ-92;1 200,5\r\n"
+            "02.09.2026;АЗС-02;ДТ;800\r\n"
+        )
+        p.write_bytes(text.encode("cp1251"))
+        r = run_json(p)
+        self.assertEqual(r["type"], "csv")
+        self.assertEqual(r["encoding"], "cp1251")
+        self.assertEqual(r["delimiter"], ";")
+        self.assertEqual(r["columns"], ["Дата", "АЗС", "Товар", "Литры"])
+        self.assertEqual(r["header_row"], 3)
+        self.assertEqual(r["data_rows"], 2)
+        self.assertEqual(r["rows"][0], ["01.09.2026", "АЗС-01", "АИ-92", "1 200,5"])
+
+    def test_utf8_sig_comma(self):
+        p = self.dir / "данные юникод.csv"
+        p.write_bytes("﻿Код,Название,Сумма\n1,Мазут,10.5\n2,Бензин,20\n".encode("utf-8"))
+        r = run_json(p)
+        self.assertEqual(r["encoding"], "utf-8-sig")
+        self.assertEqual(r["delimiter"], ",")
+        self.assertEqual(r["columns"], ["Код", "Название", "Сумма"])
+        self.assertEqual(r["data_rows"], 2)
+
+    def test_plain_utf8_tab_and_rows_limit(self):
+        p = self.dir / "tabs.txt"
+        lines = ["a\tb\tc"] + [f"{i}\tx{i}\ty{i}" for i in range(30)]
+        p.write_text("\n".join(lines), encoding="utf-8")
+        r = run_json(p, "--rows", 3)
+        self.assertEqual(r["encoding"], "utf-8")
+        self.assertEqual(r["delimiter"], "\t")
+        self.assertEqual(len(r["rows"]), 3)
+        self.assertEqual(r["data_rows"], 30)
+
+    def test_100k_rows_streamed(self):
+        p = self.dir / "большой файл.csv"
+        with p.open("w", encoding="cp1251", newline="") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(["Дата", "АЗС", "Литры"])
+            for i in range(100_000):
+                w.writerow([f"{i % 28 + 1:02d}.09.2026", f"АЗС-{i % 12 + 1:02d}", i])
+        t = time.time()
+        r = run_json(p)
+        self.assertLess(time.time() - t, 20)
+        self.assertEqual(r["data_rows"], 100_000)
+        self.assertEqual(r["encoding"], "cp1251")
+
+    def test_human_output_in_russian(self):
+        p = self.dir / "человек.csv"
+        p.write_bytes("Код;Имя\n1;Ёлка\n".encode("cp1251"))
+        out = run(p)
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("cp1251", out.stdout)
+        self.assertIn("Разделитель", out.stdout)
+        self.assertIn("Строка шапки", out.stdout)
+
+
+class XlsxTests(FixtureCase):
+    def test_two_level_merged_header(self):
+        p = self.dir / "сводная шапка.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Свод"
+        ws["A1"] = "Сводка по сети за сентябрь"
+        ws["A2"] = "АЗС"
+        ws.merge_cells("A2:A3")
+        ws["B2"] = "Продажи"
+        ws.merge_cells("B2:C2")
+        ws["D2"] = "Остаток"
+        ws.merge_cells("D2:E2")
+        for col, v in zip("BCDE", ["Бензин", "Дизель", "Бензин", "Дизель"]):
+            ws[f"{col}3"] = v
+        ws.append(["АЗС-01", 10, 20, 30, 40])
+        ws.append(["АЗС-02", 11, 21, 31, 41])
+        wb.save(p)
+        r = run_json(p)
+        self.assertEqual(r["type"], "xlsx")
+        self.assertEqual(
+            r["columns"],
+            ["АЗС", "Продажи / Бензин", "Продажи / Дизель", "Остаток / Бензин", "Остаток / Дизель"],
+        )
+        self.assertEqual(r["header_row"], 2)
+        self.assertEqual(r["header_rows"], 2)
+        self.assertEqual(r["data_rows"], 2)
+        self.assertEqual(r["rows"][0], ["АЗС-01", "10", "20", "30", "40"])
+
+    def test_three_sheets(self):
+        p = self.dir / "три листа.xlsx"
+        wb = openpyxl.Workbook()
+        wb.active.title = "Астана"
+        wb.active.append(["Договор", "Сумма"])
+        for i in range(3):
+            wb.active.append([f"Д-{i}", i])
+        ws2 = wb.create_sheet("Караганда")
+        ws2.append(["Договор", "Сумма"])
+        for i in range(5):
+            ws2.append([f"К-{i}", i])
+        ws3 = wb.create_sheet("Справочник")
+        ws3.append(["Код", "Название"])
+        ws3.append([1, "Бензин"])
+        wb.save(p)
+        r = run_json(p)
+        self.assertEqual([s["name"] for s in r["sheets"]], ["Астана", "Караганда", "Справочник"])
+        self.assertEqual([s["rows"] for s in r["sheets"]], [4, 6, 2])
+        self.assertEqual(r["sheet"]["name"], "Астана")
+        r2 = run_json(p, "--sheet", 2)
+        self.assertEqual(r2["sheet"]["name"], "Караганда")
+        self.assertEqual(r2["data_rows"], 5)
+        r3 = run_json(p, "--sheet", "Справочник")
+        self.assertEqual(r3["columns"], ["Код", "Название"])
+        self.assertEqual(r3["rows"], [["1", "Бензин"]])
+
+    def test_unknown_sheet(self):
+        p = self.dir / "три листа.xlsx"
+        if not p.exists():
+            self.test_three_sheets()
+        out = run(p, "--sheet", "Нет такого")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("Астана", out.stderr)
+
+
+class ErrorTests(FixtureCase):
+    def test_missing_file(self):
+        out = run(self.dir / "нет.csv")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("не найден", out.stderr)
+
+    def test_old_xls(self):
+        p = self.dir / "старый.xls"
+        p.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 64)
+        out = run(p)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("сохраните как .xlsx", out.stderr)
+
+    def test_password_protected_xlsx(self):
+        p = self.dir / "закрыт.xlsx"
+        p.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 64)
+        out = run(p)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("пароль", out.stderr)
+
+    def test_unsupported_type(self):
+        p = self.dir / "doc.pdf"
+        p.write_bytes(b"%PDF-1.4")
+        out = run(p)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("не поддерживается", out.stderr)
+
+
+class CaseFilesSmoke(unittest.TestCase):
+    def test_every_packed_case_table_reads(self):
+        files = sorted(
+            f for f in (ROOT / "input" / "case-azs").rglob("*") if f.suffix.lower() in (".csv", ".xlsx")
+        )
+        self.assertGreater(len(files), 10, "кейс не упакован: запустите pack_case.sh")
+        for f in files:
+            with self.subTest(file=str(f.relative_to(ROOT))):
+                r = run_json(f)
+                self.assertTrue(r["columns"], "шапка не найдена")
+                self.assertGreater(r["data_rows"], 0)
+
+    def test_registry_all_sheets(self):
+        f = CASE_DATA / "reestr_dogovorov.xlsx"
+        r = run_json(f)
+        self.assertGreaterEqual(len(r["sheets"]), 3)
+        for i in range(1, len(r["sheets"]) + 1):
+            run_json(f, "--sheet", i)
+
+
+if __name__ == "__main__":
+    unittest.main()
