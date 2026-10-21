@@ -56,6 +56,7 @@ jobs:
           set -eu
           export HOME="$PROFILE_DIR"
           cd "$HOME/ai-cabinet"
+          python -m pip install --user openpyxl python-docx
           node tools/check.mjs --json > "$RUNNER_TEMP/check.json" || true
           cat "$RUNNER_TEMP/check.json"
           node -e "const r=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const f=r.filter(x=>x.status==='fail');if(f.length){console.error('FAIL:',JSON.stringify(f));process.exit(1)}" "$RUNNER_TEMP/check.json"
@@ -117,6 +118,8 @@ jobs:
           $env:USERPROFILE = $env:PROFILE_DIR
           $env:HOME = $env:PROFILE_DIR
           Set-Location -LiteralPath "$env:PROFILE_DIR\ai-cabinet"
+          python -m pip install --user openpyxl python-docx
+          if ($LASTEXITCODE -ne 0) { throw "pip install failed ($LASTEXITCODE)" }
           $json = (node tools/check.mjs --json | Out-String)
           Write-Host $json
           $bad = @(($json | ConvertFrom-Json) | Where-Object { $_.status -eq 'fail' })
@@ -170,6 +173,7 @@ jobs:
           export USERPROFILE="$PROFILE_DIR"
           export LC_ALL=C.UTF-8
           cd "$HOME/ai-cabinet"
+          python -m pip install --user openpyxl python-docx
           node tools/check.mjs --json > "$RUNNER_TEMP/check.json" || true
           cat "$RUNNER_TEMP/check.json"
           node -e "const r=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const f=r.filter(x=>x.status==='fail');if(f.length){console.error('FAIL:',JSON.stringify(f));process.exit(1)}" "$(cygpath -w "$RUNNER_TEMP/check.json")"
@@ -211,6 +215,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Анонимный clone, check --net, update
         shell: powershell
         run: |
@@ -219,6 +226,8 @@ jobs:
           git clone https://github.com/dkoraitest/ai-cabinet $dest
           if ($LASTEXITCODE -ne 0) { throw "anonymous clone failed ($LASTEXITCODE)" }
           Set-Location -LiteralPath $dest
+          python -m pip install --user openpyxl python-docx
+          if ($LASTEXITCODE -ne 0) { throw "pip install failed ($LASTEXITCODE)" }
           $json = (node tools/check.mjs --net --json | Out-String)
           Write-Host $json
           $bad = @(($json | ConvertFrom-Json) | Where-Object { $_.status -eq 'fail' })
