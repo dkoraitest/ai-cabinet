@@ -79,10 +79,10 @@ test('нет имени клиента (по хешам)', () => {
   assert.deepEqual(bad, []);
 });
 
-test('тексты участника без длинных тире и python3', (t) => {
+test('тексты участника без тире (U+2012-U+2015) и python3', (t) => {
   const mine = files.filter(PARTICIPANT);
   if (mine.length === 0) return t.skip('нет файлов участника');
-  const bad = mine.filter((f) => /[—–]|python3/.test(read(f)));
+  const bad = mine.filter((f) => /[\u2012-\u2015]|python3/.test(read(f)));
   assert.deepEqual(bad, []);
 });
 
@@ -110,6 +110,8 @@ test('settings: sonnet, без обхода, PYTHONUTF8, input защищён, �
   assert.equal(s.permissions.disableBypassPermissionsMode, 'disable');
   assert.equal(s.env.PYTHONUTF8, '1');
   assert.ok(s.permissions.deny.includes('Edit(./input/**)'));
+  // Инструменты курса запускаются без вопроса, поэтому править их Claude не может.
+  assert.ok(s.permissions.deny.includes('Edit(./tools/**)'), 'нужен запрет Edit(./tools/**)');
   // «Запомни» пишется только в мои правила: автопамять проекта не читается и не пишется.
   assert.equal(s.autoMemoryEnabled, false, 'нужен "autoMemoryEnabled": false');
 });
