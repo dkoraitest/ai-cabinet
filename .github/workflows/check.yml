@@ -65,17 +65,21 @@ jobs:
           pid=$!
           url=""
           for i in $(seq 1 20); do
-            url=$(grep -Eo 'http://localhost:[0-9]+/[0-9a-f]{32}/' "$RUNNER_TEMP/serve.log" | head -n 1 || true)
+            url=$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/[0-9a-f]{32}/' "$RUNNER_TEMP/serve.log" | head -n 1 || true)
             if [ -n "$url" ]; then break; fi
             sleep 1
           done
           if [ -z "$url" ]; then cat "$RUNNER_TEMP/serve.log"; kill "$pid" || true; exit 1; fi
-          port=$(echo "$url" | sed -E 's#http://localhost:([0-9]+)/.*#\1#')
+          port=$(echo "$url" | sed -E 's#http://127\.0\.0\.1:([0-9]+)/.*#\1#')
           code=$(curl -sS -o "$RUNNER_TEMP/page.html" -w '%{http_code}' "$url")
           code_root=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/")
+          # localhost may resolve to ::1 first: the page holds the same port there too.
+          code_lh=$(curl -sS -o /dev/null -w '%{http_code}' "$(echo "$url" | sed 's#127\.0\.0\.1#localhost#')")
           kill "$pid" || true
+          grep -q 'localhost' "$RUNNER_TEMP/serve.log" && { cat "$RUNNER_TEMP/serve.log"; exit 1; }
           test "$code" = 200
           test "$code_root" = 403
+          test "$code_lh" = 200
           grep -q 'data-cabinet=.ok.' "$RUNNER_TEMP/page.html"
           out=$(node tools/update.mjs)
           echo "$out"
@@ -96,7 +100,7 @@ jobs:
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           url=""
           for i in $(seq 1 20); do
-            url=$(grep -Eo 'http://localhost:[0-9]+/[0-9a-f]{32}/' "$RUNNER_TEMP/serve-demo.log" | head -n 1 || true)
+            url=$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/[0-9a-f]{32}/' "$RUNNER_TEMP/serve-demo.log" | head -n 1 || true)
             if [ -n "$url" ]; then break; fi
             sleep 1
           done
@@ -177,7 +181,7 @@ jobs:
               if (Test-Path $log) {
                 $txt = [string](Get-Content -Encoding UTF8 -Raw $log)
                 if ($txt) {
-                  $m = [regex]::Match($txt, 'http://localhost:\d+/[0-9a-f]{32}/')
+                  $m = [regex]::Match($txt, 'http://127\.0\.0\.1:\d+/[0-9a-f]{32}/')
                   if ($m.Success) { $url = $m.Value; break }
                 }
               }
@@ -192,6 +196,9 @@ jobs:
             try { $r2 = Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 5; $code = [int]$r2.StatusCode }
             catch { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } }
             if ($code -ne 403) { throw "root without token returned $code, expected 403" }
+            # localhost may resolve to ::1 first: the page holds the same port there too.
+            $lh = Invoke-WebRequest $url.Replace('127.0.0.1', 'localhost') -UseBasicParsing -TimeoutSec 5
+            if ($lh.StatusCode -ne 200) { throw "localhost address returned $($lh.StatusCode), expected 200" }
             Write-Host 'page opens'
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
@@ -220,7 +227,7 @@ jobs:
               if (Test-Path $log) {
                 $txt = [string](Get-Content -Encoding UTF8 -Raw $log)
                 if ($txt) {
-                  $m = [regex]::Match($txt, 'http://localhost:\d+/[0-9a-f]{32}/')
+                  $m = [regex]::Match($txt, 'http://127\.0\.0\.1:\d+/[0-9a-f]{32}/')
                   if ($m.Success) { $url = $m.Value; break }
                 }
               }
