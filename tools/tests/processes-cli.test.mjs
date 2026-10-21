@@ -92,7 +92,8 @@ function cliAsync(args) {
   let out = '';
   child.stdout.on('data', (d) => (out += d));
   child.stderr.on('data', (d) => (out += d));
-  const done = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal, out })));
+  // close, а не exit: к close весь вывод уже прочитан.
+  const done = new Promise((r) => child.on('close', (code, signal) => r({ code, signal, out })));
   return { child, done };
 }
 
@@ -100,10 +101,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lockOf = (slug) => join(cab, 'output', slug, '.running');
 const lastRunOf = (slug) => join(cab, 'output', slug, 'last-run.json');
 
+// check может бросить (файла ещё нет, файл пишется и пока пуст): это значит «ещё нет».
 async function waitFor(check, what, ms = 20000) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
-    if (check()) return;
+    try {
+      const v = check();
+      if (v) return v;
+    } catch {
+      // ещё нет
+    }
     await sleep(20);
   }
   throw new Error(`не дождались: ${what}`);
@@ -261,8 +268,8 @@ test('list: без процессов → подсказка «добавь пр
 test('CLI и кнопка не запускают один процесс одновременно: запуск фразой виден странице, кнопка получает 409', async () => {
   await withServer(async (api) => {
     const phrase = cliAsync(['run', 'dolgiy']);
-    await waitFor(() => existsSync(lockOf('dolgiy')), 'замок от CLI');
-    const lock = JSON.parse(readFileSync(lockOf('dolgiy'), 'utf8'));
+    // Замок создаётся пустым и дописывается: разбираем его, пока не прочитается целиком.
+    const lock = await waitFor(() => JSON.parse(readFileSync(lockOf('dolgiy'), 'utf8')), 'замок от CLI');
     assert.equal(lock.pid, phrase.child.pid);
     assert.ok(!Number.isNaN(Date.parse(lock.startedAt)));
     const button = await api.run('dolgiy');
