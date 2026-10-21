@@ -3,10 +3,230 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Кабинет работает</title>
+<meta name="referrer" content="no-referrer">
+<title>Мой кабинет</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --text: #1c2333;
+    --muted: #5a6478;
+    --line: #dce1e8;
+    --accent: #1d5fbf;
+    --accent-dark: #164a96;
+    --red: #b42318;
+    --red-bg: #fdeceb;
+    --yellow: #8a5300;
+    --yellow-bg: #fff3d4;
+    --green: #237a3b;
+    --green-bg: #f2faf4;
+    --grey: #4f5662;
+    --grey-bg: #eceef1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  }
+  main { max-width: 1240px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 32px; line-height: 1.2; margin: 0 0 20px; }
+  .empty, .loading {
+    background: var(--card);
+    border: 1px dashed var(--line);
+    border-radius: 12px;
+    padding: 28px 24px;
+    font-size: 20px;
+    margin: 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px 24px 24px;
+    margin-bottom: 24px;
+    box-shadow: 0 1px 3px rgba(28, 35, 51, 0.06);
+  }
+  .card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; }
+  .card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+  .card h2 { font-size: 24px; line-height: 1.25; margin: 0; overflow-wrap: anywhere; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 14px;
+    border-radius: 999px;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .badge::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+  .badge-red { color: var(--red); background: var(--red-bg); }
+  .badge-yellow { color: var(--yellow); background: var(--yellow-bg); }
+  .badge-green { color: var(--green); background: var(--green-bg); }
+  .updated { color: var(--muted); font-size: 16px; margin: 6px 0 12px; }
+  .summary { font-size: 20px; margin: 0 0 16px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 16px; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  th { background: #f0f2f6; font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mark { font-weight: 600; white-space: nowrap; }
+  tr.row-red td { background: var(--red-bg); }
+  tr.row-yellow td { background: var(--yellow-bg); }
+  tr.row-green td { background: var(--green-bg); }
+  tr.row-grey td { background: var(--grey-bg); }
+  tr.row-red td.mark { color: var(--red); }
+  tr.row-yellow td.mark { color: var(--yellow); }
+  tr.row-green td.mark { color: var(--green); }
+  tr.row-grey td.mark, tr.row-info td.mark { color: var(--grey); }
+  .files { margin: 16px 0 0; }
+  .files a { color: var(--accent); }
+  .actions { display: flex; align-items: center; }
+  .actions p { margin: 0; }
+  button.run {
+    font: inherit;
+    font-weight: 600;
+    min-height: 48px;
+    padding: 10px 28px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  button.run:hover:not(:disabled) { background: var(--accent-dark); }
+  button.run:disabled { background: #9aa4b4; cursor: default; }
+  .hint { color: var(--muted); }
+  .error, .run-error { color: var(--red); overflow-wrap: anywhere; }
+  .error { margin: 12px 0 0; }
+  .run-error { margin: 12px 0 0; font-weight: 600; }
+  @media (max-width: 600px) {
+    body { font-size: 17px; }
+    h1 { font-size: 26px; }
+    .card { padding: 16px; }
+    .card h2 { font-size: 21px; }
+    .summary { font-size: 18px; }
+    table { font-size: 15px; }
+    .actions, button.run { width: 100%; }
+  }
+</style>
 </head>
 <body data-cabinet="ok">
-<h1>Кабинет работает</h1>
-<p>Эту страницу вы будете менять вместе с Claude.</p>
+<main>
+  <h1>Мой кабинет</h1>
+  <div id="processes" aria-live="polite"><p class="loading">Загружаю процессы…</p></div>
+</main>
+<script src="render.js"></script>
+<script>
+(function () {
+  'use strict';
+  var box = document.getElementById('processes');
+  var list = [];
+  var messages = {};
+  var POLL_MS = 2000;
+  var OFFLINE = 'Страница не отвечает. Скажите Claude «открой страницу».';
+
+  function draw() {
+    box.innerHTML = window.CabinetRender.renderPage(list, messages);
+  }
+
+  function find(slug) {
+    for (var i = 0; i < list.length; i++) if (list[i].slug === slug) return list[i];
+    return null;
+  }
+
+  function setRunning(slug, running) {
+    var p = find(slug);
+    if (p) p.running = running;
+  }
+
+  function load() {
+    return fetch('api/processes', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
+      .then(function (data) {
+        list = data;
+        draw();
+        list.forEach(function (p) {
+          if (p.running) poll(p.slug);
+        });
+      })
+      .catch(function () {
+        box.innerHTML = '<p class="empty">' + OFFLINE + '</p>';
+      });
+  }
+
+  var polling = {};
+
+  // Раз в 2 секунды спрашиваем, идёт ли расчёт; по окончании перерисовываем карточки.
+  function poll(slug) {
+    if (polling[slug]) return;
+    polling[slug] = true;
+    setTimeout(function () {
+      fetch('api/status/' + encodeURIComponent(slug), { cache: 'no-store' })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (s) {
+          polling[slug] = false;
+          if (s.running) return poll(slug);
+          if (s.lastRun && !s.lastRun.ok) {
+            messages[slug] = 'Расчёт не удался. Подробности в output/' + slug + '/last-run.log';
+          } else {
+            delete messages[slug];
+          }
+          return load();
+        })
+        .catch(function () {
+          polling[slug] = false;
+          messages[slug] = OFFLINE;
+          setRunning(slug, false);
+          draw();
+        });
+    }, POLL_MS);
+  }
+
+  function run(slug) {
+    delete messages[slug];
+    setRunning(slug, true);
+    draw();
+    fetch('api/run/' + encodeURIComponent(slug), {
+      method: 'POST',
+      headers: { 'X-Cabinet': '1', 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+      .then(function (r) {
+        if (r.status === 202) return poll(slug);
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (r.status === 409) {
+            messages[slug] = 'Процесс уже идёт. Дождитесь, пока обновится время на карточке.';
+            draw();
+            return poll(slug);
+          }
+          messages[slug] = j.error || 'Не получилось запустить расчёт.';
+          setRunning(slug, false);
+          draw();
+        });
+      })
+      .catch(function () {
+        messages[slug] = OFFLINE;
+        setRunning(slug, false);
+        draw();
+      });
+  }
+
+  box.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-run]');
+    if (b && !b.disabled) run(b.getAttribute('data-run'));
+  });
+  // Вернулись на страницу (например, после запуска фразой в Claude): показываем свежие карточки.
+  window.addEventListener('focus', load);
+  load();
+})();
+</script>
 </body>
 </html>

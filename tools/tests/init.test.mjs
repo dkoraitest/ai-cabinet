@@ -25,7 +25,7 @@ test('init: создаёт отсутствующие, не трогает су�
     writeFileSync(join(dir, 'me', 'rules.md'), 'мои правила участника');
 
     const created = ensureParticipantFiles(dir);
-    assert.deepEqual(created.sort(), ['me/about-me.md', 'site/index.html']);
+    assert.deepEqual(created.sort(), ['me/about-me.md', 'site/index.html', 'site/render.js']);
     assert.equal(readFileSync(join(dir, 'me', 'rules.md'), 'utf8'), 'мои правила участника');
     for (const { from, to } of MANIFEST.filter((m) => m.to !== 'me/rules.md')) {
       assert.equal(readFileSync(join(dir, to), 'utf8'), readFileSync(join(dir, from), 'utf8'), to);
@@ -44,6 +44,7 @@ test('init: MANIFEST берёт шаблоны из templates и кладёт в
     { from: 'templates/about-me.md', to: 'me/about-me.md' },
     { from: 'templates/rules.md', to: 'me/rules.md' },
     { from: 'templates/site/index.html', to: 'site/index.html' },
+    { from: 'templates/site/render.js', to: 'site/render.js' },
   ]);
   for (const { from } of MANIFEST) assert.ok(existsSync(join(ROOT, from)), from);
 });

@@ -226,9 +226,12 @@ test('output: ссылка из output/<slug>/ наружу не отдаётс�
   assert.ok(!r.body.includes('секретные'));
 });
 
-test('страница кабинета отдаётся под токеном только на чтение', async () => {
+test('страница кабинета отдаётся под токеном вместе с render.js, только на чтение', async () => {
   const page = await get(`${T}/`);
   assert.equal(page.status, 200);
   assert.match(page.body, /data-cabinet="ok"/);
+  const js = await get(`${T}/render.js`);
+  assert.equal(js.status, 200);
+  assert.match(js.headers['content-type'], /^text\/javascript/);
   assert.equal((await request('POST', `${T}/`, RUN_HEADERS, '{}')).status, 405);
 });
