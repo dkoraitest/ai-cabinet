@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { spawn } from 'node:child_process';
-import { extname, resolve, sep } from 'node:path';
+import { basename, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { ensureParticipantFiles } from './init.mjs';
@@ -120,8 +120,9 @@ function sameToken(a, b) {
   return timingSafeEqual(x, y);
 }
 
-// Файл из папки base. Путь не выходит за base, а настоящий путь (после ссылок) не выходит за boundary.
-async function serveFile(res, base, rel, { boundary = base, where = 'site' } = {}) {
+// Файл из папки base. Путь не выходит за base, а настоящий путь (после ссылок) не выходит за папку,
+// которую возвращает top() (по умолчанию настоящий путь base).
+async function serveFile(res, base, rel, { top = () => realpath(base), where = 'site', headers = () => ({}) } = {}) {
   if (rel.includes('\0')) return notFound(res, where);
   let file = resolve(base, '.' + rel);
   if (file !== base && !file.startsWith(base + sep)) return notFound(res, where);
@@ -131,17 +132,25 @@ async function serveFile(res, base, rel, { boundary = base, where = 'site' } = {
     info = await stat(file).catch(() => null);
   }
   if (!info?.isFile()) return notFound(res, where);
-  const [real, top] = await Promise.all([realpath(file), realpath(boundary)]).catch(() => []);
-  if (!real || !real.startsWith(top + sep)) return notFound(res, where);
+  const [real, limit] = await Promise.all([realpath(file), top()]).catch(() => []);
+  if (!real || !real.startsWith(limit + sep)) return notFound(res, where);
   const body = await readFile(real);
-  send(res, 200, TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', body);
+  send(res, 200, TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', body, headers(file));
 }
+
+// Файлы результатов только скачиваются и не исполняются на странице: HTML или SVG из output
+// не получит доступ к адресу с токеном.
+const downloadHeaders = (file) => ({
+  'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(basename(file)).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`,
+  'Content-Security-Policy': 'sandbox',
+});
 
 // Страница отдаётся только под /<token>/. Остальные пути: 403.
 // Необязательный api(req, res, sub) вызывается для /<token>/api/<sub>; вернёт true или промис
 // с true, если ответ отправлен.
-// Необязательный output { dir, allow(slug) }: /<token>/output/<slug>/<файл> отдаётся из dir/<slug>
-// только для чтения и только для slug, где allow(slug) истинно.
+// Необязательный output { root, allow(slug) }: /<token>/output/<slug>/<файл> отдаётся из <root>/output/<slug>
+// только для чтения, на скачивание и только для slug, где allow(slug) истинно. Граница считается от настоящего
+// пути кабинета: папка output, ведущая в другое место, не отдаётся.
 export function createSiteServer(rootDir, { token, api, output } = {}) {
   if (typeof token !== 'string' || token.length < 8) {
     throw new Error('Для страницы нужен токен (личная часть адреса).');
@@ -172,8 +181,12 @@ export function createSiteServer(rootDir, { token, api, output } = {}) {
       if (output && rel.startsWith('/output/')) {
         const [slug, ...rest] = rel.slice('/output/'.length).split('/');
         if (!SLUG_RE.test(slug) || !output.allow(slug)) return notFound(res, 'output');
-        const dir = resolve(output.dir);
-        return await serveFile(res, resolve(dir, slug), '/' + rest.join('/'), { boundary: dir, where: 'output' });
+        const cabinet = resolve(output.root);
+        return await serveFile(res, resolve(cabinet, 'output', slug), '/' + rest.join('/'), {
+          top: async () => join(await realpath(cabinet), 'output'),
+          where: 'output',
+          headers: downloadHeaders,
+        });
       }
       return await serveFile(res, root, rel);
     } catch {
@@ -183,7 +196,16 @@ export function createSiteServer(rootDir, { token, api, output } = {}) {
 }
 
 // Ошибки запуска (processes.mjs) в ответы страницы.
-const RUN_STATUS = { EBADSLUG: 404, ENOPROCESS: 404, ENORUN: 404, EOUTSIDE: 403, ECLAUDE: 400, EBADPROCESS: 400, ERUNNING: 409 };
+const RUN_STATUS = {
+  EBADSLUG: 404,
+  ENOPROCESS: 404,
+  ENORUN: 404,
+  EOUTSIDE: 403,
+  ECLAUDE: 400,
+  EBADPROCESS: 400,
+  ERUNNING: 409,
+  EBUSY: 409,
+};
 
 // Запуск только кнопкой со страницы: заголовок X-Cabinet и тип JSON чужая форма или ссылка
 // без разрешения браузера не пришлёт.
@@ -234,7 +256,7 @@ export function createCabinetServer(cabinetRoot, { token, python, timeoutMs } = 
   return createSiteServer(resolve(root, 'site'), {
     token,
     api: createProcessApi(root, { python, timeoutMs }),
-    output: { dir: resolve(root, 'output'), allow: (slug) => hasProcess(root, slug) },
+    output: { root, allow: (slug) => hasProcess(root, slug) },
   });
 }
 
@@ -268,9 +290,11 @@ export async function listenFirstFree(
 }
 
 function openBrowser(url) {
+  // cmd.exe по полному пути: файл cmd.exe в папке кабинета не должен запуститься вместо системного.
+  const comspec = process.env.ComSpec || join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
   const [cmd, args] =
     process.platform === 'win32'
-      ? ['cmd', ['/c', 'start', '""', url]]
+      ? [comspec, ['/c', 'start', '""', url]]
       : process.platform === 'darwin'
         ? ['open', [url]]
         : ['xdg-open', [url]];
@@ -302,6 +326,8 @@ export function describeListenError(err, port) {
 }
 
 async function main() {
+  // Windows (cmd.exe и поиск программ в Node) не ищет программы в текущей папке, то есть в кабинете.
+  process.env.NoDefaultCurrentDirectoryInExePath = '1';
   const args = process.argv.slice(2);
   const open = args.includes('--open');
   const pi = args.indexOf('--port');

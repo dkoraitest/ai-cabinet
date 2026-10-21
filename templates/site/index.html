@@ -202,12 +202,17 @@
       .then(function (r) {
         if (r.status === 202) return poll(slug);
         return r.json().catch(function () { return {}; }).then(function (j) {
-          if (r.status === 409) {
-            messages[slug] = 'Процесс уже идёт. Дождитесь, пока обновится время на карточке.';
-            draw();
-            return poll(slug);
-          }
           messages[slug] = j.error || 'Не получилось запустить расчёт.';
+          // 409: этот процесс уже идёт (ждём его) или идут два других расчёта (кнопка снова доступна).
+          if (r.status === 409) {
+            return fetch('api/status/' + encodeURIComponent(slug), { cache: 'no-store' })
+              .then(function (x) { return x.json(); })
+              .then(function (s) {
+                setRunning(slug, Boolean(s.running));
+                draw();
+                if (s.running) poll(slug);
+              });
+          }
           setRunning(slug, false);
           draw();
         });

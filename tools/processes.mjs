@@ -1,13 +1,32 @@
 // Процессы участника: папки processes/<slug>/ с process.json и, для kind "script", run.py. Без зависимостей.
 // Результат процесса лежит в output/<slug>/result.json, страница «Мой кабинет» рисует его карточкой.
 // Запуск: только processes/<slug>/run.py этого кабинета, из корня кабинета, без аргументов,
-// по одному запуску на процесс, не дольше timeoutMs; вывод в output/<slug>/last-run.log.
+// своим Python (абсолютный путь вне кабинета), по одному запуску на процесс и не больше двух на кабинет,
+// не дольше timeoutMs, журнал output/<slug>/last-run.log не больше 20 МБ.
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  truncateSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 export const SLUG_RE = /^[a-z0-9-]{1,40}$/;
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+export const MAX_CONCURRENT = 2;
+export const LOG_LIMIT_BYTES = 20 * 1024 * 1024;
+const KILL_GRACE_MS = 5000;
+const LOG_CHECK_MS = 200;
+const SYSTEM_ROOT = process.env.SystemRoot || 'C:\\Windows';
+const TASKKILL = join(SYSTEM_ROOT, 'System32', 'taskkill.exe');
 
 const KINDS = ['script', 'claude'];
 const STATUSES = ['green', 'yellow', 'red'];
@@ -18,6 +37,8 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
 const active = new Set();
 const lastRuns = new Map();
 const keyOf = (root, slug) => `${resolve(root)}\0${slug}`;
+const runningIn = (root) => [...active].filter((k) => k.startsWith(`${resolve(root)}\0`)).length;
+const inside = (path, dir) => path.startsWith(dir + sep);
 
 function processError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -182,7 +203,8 @@ export function processStatus(root, slug) {
 }
 
 // Проверки до запуска. Ошибки с кодом: страница превращает его в ответ (404, 400, 403, 409).
-function checkRunnable(root, slug) {
+// Возвращает настоящий путь run.py: запускается именно он, подменить файл после проверки нельзя.
+function checkRunnable(root, slug, maxConcurrent) {
   if (typeof slug !== 'string' || !SLUG_RE.test(slug)) throw processError('EBADSLUG', 'Такого процесса нет.');
   const info = readProcessInfo(root, slug);
   if (info.missing) throw processError('ENOPROCESS', `Такого процесса нет: ${slug}.`);
@@ -193,36 +215,80 @@ function checkRunnable(root, slug) {
   if (active.has(keyOf(root, slug))) {
     throw processError('ERUNNING', 'Этот процесс уже идёт. Дождитесь, пока обновится время на карточке.');
   }
-  // run.py должен по-настоящему лежать внутри processes/: ссылка наружу не запускается.
+  if (runningIn(root) >= maxConcurrent) {
+    throw processError(
+      'EBUSY',
+      `Одновременно можно запускать не больше ${maxConcurrent} расчётов. Дождитесь, пока один закончится, и запустите снова.`,
+    );
+  }
+  // run.py должен по-настоящему лежать в папке processes этого кабинета: ссылка наружу не запускается,
+  // и сама папка processes, ведущая в другое место, тоже. Граница считается от настоящего пути кабинета.
   let base, file;
   try {
-    base = realpathSync(join(root, 'processes'));
+    base = join(realpathSync(root), 'processes');
     file = realpathSync(join(root, 'processes', slug, 'run.py'));
   } catch {
     throw processError('ENORUN', `Нет файла processes/${slug}/run.py.`);
   }
-  if (!file.startsWith(base + sep)) {
+  if (!inside(file, base)) {
     throw processError('EOUTSIDE', `Файл processes/${slug}/run.py ведёт за пределы папки processes, такой процесс не запускается.`);
   }
   if (!isFile(file)) throw processError('ENORUN', `Нет файла processes/${slug}/run.py.`);
+  return file;
+}
+
+// Python ищется из папки вне кабинета: Windows ищет программу сначала в текущей папке, и python.exe
+// или python.bat, подложенные в кабинет, нашлись бы раньше настоящего.
+const outsideCwd = () => (process.platform === 'win32' ? SYSTEM_ROOT : dirname(process.execPath));
+
+function isOutsideCabinet(exe, root) {
+  if (typeof exe !== 'string' || !exe || !isAbsolute(exe)) return false;
+  let real = exe;
+  try {
+    real = realpathSync(exe);
+  } catch {
+    // Псевдоним программы (Microsoft Store) может не раскрываться: проверяем путь как есть.
+  }
+  let top = resolve(root);
+  try {
+    top = realpathSync(root);
+  } catch {
+    // кабинета нет: сравниваем с путём как есть
+  }
+  return ![exe, real].some((p) => p === top || inside(p, top) || inside(p, resolve(root)));
+}
+
+// Абсолютный путь к Python: тот же выбор, что в проверке сетапа (python или py -3 на Windows, python3 или python
+// на остальных), затем sys.executable. Путь внутри кабинета не принимается. null: подходящего Python нет.
+export async function resolvePython(root) {
+  const { defaultExec, detectPython } = await import('./check.mjs');
+  const cwd = outsideCwd();
+  const exec = (cmd, args, o = {}) => defaultExec(cmd, args, { ...o, cwd });
+  const py = await detectPython(exec, process.platform);
+  if (!py) return null;
+  const r = await exec(py.cmd, [...py.pre, '-c', 'import sys;print(sys.executable)'], { timeout: 15000 });
+  const exe = r.code === 0 ? r.stdout.trim().split(/\r?\n/).pop().trim() : '';
+  return isOutsideCabinet(exe, root) ? exe : null;
 }
 
 let foundPython = null;
 
-// Python ищется так же, как в проверке сетапа: python или py -3 на Windows, python3 или python на остальных.
-async function findPython() {
-  if (foundPython) return foundPython;
-  const { defaultExec, detectPython } = await import('./check.mjs');
-  const py = await detectPython(defaultExec, process.platform);
-  if (py) foundPython = { cmd: py.cmd, pre: py.pre };
-  return foundPython;
+async function findPython(root) {
+  if (foundPython && isOutsideCabinet(foundPython, root)) return foundPython;
+  const exe = await resolvePython(root);
+  if (exe) foundPython = exe;
+  return exe;
 }
 
-// На Windows дерево процессов останавливает taskkill, на остальных системах вся группа процессов.
+// На Windows дерево процессов останавливает taskkill (полный путь: не из папки кабинета), на остальных
+// системах вся группа процессов. Не вышло: останавливаем хотя бы сам процесс.
 function killTree(child) {
   if (process.platform === 'win32') {
-    const k = spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' });
+    const k = spawn(TASKKILL, ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' });
     k.on('error', () => child.kill());
+    k.on('exit', (code) => {
+      if (code !== 0) child.kill();
+    });
     return;
   }
   try {
@@ -242,21 +308,53 @@ function writeLine(fd, text) {
   }
 }
 
-function spawnRun(root, slug, py, fd, timeoutMs) {
+function spawnRun(root, exe, runFile, fd, logPath, opts) {
+  const { timeoutMs, logLimitBytes, killGraceMs, stopTree } = opts;
   return new Promise((done) => {
     let settled = false;
-    let timedOut = false;
+    let stopped = null;
     let timer = null;
+    let grace = null;
+    let watch = null;
+    let child = null;
     const finish = (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (timedOut) writeLine(fd, `Расчёт остановлен: он шёл дольше ${humanTime(timeoutMs)}.`);
-      done({ code, timedOut });
+      clearTimeout(grace);
+      clearInterval(watch);
+      if (stopped === 'timeout') writeLine(fd, `Расчёт остановлен: он шёл дольше ${humanTime(timeoutMs)}.`);
+      if (stopped === 'log') {
+        try {
+          truncateSync(logPath, logLimitBytes);
+        } catch {
+          // не обрезался: строка всё равно допишется в конец
+        }
+        writeLine(fd, `Процесс остановлен: слишком большой журнал (больше ${Math.round(logLimitBytes / 1048576)} МБ).`);
+      }
+      done({ code, stopped });
     };
-    let child;
+    // Остановка: всё дерево процессов; не закончился за killGraceMs, значит добиваем сам процесс
+    // и считаем запуск неудачным, чтобы процесс не остался «идёт» навсегда.
+    const stop = (reason) => {
+      if (stopped || settled) return;
+      stopped = reason;
+      try {
+        stopTree(child);
+      } catch {
+        // ниже добьём через паузу
+      }
+      grace = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // процесса уже нет
+        }
+        finish(null);
+      }, killGraceMs);
+    };
     try {
-      child = spawn(py.cmd, [...py.pre, join('processes', slug, 'run.py')], {
+      child = spawn(exe, [runFile], {
         cwd: root,
         shell: false,
         windowsHide: true,
@@ -268,39 +366,57 @@ function spawnRun(root, slug, py, fd, timeoutMs) {
       writeLine(fd, `Не удалось запустить Python (${e.code ?? e.message}).`);
       return finish(null);
     }
-    timer = setTimeout(() => {
-      timedOut = true;
-      killTree(child);
-    }, timeoutMs);
     child.on('error', (e) => {
-      writeLine(fd, `Не удалось запустить Python «${py.cmd}» (${e.code ?? e.message}).`);
+      writeLine(fd, `Не удалось запустить Python «${exe}» (${e.code ?? e.message}).`);
       finish(null);
     });
     child.on('exit', (code) => finish(code));
+    timer = setTimeout(() => stop('timeout'), timeoutMs);
+    watch = setInterval(() => {
+      try {
+        if (fstatSync(fd).size > logLimitBytes) stop('log');
+      } catch {
+        // размер не прочитался: проверим в следующий раз
+      }
+    }, LOG_CHECK_MS);
   });
 }
 
 // Синхронно проверяет и занимает процесс, затем запускает run.py. Бросает ошибку с кодом, если запускать нельзя.
 // done никогда не отклоняется: { ok, code, durationMs, logPath }.
-export function startRun(root, slug, { python, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+// python: абсолютный путь к интерпретатору (по умолчанию ищется сам); killTree подменяется только в тестах.
+export function startRun(
+  root,
+  slug,
+  {
+    python,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    logLimitBytes = LOG_LIMIT_BYTES,
+    killGraceMs = KILL_GRACE_MS,
+    maxConcurrent = MAX_CONCURRENT,
+    killTree: stopTree = killTree,
+  } = {},
+) {
   root = resolve(root);
-  checkRunnable(root, slug);
+  const runFile = checkRunnable(root, slug, maxConcurrent);
   const outDir = join(root, 'output', slug);
   mkdirSync(outDir, { recursive: true });
   const logPath = join(outDir, 'last-run.log');
-  const fd = openSync(logPath, 'w');
+  // Дописывание в конец: и Python, и строки этого модуля попадают после уже записанного.
+  writeFileSync(logPath, '');
+  const fd = openSync(logPath, 'a');
   const key = keyOf(root, slug);
   active.add(key);
   const started = Date.now();
   const done = (async () => {
     let code = null;
-    let timedOut = false;
+    let stopped = null;
     try {
-      const py = python ?? (await findPython());
-      if (!py) {
+      const exe = python ?? (await findPython(root));
+      if (!exe) {
         writeLine(fd, 'Python не найден. Скажите Claude «проверь сетап».');
       } else {
-        ({ code, timedOut } = await spawnRun(root, slug, py, fd, timeoutMs));
+        ({ code, stopped } = await spawnRun(root, exe, runFile, fd, logPath, { timeoutMs, logLimitBytes, killGraceMs, stopTree }));
       }
     } catch (e) {
       writeLine(fd, `Не удалось запустить расчёт (${e.code ?? e.message}).`);
@@ -311,7 +427,7 @@ export function startRun(root, slug, { python, timeoutMs = DEFAULT_TIMEOUT_MS } 
         // уже закрыт
       }
     }
-    const ok = code === 0 && !timedOut;
+    const ok = code === 0 && !stopped;
     lastRuns.set(key, { ok, code, finishedAt: new Date().toISOString() });
     active.delete(key);
     return { ok, code, durationMs: Date.now() - started, logPath };

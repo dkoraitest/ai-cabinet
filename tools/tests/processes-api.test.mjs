@@ -62,9 +62,9 @@ after(async () => {
 });
 
 // http.request без нормализации пути (fetch схлопывает /../).
-function request(method, path, headers = {}, body) {
+function request(method, path, headers = {}, body, onPort = port) {
   return new Promise((res, rej) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method, headers, agent: false }, (r) => {
+    const req = http.request({ host: '127.0.0.1', port: onPort, path, method, headers, agent: false }, (r) => {
       const chunks = [];
       r.on('data', (c) => chunks.push(c));
       r.on('end', () => {
@@ -212,6 +212,104 @@ test('output/<slug>/ отдаётся только для чтения и тол
     assert.equal(r.status, 404, p);
     assert.ok(!r.body.includes('секретные'), p);
   }
+});
+
+test('OPTIONS на api/run: 405 и никаких разрешений Access-Control для чужих страниц', async () => {
+  const r = await request('OPTIONS', `${T}/api/run/demo`, {
+    Origin: 'http://evil.example',
+    'Access-Control-Request-Method': 'POST',
+    'Access-Control-Request-Headers': 'x-cabinet, content-type',
+  });
+  assert.equal(r.status, 405);
+  assert.deepEqual(Object.keys(r.headers).filter((h) => h.startsWith('access-control-')), []);
+});
+
+test('файлы output отдаются только на скачивание и в песочнице', async () => {
+  if (!existsSync(join(cab, 'output', 'demo', 'otchet.txt'))) {
+    assert.equal((await run('demo')).status, 202);
+    await waitIdle('demo');
+  }
+  const r = await get(`${T}/output/demo/otchet.txt`);
+  assert.equal(r.status, 200);
+  assert.match(r.headers['content-disposition'], /^attachment; filename\*=UTF-8''otchet\.txt$/);
+  assert.equal(r.headers['content-security-policy'], 'sandbox');
+  const page = await get(`${T}/`);
+  assert.equal(page.headers['content-disposition'], undefined);
+});
+
+// Отдельный кабинет со своим сервером: для проверок, которые меняют папки кабинета.
+async function withCabinet(setup, fn) {
+  const b = mkdtempSync(join(tmpdir(), 'api2-'));
+  const root = join(b, 'Айгуль Н', 'ai-cabinet');
+  mkdirSync(root, { recursive: true });
+  copyDir(join(ROOT, 'templates', 'site'), join(root, 'site'));
+  const s = createCabinetServer(root, { token: TOKEN });
+  try {
+    if ((await setup(root, b)) === false) return;
+    const p = await listenFirstFree(s, { from: 18800, to: 18899 });
+    await fn((method, path, headers, body) => request(method, path, headers, body, p));
+  } finally {
+    s.closeAllConnections?.();
+    if (s.listening) await new Promise((r) => s.close(() => r()));
+    rmSync(b, { recursive: true, force: true });
+  }
+}
+
+test('output: папка output, ведущая за пределы кабинета, не отдаётся', async (t) => {
+  await withCabinet(
+    (root, b) => {
+      const dir = join(root, 'processes', 'demo');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'process.json'), JSON.stringify({ title: 'Демо', phrase: 'запусти демо', kind: 'script' }));
+      const outside = join(b, 'chuzhoy output');
+      mkdirSync(join(outside, 'demo'), { recursive: true });
+      writeFileSync(join(outside, 'demo', 'x.txt'), 'секретные данные снаружи');
+      try {
+        symlinkSync(outside, join(root, 'output'), 'junction');
+      } catch (e) {
+        t.skip(`ссылки на папки недоступны (${e.code})`);
+        return false;
+      }
+    },
+    async (req) => {
+      const r = await req('GET', `${T}/output/demo/x.txt`);
+      assert.equal(r.status, 404);
+      assert.ok(!r.body.includes('секретные'));
+    },
+  );
+});
+
+test('третий одновременный расчёт в кабинете → 409 с русским текстом', async () => {
+  await withCabinet(
+    (root) => {
+      for (const slug of ['odin', 'dva', 'tri']) {
+        const dir = join(root, 'processes', slug);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'process.json'), JSON.stringify({ title: slug, phrase: `запусти ${slug}`, kind: 'script' }));
+        writeFileSync(join(dir, 'run.py'), 'import time\ntime.sleep(1.5)\n');
+      }
+    },
+    async (req) => {
+      const go = (slug) => req('POST', `${T}/api/run/${slug}`, RUN_HEADERS, '{}');
+      assert.equal((await go('odin')).status, 202);
+      assert.equal((await go('dva')).status, 202);
+      const third = await go('tri');
+      assert.equal(third.status, 409);
+      assert.match(third.json.error, /не больше 2/);
+      for (const slug of ['odin', 'dva']) {
+        for (let i = 0; i < 100; i++) {
+          const st = await req('GET', `${T}/api/status/${slug}`);
+          if (!st.json.running) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      assert.equal((await go('tri')).status, 202);
+      for (let i = 0; i < 100; i++) {
+        if (!(await req('GET', `${T}/api/status/tri`)).json.running) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    },
+  );
 });
 
 test('output: ссылка из output/<slug>/ наружу не отдаётся', async (t) => {
