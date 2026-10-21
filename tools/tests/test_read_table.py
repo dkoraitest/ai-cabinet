@@ -166,10 +166,52 @@ class XlsxTests(FixtureCase):
         self.assertEqual(r3["columns"], ["Код", "Название"])
         self.assertEqual(r3["rows"], [["1", "Бензин"]])
 
+    def test_vertical_merge_over_data_is_single_level_header(self):
+        p = self.dir / "merge вниз.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["АЗС", "Показатель", "Знач"])
+        ws.append([None, "a", 1])
+        ws.append([None, "b", 2])
+        ws.append([None, "c", 3])
+        ws.append(["АЗС-02", "d", 4])
+        ws.merge_cells("A1:A4")
+        wb.save(p)
+        r = run_json(p, "--rows", 20)
+        self.assertEqual(r["columns"], ["АЗС", "Показатель", "Знач"])
+        self.assertEqual(r["header_rows"], 1)
+        self.assertEqual(r["data_rows"], 4)
+        self.assertEqual(r["rows"][0], ["АЗС", "a", "1"])
+        self.assertEqual(r["rows"][2], ["АЗС", "c", "3"])
+        self.assertEqual(r["rows"][3], ["АЗС-02", "d", "4"])
+
+    def test_three_level_header(self):
+        p = self.dir / "три уровня.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "Группа"
+        ws.merge_cells("A1:C1")
+        ws["A2"] = "Подгр1"
+        ws.merge_cells("A2:B2")
+        ws["C2"] = "Подгр2"
+        for col, v in zip("ABC", ["x", "y", "z"]):
+            ws[f"{col}3"] = v
+        ws.append([1, 2, 3])
+        ws.append([4, 5, 6])
+        wb.save(p)
+        r = run_json(p)
+        self.assertEqual(r["columns"], ["Группа / Подгр1 / x", "Группа / Подгр1 / y", "Группа / Подгр2 / z"])
+        self.assertEqual(r["header_rows"], 3)
+        self.assertEqual(r["header_row"], 1)
+        self.assertEqual(r["data_rows"], 2)
+        self.assertEqual(r["rows"], [["1", "2", "3"], ["4", "5", "6"]])
+
     def test_unknown_sheet(self):
-        p = self.dir / "три листа.xlsx"
-        if not p.exists():
-            self.test_three_sheets()
+        p = self.dir / "лист для ошибки.xlsx"
+        wb = openpyxl.Workbook()
+        wb.active.title = "Астана"
+        wb.active.append(["a", "b"])
+        wb.save(p)
         out = run(p, "--sheet", "Нет такого")
         self.assertEqual(out.returncode, 2)
         self.assertIn("Астана", out.stderr)

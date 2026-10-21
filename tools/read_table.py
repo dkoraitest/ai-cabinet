@@ -5,7 +5,7 @@
 
 Что печатает: кодировку и разделитель (для CSV/TXT), листы с числом строк (для XLSX),
 строку шапки, названия столбцов, число строк данных и первые строки.
-Объединённая двухуровневая шапка разворачивается в названия «Родитель / Дочерний».
+Объединённая многоуровневая шапка (до 4 строк) разворачивается в названия «Родитель / Дочерний».
 --sheet принимает номер листа (с 1) или его имя.
 
 Только стандартная библиотека и openpyxl, без pandas. Большие файлы читаются потоком.
@@ -72,77 +72,132 @@ def pick_header(buffer):
     return None
 
 
+NUMERIC_RE = re.compile(r"^[-+]?[\d\s.,:/]+%?$")
+MAX_LEVELS = 4
+
+
+def is_labels(row):
+    """Строка из подписей: есть непустые ячейки и среди них нет чисел и дат."""
+    cells = [c for c in row if c != ""]
+    return bool(cells) and not any(NUMERIC_RE.match(c) for c in cells)
+
+
 def build_columns(buffer, h, merges):
-    """Названия столбцов и число строк шапки (1 или 2 при объединённых ячейках)."""
-    top = buffer[h]
-    r = h + 1  # номер строки шапки в файле, с 1
-    two_level = h + 1 < len(buffer) and any(m[0] == r and (m[3] > m[1] or m[2] > r) for m in merges)
-    if not two_level:
-        width = max((i + 1 for i, c in enumerate(top) if c != ""), default=0)
-        return [top[i] if top[i] else f"(без названия {i + 1})" for i in range(width)], 1
-    sub = buffer[h + 1]
-    parent = list(top) + [""] * max(0, len(sub) - len(top))
-    # Родитель растягивается на весь диапазон объединённых ячеек.
+    """Названия столбцов, число строк шапки и индекс её первой строки.
+
+    Шапка может занимать несколько строк (до 4 уровней). Строка ниже входит в шапку, если
+    выше начинается объединение по горизонтали, под которым стоят подписи, или объединение
+    вниз заканчивается ровно на этой строке, и в ней одни подписи, а не данные.
+    Объединение вниз на много строк (за шапку, в данные) шапку не удлиняет.
+    Одноячеечная строка выше шапки считается верхним уровнем, только если под ней есть
+    объединение меньшего размера (иначе это заголовок отчёта).
+    """
+    t = h
+    while t > 0 and any(buffer[t - 1]):
+        up = [m for m in merges if m[0] == t and m[3] > m[1]]
+        if any(q[0] == t + 1 and q[3] > q[1] and p[1] <= q[1] and q[3] <= p[3]
+               and (q[1], q[3]) != (p[1], p[3]) for p in up for q in merges):
+            t -= 1
+        else:
+            break
+    last = h
+    while last + 1 < len(buffer) and last - t + 1 < MAX_LEVELS:
+        nxt = buffer[last + 1]
+        trig_h = any(m[0] == last + 1 and m[3] > m[1] and any(nxt[c] for c in range(m[1] - 1, min(m[3], len(nxt))))
+                     for m in merges)
+        trig_v = any(t + 1 <= m[0] <= last + 1 and m[2] == last + 2 for m in merges)
+        if (trig_h or trig_v) and is_labels(nxt):
+            last += 1
+        else:
+            break
+    block = buffer[t:last + 1]
+    width = max(max((i + 1 for i, c in enumerate(r) if c != ""), default=0) for r in block)
+    for m in merges:
+        if t + 1 <= m[0] <= last + 1:
+            width = max(width, m[3])
+    grid = [(list(r) + [""] * width)[:width] for r in block]
     for r1, c1, r2, c2 in merges:
-        if r1 == r and r2 <= r + 1:
-            val = top[c1 - 1] if c1 - 1 < len(top) else ""
-            for c in range(c1 - 1, c2):
-                if c < len(parent):
-                    parent[c] = val
-    width = max(
-        max((i + 1 for i, c in enumerate(parent) if c != ""), default=0),
-        max((i + 1 for i, c in enumerate(sub) if c != ""), default=0),
-    )
+        if not t + 1 <= r1 <= last + 1:
+            continue
+        val = grid[r1 - 1 - t][c1 - 1] if c1 - 1 < width else ""
+        for r in range(r1, min(r2, last + 1) + 1):
+            for c in range(c1 - 1, min(c2, width)):
+                if grid[r - 1 - t][c] == "":
+                    grid[r - 1 - t][c] = val
     cols = []
     for i in range(width):
-        p = parent[i] if i < len(parent) else ""
-        c = sub[i] if i < len(sub) else ""
-        if p and c and p != c:
-            cols.append(f"{p} / {c}")
-        else:
-            cols.append(p or c or f"(без названия {i + 1})")
-    return cols, 2
+        parts = []
+        for r in grid:
+            if r[i] and (not parts or parts[-1] != r[i]):
+                parts.append(r[i])
+        cols.append(" / ".join(parts) if parts else f"(без названия {i + 1})")
+    while cols and cols[-1].startswith("(без названия"):
+        cols.pop()
+    return cols, last - t + 1, t
 
 
 def scan(row_iter, merges, n_rows):
-    """Один проход по строкам (списки строк, пустая строка = пустой список/ячейки)."""
-    buffer, h, cols, hrows = [], None, None, 1
+    """Один проход по строкам (списки строк, пустая строка = пустой список/ячейки).
+
+    Объединённые вниз ячейки в строках данных заполняются значением из верхней ячейки.
+    """
+    starts = {}
+    for m in merges:
+        if m[2] > m[0]:
+            starts.setdefault(m[0], []).append(m)
+    active = []  # (последняя строка, столбец1, столбец2, значение)
+    buffer, cols, hrows = [], None, 1
+    h = None
     nonempty, data_rows, sample = 0, 0, []
-    for idx, row in enumerate(row_iter):
-        row = [cell_text(c) for c in row]
-        is_empty = not any(row)
-        if not is_empty:
-            nonempty += 1
-        if cols is None:
-            buffer.append(row)
-            if len(buffer) >= HEADER_SCAN_ROWS:
-                h = pick_header(buffer)
-                if h is not None:
-                    cols, hrows = build_columns(buffer, h, merges)
-                    for pending in buffer[h + hrows:]:
-                        if any(pending):
-                            data_rows += 1
-                            if len(sample) < n_rows:
-                                sample.append(pending)
-                    buffer = []
-            continue
-        if not is_empty:
+
+    def take(filled):
+        nonlocal data_rows
+        if any(filled):
             data_rows += 1
             if len(sample) < n_rows:
-                sample.append(row)
+                sample.append(filled)
+
+    def resolve():
+        nonlocal cols, hrows, h, buffer
+        h = pick_header([raw for raw, _ in buffer])
+        if h is None:
+            return
+        cols, hrows, h = build_columns([raw for raw, _ in buffer], h, merges)
+        for raw, filled in buffer[h + hrows:]:
+            if any(raw):
+                take(filled)
+        buffer = []
+
+    for idx, row in enumerate(row_iter):
+        rn = idx + 1
+        raw = [cell_text(c) for c in row]
+        filled = raw
+        active = [a for a in active if a[0] >= rn]
+        if active:
+            filled = list(raw)
+            for last_row, c1, c2, val in active:
+                if len(filled) < c2:
+                    filled += [""] * (c2 - len(filled))
+                for c in range(c1 - 1, c2):
+                    if filled[c] == "":
+                        filled[c] = val
+        for r1, c1, r2, c2 in starts.get(rn, ()):
+            active.append((r2, c1, c2, raw[c1 - 1] if c1 - 1 < len(raw) else ""))
+        if any(raw):
+            nonempty += 1
+        if cols is None:
+            buffer.append((raw, filled))
+            if len(buffer) >= HEADER_SCAN_ROWS:
+                resolve()
+            continue
+        if any(raw):
+            take(filled)
     if cols is None:  # файл короче окна поиска шапки
-        h = pick_header(buffer)
-        if h is not None:
-            cols, hrows = build_columns(buffer, h, merges)
-            for pending in buffer[h + hrows:]:
-                if any(pending):
-                    data_rows += 1
-                    if len(sample) < n_rows:
-                        sample.append(pending)
+        resolve()
     width = len(cols) if cols else 0
     sample = [(r + [""] * width)[:width] for r in sample]
     return {
-        "header_row": (h + 1) if h is not None else None,
+        "header_row": (h + 1) if cols is not None else None,
         "header_rows": hrows,
         "columns": cols or [],
         "data_rows": data_rows,
@@ -204,7 +259,7 @@ def read_csv(path, n_rows):
     with path.open("r", encoding=enc, errors="replace", newline="") as f:
         csv.field_size_limit(1 << 24)
         res = scan(csv.reader(f, delimiter=delim), [], n_rows)
-    res.update(type="csv", encoding=enc, delimiter=delim)
+    res.update(type="csv", encoding=enc, delimiter=delim, warnings=[])
     return res
 
 
@@ -227,7 +282,8 @@ def col_num(letters):
 def sheet_merges(path, sheet_index):
     """Диапазоны объединённых ячеек листа: (строка1, столбец1, строка2, столбец2), с 1.
 
-    Читает XML листа потоком; при любой неудаче возвращает пустой список.
+    Читает XML листа потоком. Возвращает (диапазоны, предупреждение или None):
+    при неудаче диапазонов нет, а причина попадает в вывод.
     """
     try:
         with zipfile.ZipFile(path) as z:
@@ -249,9 +305,9 @@ def sheet_merges(path, sheet_index):
                     if not chunk:
                         break
                     tail = data[-300:]  # хвост на случай разрыва тега между кусками; повторы уйдут в set
-            return sorted(out)
-    except Exception:
-        return []
+            return sorted(out), None
+    except Exception as e:
+        return [], f"не удалось прочитать объединённые ячейки ({type(e).__name__}: {e}), шапка может быть разобрана неточно"
 
 
 def open_book(path):
@@ -287,7 +343,7 @@ def read_xlsx(path, sheet, n_rows):
     try:
         names = list(wb.sheetnames)
         si = resolve_sheet(names, sheet)
-        merges = sheet_merges(path, si)
+        merges, warn = sheet_merges(path, si)
         res = scan(iter_sheet_rows(wb[names[si]]), merges, n_rows)
         sheets = []
         for i, name in enumerate(names):
@@ -299,7 +355,7 @@ def read_xlsx(path, sheet, n_rows):
     finally:
         wb.close()
     res.update(type="xlsx", sheets=sheets, sheet={"index": si + 1, "name": names[si]},
-               merged_ranges=len(merges))
+               merged_ranges=len(merges), warnings=[warn] if warn else [])
     return res
 
 
@@ -342,11 +398,13 @@ def format_human(r):
     if r["header_row"] is None:
         out.append("Данных в таблице нет.")
         return "\n".join(out)
-    levels = " (двухуровневая, объединённые ячейки развёрнуты)" if r["header_rows"] == 2 else ""
+    levels = f" (шапка в {r['header_rows']} строки, объединённые ячейки развёрнуты)" if r["header_rows"] > 1 else ""
     out.append(f"Строка шапки: {r['header_row']}{levels}")
     out.append(f"Столбцов: {len(r['columns'])}")
     out.append("Столбцы: " + " | ".join(r["columns"]))
     out.append(f"Строк данных: {r['data_rows']}")
+    for w in r.get("warnings", []):
+        out.append(f"Внимание: {w}")
     out.append(f"Первые строки ({len(r['rows'])}):")
     for row in r["rows"]:
         out.append("  " + " | ".join(row))
