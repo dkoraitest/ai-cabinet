@@ -1,9 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { listProcesses, processStatus, runProcess, startRun, validateResult } from '../processes.mjs';
+import { delimiter, isAbsolute, join, sep } from 'node:path';
+import {
+  LOG_LIMIT_BYTES,
+  MAX_CONCURRENT,
+  listProcesses,
+  processStatus,
+  resolvePython,
+  runProcess,
+  startRun,
+  validateResult,
+} from '../processes.mjs';
 
 // Кабинет во временной папке с кириллицей и пробелом, как в профиле Windows.
 function makeCabinet() {
@@ -189,7 +198,8 @@ test('runProcess: запускает processes/<slug>/run.py из корня к�
     const probe = JSON.parse(readFileSync(join(c.root, 'output', 'probe', 'probe.json'), 'utf8'));
     assert.equal(realpathSync(probe.cwd), realpathSync(c.root));
     assert.equal(probe.argv.length, 1);
-    assert.match(probe.argv[0].replace(/\\/g, '/'), /processes\/probe\/run\.py$/);
+    // Запускается уже проверенный настоящий путь run.py, а не имя, которое можно подменить после проверки.
+    assert.equal(probe.argv[0], realpathSync(join(c.root, 'processes', 'probe', 'run.py')));
     const log = readFileSync(r.logPath, 'utf8');
     assert.match(log, /готово: строка в stdout/);
     assert.match(log, /предупреждение в stderr/);
@@ -331,7 +341,7 @@ test('runProcess: Python не найден → ok false, понятная стр
   const c = makeCabinet();
   try {
     c.add('bez-python', script('bez-python'), 'print(1)\n');
-    const r = await runProcess(c.root, 'bez-python', { python: { cmd: 'net-takoy-programmy-python', pre: [] } });
+    const r = await runProcess(c.root, 'bez-python', { python: join(c.base, 'net-takogo-python') });
     assert.equal(r.ok, false);
     assert.equal(r.code, null);
     assert.match(readFileSync(r.logPath, 'utf8'), /Python/);
@@ -346,6 +356,134 @@ test('processStatus: процесса не запускали → running false,
   try {
     c.add('novyi', script('novyi'), 'print(1)\n');
     assert.deepEqual(processStatus(c.root, 'novyi'), { running: false, lastRun: null });
+  } finally {
+    c.done();
+  }
+});
+
+test('resolvePython: абсолютный путь к настоящему Python вне кабинета', async () => {
+  const c = makeCabinet();
+  try {
+    const exe = await resolvePython(c.root);
+    assert.ok(exe, 'Python не найден');
+    assert.ok(isAbsolute(exe), exe);
+    assert.ok(statSync(exe).isFile(), exe);
+    assert.ok(!realpathSync(exe).startsWith(realpathSync(c.root) + sep), exe);
+  } finally {
+    c.done();
+  }
+});
+
+test('Python, подложенный в папку кабинета, не находится и не запускается', { skip: process.platform === 'win32' && 'на Windows поиск в текущей папке закрыт иначе, тест для sh' }, async () => {
+  const c = makeCabinet();
+  const cwd = process.cwd();
+  const path = process.env.PATH;
+  try {
+    // Подделка отвечает как Python и оставляет след. «.» в начале PATH изображает поиск Windows в текущей папке.
+    const fake = `#!/bin/sh
+echo pwned > "${join(c.root, 'pwned.txt')}"
+case "$1" in --version) echo "Python 3.12.9";; -c) echo "${join(c.root, 'python3')}";; esac
+`;
+    for (const name of ['python3', 'python']) {
+      writeFileSync(join(c.root, name), fake);
+      chmodSync(join(c.root, name), 0o755);
+    }
+    process.chdir(c.root);
+    process.env.PATH = `.${delimiter}${path}`;
+    const exe = await resolvePython(c.root);
+    assert.ok(exe && !exe.startsWith(c.root), String(exe));
+    c.add('probe', script('probe'), 'import json, os, sys\nos.makedirs(os.path.join("output", "probe"), exist_ok=True)\nopen(os.path.join("output", "probe", "exe.txt"), "w").write(sys.executable)\n');
+    const r = await runProcess(c.root, 'probe');
+    assert.equal(r.ok, true, readFileSync(r.logPath, 'utf8'));
+    assert.ok(!readFileSync(join(c.root, 'output', 'probe', 'exe.txt'), 'utf8').startsWith(c.root));
+    assert.equal(existsSync(join(c.root, 'pwned.txt')), false, 'подделка запускалась');
+  } finally {
+    process.chdir(cwd);
+    process.env.PATH = path;
+    c.done();
+  }
+});
+
+test('runProcess: папка processes, ведущая за пределы кабинета, не запускается', async (t) => {
+  const c = makeCabinet();
+  try {
+    const outside = join(c.base, 'chuzhie processy');
+    mkdirSync(join(outside, 'vneshniy'), { recursive: true });
+    writeFileSync(join(outside, 'vneshniy', 'process.json'), JSON.stringify(script('vneshniy')));
+    writeFileSync(join(outside, 'vneshniy', 'run.py'), 'open("vzlom.txt", "w").write("x")\n');
+    try {
+      symlinkSync(outside, join(c.root, 'processes'), 'junction');
+    } catch (e) {
+      return t.skip(`ссылки на папки недоступны (${e.code})`);
+    }
+    await assert.rejects(runProcess(c.root, 'vneshniy'), (e) => e.code === 'EOUTSIDE');
+    await sleep(300);
+    assert.equal(existsSync(join(c.root, 'vzlom.txt')), false);
+  } finally {
+    c.done();
+  }
+});
+
+test('runProcess: журнал больше лимита → процесс остановлен, журнал обрезан, строка по-русски', async () => {
+  const c = makeCabinet();
+  try {
+    assert.equal(LOG_LIMIT_BYTES, 20 * 1024 * 1024);
+    c.add('boltun', script('boltun'), 'import sys\nwhile True:\n    sys.stdout.write("x" * 65536)\n');
+    const limit = 1024 * 1024;
+    const started = Date.now();
+    const r = await runProcess(c.root, 'boltun', { logLimitBytes: limit, timeoutMs: 60000 });
+    assert.ok(Date.now() - started < 20000, `шёл ${Date.now() - started} мс`);
+    assert.equal(r.ok, false);
+    const log = readFileSync(r.logPath, 'utf8');
+    assert.match(log, /Процесс остановлен: слишком большой журнал/);
+    assert.ok(statSync(r.logPath).size < limit + 1000, `размер ${statSync(r.logPath).size}`);
+    assert.equal(processStatus(c.root, 'boltun').running, false);
+  } finally {
+    c.done();
+  }
+});
+
+test('runProcess: остановка дерева не сработала → через паузу процесс добивается, статус не залипает', async () => {
+  const c = makeCabinet();
+  try {
+    c.add('upryamyi', script('upryamyi'), `import os, time
+with open(os.path.join("output", "upryamyi", "pid.txt"), "w") as f:
+    f.write(str(os.getpid()))
+time.sleep(60)
+`);
+    const started = Date.now();
+    const r = await runProcess(c.root, 'upryamyi', { timeoutMs: 1500, killGraceMs: 300, killTree: () => {} });
+    assert.ok(Date.now() - started < 10000, `шёл ${Date.now() - started} мс`);
+    assert.equal(r.ok, false);
+    assert.equal(processStatus(c.root, 'upryamyi').running, false);
+    assert.equal(processStatus(c.root, 'upryamyi').lastRun.ok, false);
+    const pid = Number(readFileSync(join(c.root, 'output', 'upryamyi', 'pid.txt'), 'utf8'));
+    for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
+    assert.equal(alive(pid), false, `процесс ${pid} жив`);
+  } finally {
+    c.done();
+  }
+});
+
+test('runProcess: не больше двух расчётов одновременно в одном кабинете', async () => {
+  const c = makeCabinet();
+  try {
+    assert.equal(MAX_CONCURRENT, 2);
+    for (const s of ['odin', 'dva', 'tri']) c.add(s, script(s), 'import time\ntime.sleep(1.5)\n');
+    const first = runProcess(c.root, 'odin');
+    const second = runProcess(c.root, 'dva');
+    assert.throws(() => startRun(c.root, 'tri'), (e) => e.code === 'EBUSY' && /[А-Яа-я]/.test(e.message));
+    // Другой кабинет на том же сервере считается отдельно.
+    const d = makeCabinet();
+    try {
+      d.add('tri', script('tri'), 'print(1)\n');
+      assert.equal((await runProcess(d.root, 'tri')).ok, true);
+    } finally {
+      d.done();
+    }
+    assert.equal((await first).ok, true);
+    assert.equal((await second).ok, true);
+    assert.equal((await runProcess(c.root, 'tri')).ok, true);
   } finally {
     c.done();
   }

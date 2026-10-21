@@ -346,6 +346,8 @@ export function formatReport(results) {
 }
 
 async function main() {
+  // Windows не ищет программы (python, py, git) в текущей папке, то есть в кабинете: только в PATH.
+  process.env.NoDefaultCurrentDirectoryInExePath = '1';
   const args = process.argv.slice(2);
   try {
     ensureParticipantFiles(fileURLToPath(new URL('..', import.meta.url)));

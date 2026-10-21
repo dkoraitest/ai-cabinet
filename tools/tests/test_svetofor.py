@@ -112,7 +112,7 @@ class DemoNumbersTests(unittest.TestCase):
             self.assertEqual(len(row), len(r["columns"]))
         self.assertEqual(len(r["row_status"]), 25)
         self.assertEqual(len(r["row_note"]), 25)
-        self.assertNotRegex(json.dumps(r, ensure_ascii=False), "[–—]")
+        self.assertNotRegex(json.dumps(r, ensure_ascii=False), "[\u2012-\u2015]")
 
     def test_process_json(self):
         p = json.loads((DEMO / "process.json").read_text(encoding="utf-8"))
