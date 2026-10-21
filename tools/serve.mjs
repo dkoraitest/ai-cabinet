@@ -1,7 +1,7 @@
 // Локальный сервер страницы кабинета. Без зависимостей, слушает только 127.0.0.1.
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { spawn } from 'node:child_process';
@@ -60,18 +60,39 @@ export function currentUser() {
 const TOKEN_RE = /^[0-9a-f]{32}$/;
 
 // Личный секрет адреса страницы. Лежит в me/ (папка участника, не в Git).
-export function pageToken(root) {
-  const file = resolve(root, 'me', 'page-token.txt');
+// Создание атомарное (flag wx): два одновременных запуска получат один токен.
+function readSavedToken(file) {
   try {
     const saved = readFileSync(file, 'utf8').trim();
-    if (TOKEN_RE.test(saved)) return saved;
+    return TOKEN_RE.test(saved) ? saved : null;
   } catch {
-    // Файла нет или он не читается: создадим новый.
+    return null;
   }
-  const token = randomBytes(16).toString('hex');
+}
+
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+export function pageToken(root) {
+  const file = resolve(root, 'me', 'page-token.txt');
   mkdirSync(resolve(root, 'me'), { recursive: true });
-  writeFileSync(file, token + '\n');
-  return token;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const saved = readSavedToken(file);
+    if (saved) return saved;
+    const token = randomBytes(16).toString('hex');
+    try {
+      writeFileSync(file, token + '\n', { flag: 'wx', mode: 0o600 });
+      return token;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // Файл уже есть: либо его пишет другой запуск, либо в нём мусор.
+      pause(25);
+      if (attempt >= 20 && !readSavedToken(file)) {
+        // Мусор или пустой файл надолго: заменяем его.
+        rmSync(file, { force: true });
+      }
+    }
+  }
+  throw new Error('Не удалось получить личный адрес страницы: файл me/page-token.txt занят.');
 }
 
 function sameToken(a, b) {

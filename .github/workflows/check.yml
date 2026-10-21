@@ -138,8 +138,11 @@ jobs:
             $url = $null
             for ($i = 0; $i -lt 20; $i++) {
               if (Test-Path $log) {
-                $m = [regex]::Match((Get-Content -Encoding UTF8 -Raw $log), 'http://localhost:\d+/[0-9a-f]{32}/')
-                if ($m.Success) { $url = $m.Value; break }
+                $txt = [string](Get-Content -Encoding UTF8 -Raw $log)
+                if ($txt) {
+                  $m = [regex]::Match($txt, 'http://localhost:\d+/[0-9a-f]{32}/')
+                  if ($m.Success) { $url = $m.Value; break }
+                }
               }
               Start-Sleep -Seconds 1
             }
