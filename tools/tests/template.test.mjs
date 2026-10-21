@@ -101,7 +101,7 @@ test('скиллы: name совпадает с папкой, description ест�
   }
 });
 
-test('settings: sonnet, без обхода, PYTHONUTF8, input защищён', () => {
+test('settings: sonnet, без обхода, PYTHONUTF8, input защищён, без автопамяти', () => {
   const p = '.claude/settings.json';
   assert.ok(files.includes(p), 'нет .claude/settings.json');
   const s = JSON.parse(read(p));
@@ -110,6 +110,8 @@ test('settings: sonnet, без обхода, PYTHONUTF8, input защищён', 
   assert.equal(s.permissions.disableBypassPermissionsMode, 'disable');
   assert.equal(s.env.PYTHONUTF8, '1');
   assert.ok(s.permissions.deny.includes('Edit(./input/**)'));
+  // «Запомни» пишется только в мои правила: автопамять проекта не читается и не пишется.
+  assert.equal(s.autoMemoryEnabled, false, 'нужен "autoMemoryEnabled": false');
 });
 
 test('lint: каждый @import из CLAUDE.md есть в репо или в MANIFEST.to', (t) => {
