@@ -7,6 +7,6 @@
     "defaultMode": "acceptEdits",
     "disableBypassPermissionsMode": "disable",
     "allow": ["Bash(node tools/serve.mjs*)", "Bash(node tools/check.mjs*)", "Bash(node tools/update.mjs*)", "Bash(python tools/read_table.py*)"],
-    "deny": ["Edit(./input/**)", "Bash(rm -rf *)", "Bash(git push *)"]
+    "deny": ["Edit(./input/**)", "Edit(./tools/**)", "Bash(rm -rf *)", "Bash(git push *)"]
   }
 }
