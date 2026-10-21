@@ -82,6 +82,37 @@ jobs:
           echo "$out" | grep -q 'Обновлений нет'
           node --test
 
+      - name: macOS, демо-процесс кнопкой на странице
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          export HOME="$PROFILE_DIR"
+          cd "$HOME/ai-cabinet"
+          mkdir -p processes input/svetofor-dogovorov
+          cp -R templates/processes/svetofor-dogovorov processes/
+          cp input/case-azs/data/reestr_dogovorov.xlsx input/svetofor-dogovorov/
+          node tools/serve.mjs > "$RUNNER_TEMP/serve-demo.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          url=""
+          for i in $(seq 1 20); do
+            url=$(grep -Eo 'http://localhost:[0-9]+/[0-9a-f]{32}/' "$RUNNER_TEMP/serve-demo.log" | head -n 1 || true)
+            if [ -n "$url" ]; then break; fi
+            sleep 1
+          done
+          if [ -z "$url" ]; then cat "$RUNNER_TEMP/serve-demo.log"; exit 1; fi
+          run="${url}api/run/svetofor-dogovorov"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$run")" = 403
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-Cabinet: 1' -H 'Content-Type: application/json' -d '{}' "$run")" = 202
+          for i in $(seq 1 60); do
+            curl -sS "${url}api/status/svetofor-dogovorov" > "$RUNNER_TEMP/status.json"
+            if grep -q '"running":false' "$RUNNER_TEMP/status.json"; then break; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/status.json"; echo
+          cat output/svetofor-dogovorov/last-run.log
+          node -e "const fs=require('fs');const r=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const s=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));const c={};for(const x of r.row_status)c[x]=(c[x]||0)+1;const got=[r.rows.length,c.red,c.yellow,c.grey,c.info,c.green].join('/');console.log('rows/red/yellow/grey/info/green:',got);if(!s.lastRun||!s.lastRun.ok||got!=='25/3/3/2/1/16')process.exit(1)" output/svetofor-dogovorov/result.json "$RUNNER_TEMP/status.json"
+
       - name: macOS, check --net (справочно)
         if: runner.os == 'macOS'
         continue-on-error: true
@@ -162,6 +193,66 @@ jobs:
             catch { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } }
             if ($code -ne 403) { throw "root without token returned $code, expected 403" }
             Write-Host 'page opens'
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+          exit 0
+
+      - name: Windows (PowerShell 5.1), демо-процесс кнопкой на странице
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:USERPROFILE = $env:PROFILE_DIR
+          $env:HOME = $env:PROFILE_DIR
+          $clone = "$env:PROFILE_DIR\ai-cabinet"
+          Set-Location -LiteralPath $clone
+          # The participant copies the demo process and the case file the same way.
+          New-Item -ItemType Directory -Force -Path 'processes', 'input\svetofor-dogovorov' | Out-Null
+          Copy-Item -Recurse -Force -LiteralPath 'templates\processes\svetofor-dogovorov' -Destination 'processes\svetofor-dogovorov'
+          Copy-Item -Force -LiteralPath 'input\case-azs\data\reestr_dogovorov.xlsx' -Destination 'input\svetofor-dogovorov\reestr_dogovorov.xlsx'
+          $log = "$env:RUNNER_TEMP\serve-demo.log"
+          $err = "$env:RUNNER_TEMP\serve-demo.err"
+          $p = Start-Process node -ArgumentList 'tools/serve.mjs' -WorkingDirectory $clone -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err
+          try {
+            $url = $null
+            for ($i = 0; $i -lt 20; $i++) {
+              if (Test-Path $log) {
+                $txt = [string](Get-Content -Encoding UTF8 -Raw $log)
+                if ($txt) {
+                  $m = [regex]::Match($txt, 'http://localhost:\d+/[0-9a-f]{32}/')
+                  if ($m.Success) { $url = $m.Value; break }
+                }
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $url) { throw 'page address did not appear within 20 seconds' }
+            $run = $url + 'api/run/svetofor-dogovorov'
+            $code = 0
+            try { $r0 = Invoke-WebRequest $run -Method Post -ContentType 'application/json' -Body '{}' -UseBasicParsing -TimeoutSec 10; $code = [int]$r0.StatusCode }
+            catch { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } }
+            if ($code -ne 403) { throw "run without X-Cabinet returned $code, expected 403" }
+            $headers = @{ 'X-Cabinet' = '1' }
+            $r1 = Invoke-WebRequest $run -Method Post -Headers $headers -ContentType 'application/json' -Body '{}' -UseBasicParsing -TimeoutSec 10
+            if ($r1.StatusCode -ne 202) { throw "run returned $($r1.StatusCode), expected 202" }
+            $status = $null
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Seconds 1
+              $status = Invoke-RestMethod ($url + 'api/status/svetofor-dogovorov') -UseBasicParsing -TimeoutSec 5
+              if (-not $status.running) { break }
+            }
+            if ($status.running) { throw 'demo did not finish within 60 seconds' }
+            if (-not $status.lastRun.ok) {
+              Get-Content -LiteralPath 'output\svetofor-dogovorov\last-run.log' | Write-Host
+              throw "demo run failed, exit code $($status.lastRun.code)"
+            }
+            $res = Get-Content -Raw -Encoding UTF8 -LiteralPath 'output\svetofor-dogovorov\result.json' | ConvertFrom-Json
+            $count = @{}
+            foreach ($s in $res.row_status) { $count[$s] = 1 + [int]$count[$s] }
+            $got = '{0}/{1}/{2}/{3}/{4}/{5}' -f $res.rows.Count, $count['red'], $count['yellow'], $count['grey'], $count['info'], $count['green']
+            Write-Host "rows/red/yellow/grey/info/green: $got"
+            if ($got -ne '25/3/3/2/1/16') { throw "demo result $got, expected 25/3/3/2/1/16" }
+            Write-Host 'demo process runs from the page button'
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
