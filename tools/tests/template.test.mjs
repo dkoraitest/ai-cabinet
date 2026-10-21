@@ -145,6 +145,9 @@ test('файлы участника вне репо: обновление их �
     assert.equal(ignored(to), true, `${to} не в .gitignore`);
   }
   assert.equal(ignored('.claude/settings.local.json'), true, '.claude/settings.local.json не в .gitignore');
+  // Процессы участника его, шаблоны процессов курса в репо.
+  assert.equal(ignored('processes/svodka-prodazh/run.py'), true, 'processes/ не в .gitignore');
+  assert.equal(ignored('templates/processes/svetofor-dogovorov/run.py'), false, 'шаблоны процессов попали под .gitignore');
 });
 
 test('шаблоны me/ начинаются со строки-заглушки, которую узнают правила кабинета', () => {

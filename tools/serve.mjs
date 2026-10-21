@@ -1,6 +1,6 @@
 // Локальный сервер страницы кабинета. Без зависимостей, слушает только 127.0.0.1.
 import http from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { userInfo } from 'node:os';
@@ -9,6 +9,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { ensureParticipantFiles } from './init.mjs';
+import { SLUG_RE, hasProcess, listProcesses, processStatus, startRun } from './processes.mjs';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -22,15 +23,33 @@ const TYPES = {
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
   '.csv': 'text/csv; charset=utf-8',
+  '.log': 'text/plain; charset=utf-8',
+  '.pdf': 'application/pdf',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 
-function send(res, status, type, body) {
-  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+// На каждом ответе: адрес с токеном не уходит в Referer, тип файла не угадывается, ничего не кэшируется.
+const SAFE_HEADERS = {
+  'Referrer-Policy': 'no-referrer',
+  'X-Content-Type-Options': 'nosniff',
+  'Cache-Control': 'no-store',
+};
+
+function send(res, status, type, body, headers = {}) {
+  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', ...headers });
   res.end(body);
 }
 
-const notFound = (res) =>
-  send(res, 404, 'text/plain; charset=utf-8', 'Такого файла нет в папке site.');
+const sendJson = (res, status, data) => send(res, status, TYPES['.json'], JSON.stringify(data));
+
+const notFound = (res, where = 'site') =>
+  send(res, 404, 'text/plain; charset=utf-8', `Такого файла нет в папке ${where}.`);
+
+const notAllowed = (res, allow) =>
+  send(res, 405, 'text/plain; charset=utf-8', 'Так обратиться к странице нельзя.', { Allow: allow });
+
+const isRead = (req) => req.method === 'GET' || req.method === 'HEAD';
 
 const forbidden = (res) =>
   send(
@@ -101,16 +120,36 @@ function sameToken(a, b) {
   return timingSafeEqual(x, y);
 }
 
+// Файл из папки base. Путь не выходит за base, а настоящий путь (после ссылок) не выходит за boundary.
+async function serveFile(res, base, rel, { boundary = base, where = 'site' } = {}) {
+  if (rel.includes('\0')) return notFound(res, where);
+  let file = resolve(base, '.' + rel);
+  if (file !== base && !file.startsWith(base + sep)) return notFound(res, where);
+  let info = await stat(file).catch(() => null);
+  if (info?.isDirectory()) {
+    file = resolve(file, 'index.html');
+    info = await stat(file).catch(() => null);
+  }
+  if (!info?.isFile()) return notFound(res, where);
+  const [real, top] = await Promise.all([realpath(file), realpath(boundary)]).catch(() => []);
+  if (!real || !real.startsWith(top + sep)) return notFound(res, where);
+  const body = await readFile(real);
+  send(res, 200, TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', body);
+}
+
 // Страница отдаётся только под /<token>/. Остальные пути: 403.
 // Необязательный api(req, res, sub) вызывается для /<token>/api/<sub>; вернёт true или промис
-// с true, если ответ отправлен. Так задача V10 добавит свои маршруты под тем же токеном.
-export function createSiteServer(rootDir, { token, api } = {}) {
+// с true, если ответ отправлен.
+// Необязательный output { dir, allow(slug) }: /<token>/output/<slug>/<файл> отдаётся из dir/<slug>
+// только для чтения и только для slug, где allow(slug) истинно.
+export function createSiteServer(rootDir, { token, api, output } = {}) {
   if (typeof token !== 'string' || token.length < 8) {
     throw new Error('Для страницы нужен токен (личная часть адреса).');
   }
   const root = resolve(rootDir);
   return http.createServer(async (req, res) => {
     try {
+      for (const [k, v] of Object.entries(SAFE_HEADERS)) res.setHeader(k, v);
       let pathname;
       try {
         pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
@@ -129,20 +168,73 @@ export function createSiteServer(rootDir, { token, api } = {}) {
         if (!res.headersSent) return notFound(res);
         return;
       }
-      if (rel.includes('\0')) return notFound(res);
-      let file = resolve(root, '.' + rel);
-      if (file !== root && !file.startsWith(root + sep)) return notFound(res);
-      let info = await stat(file).catch(() => null);
-      if (info?.isDirectory()) {
-        file = resolve(file, 'index.html');
-        info = await stat(file).catch(() => null);
+      if (!isRead(req)) return notAllowed(res, 'GET, HEAD');
+      if (output && rel.startsWith('/output/')) {
+        const [slug, ...rest] = rel.slice('/output/'.length).split('/');
+        if (!SLUG_RE.test(slug) || !output.allow(slug)) return notFound(res, 'output');
+        const dir = resolve(output.dir);
+        return await serveFile(res, resolve(dir, slug), '/' + rest.join('/'), { boundary: dir, where: 'output' });
       }
-      if (!info?.isFile()) return notFound(res);
-      const body = await readFile(file);
-      send(res, 200, TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream', body);
+      return await serveFile(res, root, rel);
     } catch {
       if (!res.headersSent) send(res, 500, 'text/plain; charset=utf-8', 'Не удалось отдать файл.');
     }
+  });
+}
+
+// Ошибки запуска (processes.mjs) в ответы страницы.
+const RUN_STATUS = { EBADSLUG: 404, ENOPROCESS: 404, ENORUN: 404, EOUTSIDE: 403, ECLAUDE: 400, EBADPROCESS: 400, ERUNNING: 409 };
+
+// Запуск только кнопкой со страницы: заголовок X-Cabinet и тип JSON чужая форма или ссылка
+// без разрешения браузера не пришлёт.
+const fromPage = (req) =>
+  req.headers['x-cabinet'] === '1' && /^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '');
+
+// API процессов под /<token>/api/: список, запуск, статус.
+export function createProcessApi(root, { python, timeoutMs } = {}) {
+  const handle = (req, res, sub) => {
+    const [route, ...rest] = sub.split('/');
+    // Имя процесса: ровно один сегмент пути; «run/a/../b» и подобное даёт null и ответ 404.
+    const slug = rest.length === 1 ? rest[0] : null;
+    if (sub === 'processes') {
+      if (!isRead(req)) return notAllowed(res, 'GET, HEAD');
+      return sendJson(res, 200, listProcesses(root));
+    }
+    if (route === 'run' && rest.length) {
+      if (req.method !== 'POST') return notAllowed(res, 'POST');
+      req.resume();
+      if (!fromPage(req)) {
+        return sendJson(res, 403, { error: 'Процесс запускается только кнопкой «Запустить» на странице кабинета.' });
+      }
+      try {
+        startRun(root, slug, { python, timeoutMs });
+      } catch (e) {
+        const status = RUN_STATUS[e.code];
+        return sendJson(res, status ?? 500, { error: status ? e.message : `Не удалось начать расчёт (${e.code ?? e.message}).` });
+      }
+      return sendJson(res, 202, { started: true });
+    }
+    if (route === 'status' && rest.length) {
+      if (!isRead(req)) return notAllowed(res, 'GET, HEAD');
+      if (!hasProcess(root, slug)) return sendJson(res, 404, { error: 'Такого процесса нет.' });
+      return sendJson(res, 200, processStatus(root, slug));
+    }
+    return sendJson(res, 404, { error: 'Такого адреса у страницы нет.' });
+  };
+  // Ответ API отправлен всегда.
+  return (req, res, sub) => {
+    handle(req, res, sub);
+    return true;
+  };
+}
+
+// Страница кабинета целиком: site/, API процессов и файлы результатов из output/<slug>/.
+export function createCabinetServer(cabinetRoot, { token, python, timeoutMs } = {}) {
+  const root = resolve(cabinetRoot);
+  return createSiteServer(resolve(root, 'site'), {
+    token,
+    api: createProcessApi(root, { python, timeoutMs }),
+    output: { dir: resolve(root, 'output'), allow: (slug) => hasProcess(root, slug) },
   });
 }
 
@@ -234,7 +326,7 @@ async function main() {
     console.error(`Не удалось сохранить личный адрес страницы в папке me (${e.code ?? e.message}).`);
     process.exit(1);
   }
-  const server = createSiteServer(resolve(root, 'site'), { token });
+  const server = createCabinetServer(root, { token });
   let port;
   try {
     port = fixed
