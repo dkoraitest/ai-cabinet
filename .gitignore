@@ -10,3 +10,5 @@ output/*
 /site/
 .claude/settings.local.json
 /.claude/worktrees/
+__pycache__/
+*.pyc
