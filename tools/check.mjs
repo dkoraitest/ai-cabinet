@@ -44,9 +44,17 @@ export function exitCodeFor(results) {
 // Никогда не отклоняет промис: ошибки запуска превращаются в ненулевой code.
 // shell на Windows нужен для npm и pip (это .cmd); git это .exe, его зовём с shell: false.
 // Node 24 ругается (DEP0190) на args вместе с shell: true, поэтому при shell зовём одной строкой.
-// Все аргументы здесь постоянные и простые, без пробелов и спецсимволов.
-export function buildExecCall(cmd, args, shell) {
-  return shell ? { file: [cmd, ...args].join(' '), args: undefined } : { file: cmd, args };
+// Аргумент с пробелом или кавычкой берём в кавычки: cmd.exe (win32) понимает только двойные, sh одинарные.
+// Остальные аргументы здесь постоянные и простые.
+const quoteArg = (a, platform) => {
+  if (!/[\s"']/.test(a)) return a;
+  return platform === 'win32' ? `"${a.replace(/"/g, '\\"')}"` : `'${a.replace(/'/g, `'\\''`)}'`;
+};
+
+export function buildExecCall(cmd, args, shell, platform = process.platform) {
+  return shell
+    ? { file: [cmd, ...args.map((a) => quoteArg(a, platform))].join(' '), args: undefined }
+    : { file: cmd, args };
 }
 
 export function defaultExec(cmd, args, { timeout = 10000, cwd, env, shell = process.platform === 'win32' } = {}) {
@@ -106,14 +114,26 @@ async function detectPython(exec, platform) {
   return null;
 }
 
+const pyOk = (py) => py && (py.version[0] > 3 || (py.version[0] === 3 && py.version[1] >= 12));
+
 function pythonResult(py) {
-  const missingHint =
-    'установите Python 3.12 или новее с python.org (при установке отметьте "Add python.exe to PATH") или попросите ИТ. Для начала работы Python не обязателен';
-  if (!py) return warn('python', 'Python не найден (или это заглушка Microsoft Store)', missingHint);
-  const [maj, min] = py.version;
-  const text = py.version.join('.');
-  if (maj > 3 || (maj === 3 && min >= 12)) return ok('python', `Python ${text}`);
-  return warn('python', `Python ${text}: нужна версия 3.12 или новее`, missingHint);
+  const hint =
+    'попросите ИТ установить Python 3.12 или новее для вашей учётной записи; если разрешено, скачайте его с python.org и установите "для текущего пользователя", отметив "Add python.exe to PATH"';
+  if (!py) return fail('python', 'Python не найден (или это заглушка Microsoft Store)', hint);
+  if (pyOk(py)) return ok('python', `Python ${py.version.join('.')}`);
+  return fail('python', `Python ${py.version.join('.')}: нужна версия 3.12 или новее`, hint);
+}
+
+// Excel читает openpyxl, Word пишет python-docx (импортируется как docx).
+async function checkPyLibs(exec, py) {
+  const title = 'Библиотеки Python для Excel и Word';
+  if (!pyOk(py)) return fail('py-libs', 'Сначала нужен Python 3.12 или новее', 'установите его по подсказке выше, затем запустите проверку снова');
+  const base = [py.cmd, ...py.pre].join(' ');
+  const r = await exec(py.cmd, [...py.pre, '-c', 'import openpyxl, docx'], { timeout: 30000 });
+  if (r.code === 0) return ok('py-libs', `${title} установлены`);
+  const missing = /No module named ['"]?([\w.]+)/.exec(r.stderr)?.[1];
+  const what = missing ? `не найдена библиотека ${missing}` : 'не удалось подключить openpyxl и docx';
+  return fail('py-libs', `${title}: ${what}`, `выполните ${base} -m pip install --user openpyxl python-docx`);
 }
 
 async function checkWrite(cwd) {
@@ -294,6 +314,7 @@ export async function runChecks({
     checkNode(nodeVersion),
     await checkGit(exec),
     pythonResult(py),
+    await checkPyLibs(exec, py),
     await checkWrite(cwd),
     await checkLocalhost(cwd),
     await checkInput(cwd),

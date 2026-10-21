@@ -33,6 +33,9 @@ const good = {
   'git --version': { code: 0, stdout: 'git version 2.45.1\n', stderr: '' },
   'python3 --version': { code: 0, stdout: 'Python 3.12.4\n', stderr: '' },
   'python --version': { code: 0, stdout: 'Python 3.12.4\n', stderr: '' },
+  'python3 -c import openpyxl, docx': { code: 0, stdout: '', stderr: '' },
+  'python -c import openpyxl, docx': { code: 0, stdout: '', stderr: '' },
+  'py -3 -c import openpyxl, docx': { code: 0, stdout: '', stderr: '' },
 };
 const byId = (rs, id) => rs.find((r) => r.id === id);
 
@@ -85,22 +88,26 @@ test('git отсутствует -> fail', async () => {
   }
 });
 
-test('python: заглушка Store (9009) -> warn с подсказкой, без исключения', async () => {
+test('python: заглушка Store (9009) -> fail с подсказкой, без исключения', async () => {
   const { base, dir } = makeCabinet();
   try {
     const store = { code: 9009, stdout: '', stderr: 'Python was not found; run without arguments to install from the Microsoft Store' };
     const exec = stub({ ...good, 'python --version': store, 'py -3 --version': store });
     const rs = await runChecks({ cwd: dir, exec, platform: 'win32', nodeVersion: 'v22.0.0' });
     const p = byId(rs, 'python');
-    assert.equal(p.status, 'warn');
+    assert.equal(p.status, 'fail');
+    assert.match(p.hint, /ИТ/);
     assert.match(p.hint, /python\.org/);
-    assert.match(p.hint, /PATH/);
+    assert.match(p.hint, /текущего пользователя/);
+    assert.match(p.hint, /Add python\.exe to PATH/);
+    assert.equal(byId(rs, 'py-libs').status, 'fail');
+    assert.match(byId(rs, 'py-libs').title, /Сначала нужен Python/);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });
 
-test('python: на Windows пробует py -3 после python; старый Python -> warn', async () => {
+test('python: на Windows пробует py -3 после python; старый Python -> fail', async () => {
   const { base, dir } = makeCabinet();
   try {
     const calls = [];
@@ -116,7 +123,7 @@ test('python: на Windows пробует py -3 после python; старый 
 
     const old = stub({ ...good, 'python3 --version': { code: 0, stdout: 'Python 3.9.6\n', stderr: '' } });
     rs = await runChecks({ cwd: dir, exec: old, platform: 'darwin', nodeVersion: 'v22.0.0' });
-    assert.equal(byId(rs, 'python').status, 'warn');
+    assert.equal(byId(rs, 'python').status, 'fail');
     assert.match(byId(rs, 'python').hint, /3\.12/);
   } finally {
     rmSync(base, { recursive: true, force: true });
@@ -396,4 +403,70 @@ test('Node: подсказка «22 или новее»', async () => {
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+const LIBS_MISSING = { code: 1, stdout: '', stderr: "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'openpyxl'\n" };
+
+test('py-libs: библиотеки на месте -> ok, команда с кавычками вокруг -c', async () => {
+  const { base, dir } = makeCabinet();
+  try {
+    const calls = [];
+    const inner = stub(good);
+    const exec = async (c, a, o) => { calls.push([c, ...a]); return inner(c, a, o); };
+    const rs = await runChecks({ cwd: dir, exec, platform: 'linux', nodeVersion: 'v22.0.0' });
+    assert.equal(byId(rs, 'py-libs').status, 'ok');
+    assert.deepEqual(calls.find((c) => c.includes('-c')), ['python3', '-c', 'import openpyxl, docx']);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('py-libs: нет модуля -> fail с pip install --user, команда как обнаружена (py -3)', async () => {
+  const { base, dir } = makeCabinet();
+  try {
+    let rs = await runChecks({ cwd: dir, exec: stub({ ...good, 'python3 -c import openpyxl, docx': LIBS_MISSING }), platform: 'linux', nodeVersion: 'v22.0.0' });
+    let l = byId(rs, 'py-libs');
+    assert.equal(l.status, 'fail');
+    assert.match(l.title, /openpyxl/);
+    assert.match(l.hint, /python3 -m pip install --user openpyxl python-docx/);
+
+    const exec = stub({
+      ...good,
+      'python --version': { code: 9009, stdout: '', stderr: 'Python was not found' },
+      'py -3 --version': { code: 0, stdout: 'Python 3.12.1\n', stderr: '' },
+      'py -3 -c import openpyxl, docx': { code: 1, stdout: '', stderr: "ModuleNotFoundError: No module named 'docx'" },
+    });
+    rs = await runChecks({ cwd: dir, exec, platform: 'win32', nodeVersion: 'v22.0.0' });
+    l = byId(rs, 'py-libs');
+    assert.equal(l.status, 'fail');
+    assert.match(l.title, /docx/);
+    assert.match(l.hint, /py -3 -m pip install --user openpyxl python-docx/);
+    assert.equal(exitCodeFor(rs), 1);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('py-libs: нет Python -> fail "Сначала нужен Python", проверка не запускается', async () => {
+  const { base, dir } = makeCabinet();
+  try {
+    const calls = [];
+    const inner = stub({ 'git --version': good['git --version'] });
+    const exec = async (c, a, o) => { calls.push([c, ...a].join(' ')); return inner(c, a, o); };
+    const rs = await runChecks({ cwd: dir, exec, platform: 'linux', nodeVersion: 'v22.0.0' });
+    assert.equal(byId(rs, 'python').status, 'fail');
+    assert.equal(byId(rs, 'py-libs').status, 'fail');
+    assert.match(byId(rs, 'py-libs').title, /Сначала нужен Python/);
+    assert.ok(!calls.some((c) => c.includes('-c')));
+    assert.equal(JSON.parse(JSON.stringify(rs)).every((r) => 'id' in r && 'status' in r && 'title' in r), true);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('buildExecCall: аргумент с пробелом берётся в кавычки (cmd на win32, sh на posix)', () => {
+  const args = ['-3', '-c', 'import openpyxl, docx'];
+  assert.deepEqual(buildExecCall('py', args, true, 'win32'), { file: 'py -3 -c "import openpyxl, docx"', args: undefined });
+  assert.deepEqual(buildExecCall('python3', ['-c', 'import openpyxl, docx'], true, 'linux'), { file: "python3 -c 'import openpyxl, docx'", args: undefined });
+  assert.deepEqual(buildExecCall('python3', ['-c', 'import openpyxl, docx'], false, 'linux'), { file: 'python3', args: ['-c', 'import openpyxl, docx'] });
 });
