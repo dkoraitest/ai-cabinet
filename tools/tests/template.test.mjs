@@ -24,7 +24,7 @@ const read = (f) => readFileSync(join(ROOT, f), 'utf8');
 const PARTICIPANT = (f) =>
   f === 'CLAUDE.md' ||
   f === 'START.md' ||
-  ['.claude/skills/', 'templates/', 'me/', 'site/'].some((p) => f.startsWith(p));
+  ['.claude/skills/', '.claude/hooks/', 'templates/', 'me/', 'site/'].some((p) => f.startsWith(p));
 
 // Учебный кейс: тексты Практики, стилевые правила участника на него не распространяются.
 const CASE_DIR = 'input/case-azs/';
@@ -140,6 +140,22 @@ test('lint: каждый @import из CLAUDE.md есть в репо или в M
   const created = MANIFEST.map((m) => m.to);
   const missing = paths.filter((p) => !files.includes(p) && !created.includes(p));
   assert.deepEqual(missing, []);
+});
+
+// Хук проверки команд: файл курса в репо (обновление его привезёт), имя ASCII, правка под запретом.
+test('хук .claude/hooks/guard.mjs отслеживается, имя ASCII, зарегистрирован в settings.json', () => {
+  const tracked = execFileSync('git', ['ls-files', '--cached', '-z'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean);
+  const hooks = tracked.filter((f) => f.startsWith('.claude/hooks/'));
+  assert.deepEqual(hooks, ['.claude/hooks/guard.mjs']);
+  assert.ok(hooks.every((f) => /^[A-Za-z0-9._/-]+$/.test(f)));
+  const ignored = (p) => spawnSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: ROOT }).status === 0;
+  assert.equal(ignored('.claude/hooks/guard.mjs'), false);
+  const s = JSON.parse(read('.claude/settings.json'));
+  const cmds = (s.hooks?.PreToolUse ?? []).flatMap((h) => h.hooks.map((x) => x.command));
+  assert.ok(cmds.some((c) => c.includes('.claude/hooks/guard.mjs')), 'хук не зарегистрирован');
+  assert.ok(s.permissions.deny.includes('Edit(./.claude/hooks/**)'), 'нужен запрет Edit(./.claude/hooks/**)');
 });
 
 test('файлы участника вне репо: обновление их не перезапишет', () => {
