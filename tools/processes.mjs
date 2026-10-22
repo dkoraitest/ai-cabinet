@@ -976,9 +976,10 @@ const asMap = (obj) =>
 const SHOW_ROWS = 40;
 const listOf = (items) => (items.length > SHOW_ROWS ? [...items.slice(0, SHOW_ROWS), `  ... и ещё ${items.length - SHOW_ROWS}`] : items);
 
-// Эталон по части файла (большой файл: скилл выполнен на первых строках): поле «строк в эталоне» с числом.
-// Тогда сравниваются только строки эталона, остальные строки программы в эталон не входят и расхождением
-// не считаются; итоги, категории и документы по части файла с программой не сравнить.
+// Эталон по части файла (большой файл: скилл выполнен на первых строках; сводная больше 300 групп: первые 100
+// групп): поле «строк в эталоне» с числом. Тогда сравниваются только строки эталона, остальные строки программы
+// в эталон не входят и расхождением не считаются; категории и документы по части файла с программой не сравнить.
+// Итоги эталон берёт из итогов read_table.py по всему файлу, поэтому они сравниваются всегда.
 export const COVERAGE = 'строк в эталоне';
 // Доля «разобрать вручную», выше которой сверка предупреждает: словарю, скорее всего, не хватает слов.
 const MANUAL_WARN_SHARE = 0.2;
@@ -1016,17 +1017,17 @@ export function compareWithEtalon(etalon, program) {
     if (wrong.length) lines.push(`Другой результат у программы: ${wrong.length}.`, ...listOf(wrong));
     if (missing.length) lines.push(`Нет у программы: ${missing.length}: ${missing.slice(0, SHOW_ROWS).join(', ')}.`);
     if (extra.length && partial) {
-      lines.push(`Не входят в эталон: ${extra.length} строк программы (эталон по ${etalon[COVERAGE]} строкам файла), их не сравниваем.`);
+      lines.push(`Не входят в эталон: ${extra.length} строк или групп программы (эталон по первым ${etalon[COVERAGE]}), их не сравниваем.`);
     } else if (extra.length) {
       lines.push(`Есть у программы, нет у скилла: ${extra.length}: ${extra.slice(0, SHOW_ROWS).join(', ')}.`);
     }
     differences += wrong.length + missing.length + (partial ? 0 : extra.length);
   }
-  const whole = ['итоги', 'по категориям', 'документов'].filter((sec) => etalon[sec] !== undefined);
+  const whole = ['по категориям', 'документов'].filter((sec) => etalon[sec] !== undefined);
   if (partial && whole.length) {
     lines.push(`Эталон по части файла: ${whole.map((sec) => `«${sec}»`).join(', ')} по всему файлу с ним не сравнить, не сравниваем.`);
   }
-  const eTotals = partial ? null : asMap(etalon['итоги']);
+  const eTotals = asMap(etalon['итоги']);
   if (eTotals) {
     const pTotals = asMap(program['итоги']) ?? new Map();
     const bad = [];

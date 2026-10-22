@@ -241,21 +241,67 @@ test('compareWithEtalon: другая категория, другой итог,
   assert.match(r.lines.at(-1), /^Итог сверки: расхождений 6\. Поправьте словарь или программу/);
 });
 
-test('compareWithEtalon: эталон по части большого файла: строки вне эталона не расхождение, итоги не сравниваются', () => {
+test('compareWithEtalon: эталон по части большого файла: строки вне эталона не расхождение, итоги по всему файлу сравниваются', () => {
   const r = compareWithEtalon(
-    { 'строк в эталоне': 2, 'по строкам': { 1: 'оборудование', 2: 'другое' }, 'итоги': { 'обращений': 2 } },
+    { 'строк в эталоне': 2, 'по строкам': { 1: 'оборудование', 2: 'другое' }, 'итоги': { 'обращений': 3 }, 'по категориям': { 'другое': 1 } },
     { 'итоги': { 'обращений': 3 }, 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } },
   );
   assert.equal(r.code, 0, r.lines.join('\n'));
   assert.equal(r.differences, 0);
   const text = r.lines.join('\n');
   assert.match(text, /По строкам: совпало 2 из 2\./);
-  assert.match(text, /Не входят в эталон: 1 строк программы \(эталон по 2 строкам файла\), их не сравниваем\./);
-  assert.match(text, /Эталон по части файла: «итоги» по всему файлу с ним не сравнить, не сравниваем\./);
+  assert.match(text, /Не входят в эталон: 1 строк или групп программы \(эталон по первым 2\), их не сравниваем\./);
+  assert.match(text, /Эталон по части файла: «по категориям» по всему файлу с ним не сравнить, не сравниваем\./);
+  assert.match(text, /Итоги: совпали все \(1\)\./);
   assert.equal(r.lines.at(-1), 'Итог сверки: программа дала тот же результат, что скилл.');
+  // Итог по всему файлу в эталоне по части файла тоже сверяется: другой итог у программы → расхождение.
+  const wrongTotal = compareWithEtalon(
+    { 'строк в эталоне': 2, 'по строкам': { 1: 'оборудование', 2: 'другое' }, 'итоги': { 'обращений': 3 } },
+    { 'итоги': { 'обращений': 4 }, 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } },
+  );
+  assert.equal(wrongTotal.code, 1);
+  assert.match(wrongTotal.lines.join('\n'), /«обращений»: у скилла 3, у программы 4/);
   // Без пометки о части файла лишняя строка остаётся расхождением.
   const full = compareWithEtalon({ 'по строкам': { 1: 'оборудование', 2: 'другое' } }, { 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } });
   assert.equal(full.code, 1);
+});
+
+// Сводная: литры по АЗС и виду топлива, ключ группы «АЗС-01 / АИ-92».
+const groups = (n, shift = 0) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`АЗС-${String(i + 1).padStart(3, '0')} / АИ-92`, 100 + i + (i === 0 ? shift : 0)]));
+const sum = (g) => Math.round(Object.values(g).reduce((a, b) => a + b, 0) * 10) / 10;
+
+test('compareWithEtalon: сводная до 300 групп: все группы в «по категориям», неверная группа или итог → расхождение', () => {
+  const g = groups(47);
+  const etalon = { 'итоги': { 'литров': sum(g) }, 'по категориям': g };
+  const ok = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(g) }, 'по категориям': { ...g } });
+  assert.equal(ok.code, 0, ok.lines.join('\n'));
+  assert.ok(ok.lines.includes('По категориям: совпали все (47).'));
+  const wrongGroup = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(g) }, 'по категориям': groups(47, 5) });
+  assert.equal(wrongGroup.code, 1);
+  assert.match(wrongGroup.lines.join('\n'), /«АЗС-001 \/ АИ-92»: у скилла 100, у программы 105/);
+  const wrongTotal = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(g) + 7 }, 'по категориям': { ...g } });
+  assert.equal(wrongTotal.code, 1);
+  assert.match(wrongTotal.lines.join('\n'), /Итоги: не совпало 1 из 1\./);
+});
+
+test('compareWithEtalon: сводная больше 300 групп: первые 100 групп в «по строкам» и итоги по всему файлу', () => {
+  const all = groups(350);
+  const first = Object.fromEntries(Object.entries(all).slice(0, 100));
+  const etalon = { 'строк в эталоне': 100, 'итоги': { 'литров': sum(all), 'групп': 350 }, 'по строкам': first };
+  const ok = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(all), 'групп': 350 }, 'по строкам': { ...all } });
+  assert.equal(ok.code, 0, ok.lines.join('\n'));
+  const text = ok.lines.join('\n');
+  assert.match(text, /По строкам: совпало 100 из 100\./);
+  assert.match(text, /Не входят в эталон: 250 строк или групп программы \(эталон по первым 100\), их не сравниваем\./);
+  assert.match(text, /Итоги: совпали все \(2\)\./);
+  // Программа ошиблась в группе за пределами первых 100: её видно по итогу по всему файлу.
+  const tail = { ...all, 'АЗС-300 / АИ-92': all['АЗС-300 / АИ-92'] + 50 };
+  const wrongTotal = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(tail), 'групп': 350 }, 'по строкам': tail });
+  assert.equal(wrongTotal.code, 1, wrongTotal.lines.join('\n'));
+  assert.match(wrongTotal.lines.join('\n'), /«литров»: у скилла/);
+  assert.match(wrongTotal.lines.at(-1), /^Итог сверки: расхождений 1\./);
+  const wrongGroup = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(all), 'групп': 350 }, 'по строкам': { ...all, 'АЗС-001 / АИ-92': 1 } });
+  assert.equal(wrongGroup.code, 1);
 });
 
 test('compareWithEtalon: больше 20% строк в «разобрать вручную» → предупреждение, не расхождение', () => {

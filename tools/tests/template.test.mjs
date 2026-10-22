@@ -247,9 +247,14 @@ test('добавить процесс: всегда программа (kind scr
   const run = read('.claude/skills/run-process/SKILL.md');
   assert.match(run, /## Доработать процесс/);
   assert.match(run, /## Добавить слово в словарь/);
+  assert.match(run, /## Пополнить словарь/);
+  // Правка процесса: остановка видимым текстом перед записью, как в add-process.
+  assert.ok(run.includes('«Так? Поправляю?»') && run.includes('«Так? Добавляю?»'));
+  assert.ok(skill.includes('«Так? Записываю программу?»'));
   const rules = read('CLAUDE.md');
   assert.match(rules, /\| «доработай» и название процесса/);
   assert.match(rules, /\| «добавь в словарь процесса <название>: <слово> → <тема>»/);
+  assert.match(rules, /\| «пополни словарь процесса <название>»/);
 });
 
 test('запуск двойным щелчком: start-cabinet.cmd и .command', () => {

@@ -32,6 +32,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 HEADER_SCAN_ROWS = 30
+ABOVE_SHOWN = 15  # строк над шапкой в выводе для человека, остальные: «... и ещё N»
+CELL_SHOWN = 200  # знаков ячейки над шапкой в выводе для человека
 CSV_CANDIDATES = [";", ",", "\t", "|"]
 CSV_EXT = {".csv", ".txt", ".tsv"}
 XLSX_EXT = {".xlsx", ".xlsm"}
@@ -144,8 +146,8 @@ def scan(row_iter, merges, n_rows):
     """Один проход по строкам (списки строк, пустая строка = пустой список/ячейки).
 
     Объединённые вниз ячейки в строках данных заполняются значением из верхней ячейки.
-    Непустые строки над шапкой (заголовок отчёта, поставщик, период) попадают в above_header:
-    в каждой только непустые ячейки, строк не больше n_rows, как и первых строк данных.
+    Непустые строки над шапкой (заголовок отчёта, поставщик, период) попадают в above_header целиком:
+    в каждой только непустые ячейки. Вывод для человека их сокращает (format_human).
     """
     starts = {}
     for m in merges:
@@ -170,7 +172,7 @@ def scan(row_iter, merges, n_rows):
         if h is None:
             return
         cols, hrows, h = build_columns([raw for raw, _ in buffer], h, merges)
-        above = [[c for c in raw if c != ""] for raw, _ in buffer[:h] if any(raw)][:n_rows]
+        above = [[c for c in raw if c != ""] for raw, _ in buffer[:h] if any(raw)]
         for raw, filled in buffer[h + hrows:]:
             if any(raw):
                 take(filled)
@@ -605,8 +607,12 @@ def format_human(r):
     if r["header_row"] is None:
         out.append("Данных в таблице нет.")
         return "\n".join(out)
-    if r["above_header"]:
-        out.append("Над шапкой: " + "; ".join(" | ".join(row) for row in r["above_header"]))
+    above = r["above_header"]
+    if above:
+        cut = lambda c: c if len(c) <= CELL_SHOWN else c[:CELL_SHOWN] + "..."
+        shown = [" | ".join(cut(c) for c in row) for row in above[:ABOVE_SHOWN]]
+        more = f"; ... и ещё {len(above) - ABOVE_SHOWN} строк над шапкой" if len(above) > ABOVE_SHOWN else ""
+        out.append("Над шапкой: " + "; ".join(shown) + more)
     levels = f" (шапка в {r['header_rows']} строки, объединённые ячейки развёрнуты)" if r["header_rows"] > 1 else ""
     out.append(f"Строка шапки: {r['header_row']}{levels}")
     out.append(f"Столбцов: {len(r['columns'])}")

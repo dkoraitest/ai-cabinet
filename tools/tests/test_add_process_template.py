@@ -212,10 +212,50 @@ class Slovar(unittest.TestCase):
         self.assertEqual(m.classify("Можно ли оставить машину на ночь?", s), (m.MANUAL, "нет слов из словаря"))
         cat, why = m.classify("Кофе холодный, а оператор нагрубил", s)  # кафе 1, персонал 2
         self.assertEqual(cat, "обслуживание и персонал")
-        cat, why = m.classify("Кофе холодный, а кассир молчал", s)  # по одному слову у двух категорий
-        self.assertEqual(cat, m.MANUAL)
-        self.assertIn("поровну", why)
-        self.assertIn("минимаркет и кафе", why)
+
+    def test_tie_goes_to_topic_written_first(self):
+        """Поровну у двух тем: тема слова, которое в тексте раньше, с пометкой «две темы», не «разобрать вручную»."""
+        m = self.c.module()
+        s = m.load_slovar()
+        self.assertEqual(m.classify("Кофе холодный, а оператор молчал", s),
+                         ("минимаркет и кафе", "две темы: минимаркет и кафе, обслуживание и персонал"))
+        self.assertEqual(m.classify("Оператор молчал, а кофе холодный", s),
+                         ("обслуживание и персонал", "две темы: обслуживание и персонал, минимаркет и кафе"))
+        cat, why = m.classify("Туалет грязный, кофе холодный, оператор молчал", s)
+        self.assertEqual(cat, "чистота и санузлы")  # чистота 2 слова: не ничья
+        self.assertFalse(why.startswith(m.TIES))
+        cat, why = m.classify("Колонка сломана, кофе холодный, кассир молчал", s)
+        self.assertEqual((cat, why.split(":")[0]), ("оборудование", "несколько тем"))
+
+    def test_stem_word_families(self):
+        """Основа у слова словаря и у слова текста одна: слово в обычной форме находит другие формы."""
+        m = self.c.module()
+        families = [
+            "зарядка зарядки зарядные зарядку", "колонка колонки колонке колонок колонками",
+            "бонус бонусы бонусов бонусами", "касса кассу кассе кассой", "грязь грязи грязный грязно грязная",
+            "топливо топлива топливом топливная топливной", "наличные наличными наличных наличка",
+            "благодарность благодарю благодарим", "очередь очереди очередью очередей",
+            "оплата оплату оплатой оплатить", "сотрудник сотрудника сотрудники сотрудникам", "мыло мыла мылом",
+        ]
+        # Слово словаря в обычной форме (первое) находит остальные: казахские окончания, другой суффикс, короткая основа.
+        from_base = ["командировка командировки командировочные", "дәретхана дәретханада дәретханасы",
+                     "жанармай жанармайдың", "ұпай ұпайлар", "газ газом газовой", "запах запаха запахом"]
+        for fam in families + from_base:
+            words = fam.split()
+            pairs = [(a, b) for a in words for b in words] if fam in families else [(words[0], b) for b in words]
+            for entry, text in pairs:
+                with self.subTest(entry=entry, text=text):
+                    slovar = {"тема": [(entry, m.roots(entry))]}
+                    self.assertEqual(m.classify(text, slovar)[0], "тема")
+        self.assertEqual(m.stem("зарядные"), m.stem("зарядка"))
+        self.assertEqual(m.stem("топливная"), m.stem("топливо"))
+        for short in ("газ", "чек", "сок", "дт"):  # до трёх букв слово не укорачивается
+            self.assertEqual(m.stem(short), short)
+        self.assertEqual(m.stem("машина"), "машин")  # корень на -н не режется до гласной
+        for entry, text in (("кофе", "Купил сок и печенье"), ("запах", "Заправляюсь только у вас"),
+                            ("дт", "После ДТП")):
+            with self.subTest(entry=entry, text=text):  # другое слово с похожим началом не находится
+                self.assertEqual(m.classify(text, {"тема": [(entry, m.roots(entry))]})[0], m.MANUAL)
 
     def test_broken_slovar_clear_stop(self):
         (self.c.proc / "slovar.json").write_text('{"тема": ["слово",]}', encoding="utf-8")
@@ -235,11 +275,16 @@ class Slovar(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         r = self.c.result()
         self.assertEqual(len(r["rows"]), 80)
-        manual = [i for i, s in enumerate(r["row_status"]) if s == "info"]
+        manual = [i for i, n in enumerate(r["row_note"]) if n == "разобрать вручную"]
         self.assertTrue(manual, "на файле кейса есть строки без слов из словаря")
         self.assertEqual(manual, list(range(len(manual))), "строки «разобрать вручную» идут первыми")
-        self.assertTrue(all(r["row_note"][i] == "разобрать вручную" for i in manual))
-        self.assertTrue(all(s is None for s in r["row_status"][len(manual):]))
+        self.assertTrue(all(r["row_status"][i] == "info" for i in manual))
+        rest = list(zip(r["row_status"], r["row_note"]))[len(manual):]
+        ties = [n for s, n in rest if s == "info"]
+        self.assertTrue(ties, "на файле кейса есть строки с двумя темами")
+        self.assertTrue(all(n.startswith(("две темы: ", "несколько тем: ")) for n in ties), ties)
+        self.assertTrue(all(n is None for s, n in rest if s is None))
+        self.assertIn(f"Две темы: {len(ties)}", r["summary"])
         self.assertIn(f"Разобрать вручную: {len(manual)} (файл razobrat-vruchnuyu.xlsx)", r["summary"])
         self.assertIn("output/proba/razobrat-vruchnuyu.xlsx", r["files"])
         self.assertEqual(len(manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")), len(manual) + 1)

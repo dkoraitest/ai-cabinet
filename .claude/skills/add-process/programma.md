@@ -53,7 +53,7 @@
 
 Всё, что программа не может разобрать сама, она не угадывает, а откладывает человеку:
 
-- классификация: в тексте нет слов из словаря, слов поровну у двух категорий, текст пустой;
+- классификация: в тексте нет слов из словаря или текст пустой. Слов поровну у двух тем: строка остаётся программе, тема слова, которое в тексте раньше, с пометкой «две темы»;
 - черновик: в документе осталась пометка (поле без данных или пометка из скилла: «[нет данных]», «[уточнить]», «[уточнить: что]»);
 - сводная, сверка, реестр: строка, которую не прочитать (сумма не числом, неизвестная станция), если скилл не говорит, как с ней быть.
 
@@ -238,16 +238,28 @@ if __name__ == "__main__":
 Правило совпадения (его же простыми словами объясняй человеку):
 
 - большие и маленькие буквы и буква ё не важны;
-- слово из словаря находит в тексте слова, которые начинаются с его основы. Основа: слово без последних гласных, «й» и «ь», но не короче трёх букв. «Бонусы» находит бонус, бонусы, бонусов; «касса» находит кассу, кассира, кассе; «очередь» находит очереди;
-- слово из одной-двух букв (ДТ, QR) ищется только целиком;
+- программа сравнивает основы: и у слова словаря, и у слова текста она отбрасывает окончание и простой суффикс (-к-, -н-, -ость), поэтому слово в обычной форме находит другие формы: «командировка» найдёт «командировки» и «командировочные», «бонус» найдёт «бонусы» и «бонусов»;
+- слово находит и слова, основа которых начинается с его основы: так находятся казахские слова с окончаниями («дәретхана» найдёт «дәретханада»), но и «премия» найдёт «премьеру»: такое слово бери фразой;
+- слово до трёх букв не укорачивается; короткая основа (до трёх букв) находит ту же основу и слова, которые начинаются со всего слова словаря («газ» найдёт «газом» и «газовой», «запах» найдёт «запаха», но не «заправку»; «газ» найдёт и «газету»: короткое слово, с которого начинаются чужие слова, бери фразой); слово из одной-двух букв (ДТ, QR) ищется только целиком;
 - фраза из нескольких слов находит эти слова подряд: «не работает», «аи 92» (найдёт и «АИ-92»);
-- если слово меняется внутри (санузел, санузлы; колонка, колонок), в словарь пишут обе формы;
-- категория строки: та, у которой нашлось больше разных слов и фраз из словаря. Ничего не нашлось, поровну у двух категорий или текст пустой: строка уходит в «разобрать вручную» с причиной.
+- если слово меняется внутри (санузел, санузлы), в словарь пишут обе формы;
+- категория строки: та, у которой нашлось больше разных слов и фраз из словаря (слова с одной основой, «аванс» и «авансы», считаются одним). Поровну у двух тем: тема того слова, которое стоит в тексте раньше (как в скилле: тема, о которой пишут первой), строка с пометкой «две темы: X, Y» (`row_status` `info`). Ничего не нашлось или текст пустой: строка уходит в «разобрать вручную» с причиной.
 
 ```python
 # --- Словарь: классификация по словам из processes/<имя>/slovar.json ---
 SLOVAR = HERE / "slovar.json"
+TIES = ("две темы", "несколько тем")  # пометка строки, где слов поровну у тем
 VOWELS = set("аеиоуыэюяйьъәіөұүі")
+# Основа слова: окончание и простой суффикс прочь, как в стеммере Snowball для русского, упрощённо.
+REFLEXIVE = ("ся", "сь")
+ADJECTIVE = ("ими", "ыми", "его", "ого", "ему", "ому", "ее", "ие", "ые", "ое", "ей", "ий", "ый", "ой",
+             "ем", "им", "ым", "ом", "их", "ых", "ую", "юю", "ая", "яя", "ою", "ею")
+VERB_AFTER_A = ("ете", "йте", "ешь", "нно", "ла", "на", "ли", "ем", "ло", "но", "ет", "ют", "ны", "ть", "й", "л", "н")
+VERB = ("ейте", "уйте", "ила", "ыла", "ена", "ите", "или", "ыли", "ило", "ыло", "ено", "ует", "уют", "ены", "ить",
+        "ыть", "ишь", "ей", "уй", "ил", "ыл", "им", "ым", "ен", "ят", "ит", "ыт", "ую", "ю")
+NOUN = ("иями", "ями", "ами", "ией", "иям", "ием", "иях", "ев", "ов", "ие", "ье", "еи", "ии", "ей", "ой", "ий",
+        "ям", "ем", "ам", "ом", "ах", "ях", "ию", "ью", "ия", "ья", "а", "е", "и", "й", "о", "у", "ы", "ь", "ю", "я")
+SUFFIX = ("ость", "ост", "ок", "ек", "к", "н")
 
 
 def words_of(text):
@@ -255,11 +267,33 @@ def words_of(text):
     return re.findall(r"[^\W_]+", str(text).lower().replace("ё", "е"))
 
 
+def cut(word, endings, keep=3, after=""):
+    """(слово без самого длинного подходящего окончания, отрезано ли). Остаётся не меньше keep букв."""
+    for e in sorted(endings, key=len, reverse=True):
+        if word.endswith(e) and len(word) - len(e) >= keep and (not after or word[-len(e) - 1] in after):
+            return word[:-len(e)], True
+    return word, False
+
+
 def stem(word):
-    """Основа слова из словаря: без последних гласных, «й» и «ь», не короче трёх букв."""
-    while len(word) > 3 and word[-1] in VOWELS:
-        word = word[:-1]
-    return word
+    """Основа слова: одна и та же у «зарядка», «зарядки», «зарядные». Слово до трёх букв не меняется.
+    Казахские слова: та же функция у словаря и у текста, а окончания после основы находит поиск по началу."""
+    w = str(word).lower().replace("ё", "е")
+    if len(w) <= 3:
+        return w
+    w, _ = cut(w, REFLEXIVE)
+    for group, after in ((ADJECTIVE, ""), (VERB_AFTER_A, "ая"), (VERB, ""), (NOUN, "")):
+        w, done = cut(w, group, after=after)
+        if done:
+            break
+    if w.endswith("нн"):
+        w = w[:-1]
+    short, done = cut(w, SUFFIX, keep=4)
+    if done and short[-1] not in VOWELS:  # «колонк» → «колон», но «машин» не → «маши»
+        w = short
+    while len(w) > 3 and w[-1] in VOWELS:
+        w = w[:-1]
+    return w
 
 
 def load_slovar():
@@ -274,36 +308,55 @@ def load_slovar():
                       f"или скажите Claude «доработай {TITLE}».")
     if not isinstance(data, dict) or not all(isinstance(v, list) for v in data.values()):
         raise StopRun(f"В словаре {rel} нужен вид {{\"категория\": [\"слово\", \"фраза\"]}}.")
-    return {str(cat): [(str(e), [stem(w) for w in words_of(e)]) for e in entries if words_of(e)]
-            for cat, entries in data.items()}
+    return {str(cat): [(str(e), roots(e)) for e in entries if words_of(e)] for cat, entries in data.items()}
 
 
-def has_entry(stems, words):
-    """Слово или фраза из словаря есть в тексте: основы подряд, слово до двух букв целиком."""
-    n = len(stems)
+def roots(text):
+    """[(основа, слово)] для каждого слова текста или записи словаря."""
+    return [(stem(w), w) for w in words_of(text)]
+
+
+def same_root(entry, word):
+    """Слово словаря и слово текста, оба (основа, слово). Слово из одной-двух букв: только целиком.
+    Основа до трёх букв: та же основа или слово текста начинается со слова словаря («газ», «газом»).
+    Длиннее: слово текста начинается с основы (и казахские окончания) или основа длиннее на одну букву."""
+    s, e = entry
+    ws, w = word
+    if len(e) <= 2:
+        return w == e
+    if len(s) <= 3:
+        return ws == s or w.startswith(e)
+    return ws.startswith(s) or (len(s) == len(ws) + 1 and s.startswith(ws))
+
+
+def find_entry(entry, words):
+    """Где в тексте слово или фраза из словаря (номер слова), или -1. Фраза: слова подряд."""
+    n = len(entry)
     for i in range(len(words) - n + 1):
-        if all(w == s if len(s) <= 2 else w.startswith(s) for s, w in zip(stems, words[i:i + n])):
-            return True
-    return False
+        if all(same_root(e, w) for e, w in zip(entry, words[i:i + n])):
+            return i
+    return -1
 
 
 def classify(text, slovar):
-    """(категория, найденные слова) или (MANUAL, почему)."""
-    words = words_of(text)
+    """(категория, найденные слова). Слов поровну у тем: тема слова, которое в тексте раньше, и почему
+    «две темы: X, Y». Слов нет или текст пустой: (MANUAL, почему)."""
+    words = roots(text)
     if not words:
         return MANUAL, "пустой текст"
-    found = {}
+    found = {}  # категория: (где первое слово, сколько разных основ, найденные слова)
     for cat, entries in slovar.items():
-        hits = [entry for entry, stems in entries if has_entry(stems, words)]
+        hits = [(pos, entry, tuple(s for s, _ in parts)) for entry, parts in entries
+                for pos in [find_entry(parts, words)] if pos >= 0]
         if hits:
-            found[cat] = hits
+            found[cat] = (min(h[0] for h in hits), len({h[2] for h in hits}), [h[1] for h in hits])
     if not found:
         return MANUAL, "нет слов из словаря"
-    best = max(len(h) for h in found.values())
-    top = [cat for cat, h in found.items() if len(h) == best]
+    best = max(n for _, n, _ in found.values())
+    top = [cat for _, cat in sorted((pos, cat) for cat, (pos, n, _) in found.items() if n == best)]
     if len(top) > 1:
-        return MANUAL, "поровну у категорий: " + "; ".join(f"{c} ({', '.join(found[c])})" for c in top)
-    return top[0], ", ".join(found[top[0]])
+        return top[0], (TIES[0] if len(top) == 2 else TIES[1]) + ": " + ", ".join(top)
+    return top[0], ", ".join(found[top[0]][2])
 ```
 
 Пример `main` для классификации (обращения по темам и сводка по темам и АЗС):
@@ -332,6 +385,7 @@ def main():
             manual.append((row, why))
         items.append((row, num, azs, text, cat, why))
     items.sort(key=lambda x: x[4] != MANUAL)  # «разобрать вручную» первыми
+    note = lambda c, w: MANUAL if c == MANUAL else w if w.startswith(TIES) else None  # пометка строки на карточке
     by_cat, by_azs = {}, {}
     for row, num, azs, text, cat, why in items:
         if cat in ("повтор", MANUAL):
@@ -348,8 +402,9 @@ def main():
         write_manual(columns, manual),
     ]
     repeats = sum(1 for x in items if x[4] == "повтор")
+    ties = sum(1 for *_, c, w in items if c != MANUAL and w.startswith(TIES))
     top = ", ".join(f"{c} {n}" for c, n in sorted(by_cat.items(), key=lambda x: -x[1])[:3])
-    summary = (f"Обращений {len(rows)}, повторов {repeats}. Чаще всего: {top}. "
+    summary = (f"Обращений {len(rows)}, повторов {repeats}. Чаще всего: {top}. Две темы: {ties} (пометка на карточке). "
                f"Разобрать вручную: {len(manual)} (файл razobrat-vruchnuyu.xlsx). Файл {src.name}.")
     result = {
         "title": TITLE,
@@ -358,8 +413,8 @@ def main():
         "summary": summary,
         "columns": out_cols,
         "rows": [[n, a, c, t] for _, n, a, t, c, _w in items],
-        "row_status": ["info" if c == MANUAL else None for *_, c, _w in items],
-        "row_note": [MANUAL if c == MANUAL else None for *_, c, _w in items],
+        "row_status": ["info" if note(c, w) else None for *_, c, w in items],
+        "row_note": [note(c, w) for *_, c, w in items],
         "files": files,
         "sverka": {
             "итоги": {"обращений": len(rows), "повторов": repeats},

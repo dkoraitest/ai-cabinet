@@ -167,8 +167,8 @@ class XlsxTests(FixtureCase):
         lines = out.stdout.splitlines()
         self.assertLess(lines.index(next(x for x in lines if x.startswith("Над шапкой"))),
                         lines.index(next(x for x in lines if x.startswith("Строка шапки"))))
-        # Строк над шапкой не больше, чем первых строк данных (--rows): то же ограничение длины вывода.
-        self.assertEqual(run_json(p, "--rows", 1)["above_header"], [["Сверка с ТОО «Ромашка» за август 2026"]])
+        # --rows ограничивает только первые строки данных: строки над шапкой те же.
+        self.assertEqual(len(run_json(p, "--rows", 1)["above_header"]), 2)
         # Другой лист без строк над шапкой: строки «Над шапкой» нет.
         wb = openpyxl.load_workbook(p)
         ws2 = wb.create_sheet("Итог")
@@ -177,6 +177,30 @@ class XlsxTests(FixtureCase):
         wb.save(p)
         self.assertNotIn("Над шапкой", run(p, "--sheet", "Итог").stdout)
         self.assertIn("Над шапкой: Сверка", run(p, "--sheet", "Сверка").stdout)
+
+    def test_rows_above_header_cap_and_long_cells(self):
+        """Над шапкой больше 15 строк: первые 15 и «... и ещё N»; длинная ячейка обрезается. В JSON всё целиком."""
+        p = self.dir / "много строк над шапкой.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        title = "Акт сверки " + "очень длинный заголовок " * 20
+        ws.append([title])
+        for i in range(2, 18):
+            ws.append([f"строка {i}"])
+        ws.append(["Документ", "Дата", "Сумма"])
+        ws.append(["№ 1", "01.08.2026", 10])
+        wb.save(p)
+        r = run_json(p)
+        self.assertEqual(r["header_row"], 18)
+        self.assertEqual(len(r["above_header"]), 17)
+        self.assertEqual(r["above_header"][0], [title.strip()])
+        out = run(p).stdout
+        line = next(x for x in out.splitlines() if x.startswith("Над шапкой: "))
+        self.assertIn("строка 15", line)
+        self.assertNotIn("строка 16", line)
+        self.assertTrue(line.endswith("... и ещё 2 строк над шапкой"), line)
+        first = line[len("Над шапкой: "):].split("; ")[0]
+        self.assertEqual(first, title.strip()[:200] + "...")
 
     def test_three_sheets(self):
         p = self.dir / "три листа.xlsx"
