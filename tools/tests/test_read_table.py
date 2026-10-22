@@ -109,6 +109,9 @@ class CsvTests(FixtureCase):
         self.assertIn("cp1251", out.stdout)
         self.assertIn("Разделитель", out.stdout)
         self.assertIn("Строка шапки", out.stdout)
+        # Шапка в первой строке: строки «Над шапкой» нет.
+        self.assertNotIn("Над шапкой", out.stdout)
+        self.assertEqual(run_json(p)["above_header"], [])
 
 
 class XlsxTests(FixtureCase):
@@ -139,6 +142,41 @@ class XlsxTests(FixtureCase):
         self.assertEqual(r["header_rows"], 2)
         self.assertEqual(r["data_rows"], 2)
         self.assertEqual(r["rows"][0], ["АЗС-01", "10", "20", "30", "40"])
+
+    def test_rows_above_header_shown(self):
+        """Заголовок отчёта, поставщик и период над шапкой: Claude видит их, программа берёт из above_header."""
+        p = self.dir / "сверка с заголовком.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Сверка"
+        ws["A1"] = "Сверка с ТОО «Ромашка» за август 2026"
+        ws.merge_cells("A1:E1")
+        ws["A2"] = "Поставщик:"
+        ws["B2"] = "ТОО «Ромашка»"
+        ws.append([])
+        ws.append(["Документ", "Дата", "Сумма у нас", "Сумма у поставщика", "Комментарий"])
+        ws.append(["№ 41", "05.08.2026", 6195000, None, "нет у поставщика"])
+        ws.append(["№ 42", "12.08.2026", 1250000, 1200000, None])
+        wb.save(p)
+        r = run_json(p)
+        self.assertEqual(r["header_row"], 4)
+        self.assertEqual(r["above_header"], [["Сверка с ТОО «Ромашка» за август 2026"], ["Поставщик:", "ТОО «Ромашка»"]])
+        out = run(p)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Над шапкой: Сверка с ТОО «Ромашка» за август 2026; Поставщик: | ТОО «Ромашка»", out.stdout)
+        lines = out.stdout.splitlines()
+        self.assertLess(lines.index(next(x for x in lines if x.startswith("Над шапкой"))),
+                        lines.index(next(x for x in lines if x.startswith("Строка шапки"))))
+        # Строк над шапкой не больше, чем первых строк данных (--rows): то же ограничение длины вывода.
+        self.assertEqual(run_json(p, "--rows", 1)["above_header"], [["Сверка с ТОО «Ромашка» за август 2026"]])
+        # Другой лист без строк над шапкой: строки «Над шапкой» нет.
+        wb = openpyxl.load_workbook(p)
+        ws2 = wb.create_sheet("Итог")
+        ws2.append(["Документ", "Сумма"])
+        ws2.append(["№ 41", 1])
+        wb.save(p)
+        self.assertNotIn("Над шапкой", run(p, "--sheet", "Итог").stdout)
+        self.assertIn("Над шапкой: Сверка", run(p, "--sheet", "Сверка").stdout)
 
     def test_three_sheets(self):
         p = self.dir / "три листа.xlsx"

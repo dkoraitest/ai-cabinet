@@ -398,7 +398,7 @@ class Word(unittest.TestCase):
         texts, _ = self.texts(self.c.proc / "shablon.docx")
         self.assertEqual(texts, m.SHABLON_TEXT)
 
-    def test_example_main_one_document_per_row(self):
+    def write_rows(self):
         import openpyxl
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -406,6 +406,14 @@ class Word(unittest.TestCase):
         ws.append(["ТОО «Ромашка»", 1250000])
         ws.append(["ТОО «Василёк»", None])
         wb.save(self.c.input / "rashozhdeniya.xlsx")
+
+    def edit_program(self, old, new):
+        code = (self.c.proc / "run.py").read_text(encoding="utf-8")
+        self.assertEqual(code.count(old), 1, f"в образце нет ровно одной строки {old!r}")
+        (self.c.proc / "run.py").write_text(code.replace(old, new), encoding="utf-8")
+
+    def test_example_main_one_document_per_row(self):
+        self.write_rows()
         self.make_template(with_table=False)
         proc = self.c.run()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -416,10 +424,12 @@ class Word(unittest.TestCase):
         self.assertEqual(r["sverka"]["документов"], 2)
         self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Василёк»": "разобрать вручную", "ТОО «Ромашка»": "1 250 000,00"})
         self.assertTrue((self.c.out / "pismo-01.docx").is_file() and (self.c.out / "pismo-02.docx").is_file())
+        texts, _ = self.texts(self.c.out / "pismo-01.docx")
+        self.assertIn("Подпись: А. Иванов", texts)  # подпись человек назвал один раз: постоянная строка
         texts, _ = self.texts(self.c.out / "pismo-02.docx")
         self.assertIn("Сумма: [нет данных] тенге, дата 21.09.2026.", texts)
         rows = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
-        self.assertEqual(rows[1][-1], "нет данных: Сумма")
+        self.assertEqual(rows[1][-1], "поля с пометкой: Сумма")
         if NODE:
             code, out = self.c.node("list")
             self.assertEqual(code, 0, out)
@@ -427,6 +437,44 @@ class Word(unittest.TestCase):
             code, out = self.c.node("compare", "proba")  # эталона нет, но проверка программы прошла
             self.assertEqual(code, 2, out)
             self.assertNotIn("нельзя", out)
+
+    def test_marker_from_skill_documents_go_to_manual(self):
+        """Скилл пишет «[уточнить]», подпись человек не назвал: пометка в каждом письме, все письма человеку."""
+        self.write_rows()
+        self.make_template(with_table=False)
+        self.edit_program('NO_DATA = "[нет данных]"', 'NO_DATA = "[уточнить]"')
+        self.edit_program('"А. Иванов"', "None")
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        r = self.c.result()
+        self.assertEqual(r["row_status"], ["info", "info"])
+        self.assertIn("Разобрать вручную: 2", r["summary"])
+        self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Ромашка»": "разобрать вручную", "ТОО «Василёк»": "разобрать вручную"})
+        texts, _ = self.texts(self.c.out / "pismo-01.docx")
+        self.assertIn("Подпись: [уточнить]", texts)
+        texts, _ = self.texts(self.c.out / "pismo-02.docx")
+        self.assertIn("Сумма: [уточнить] тенге, дата 21.09.2026.", texts)
+        rows = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        self.assertEqual([x[-1] for x in rows[1:]], ["поля с пометкой: Фамилия И. О.", "поля с пометкой: Сумма, Фамилия И. О."])
+
+    def test_marker_in_value_or_template_text(self):
+        """Пометка с пояснением в значении поля и пометка в самом тексте шаблона: документ тоже человеку."""
+        self.make_template(with_table=False)
+        m = self.c.module()
+        values = {"Наименование поставщика": "ТОО «Ромашка»", "дата": "21.09.2026", "Сумма": "1 250 000,00",
+                  "Фамилия И. О.": "[уточнить: подписант]"}
+        _, missing = m.fill_docx(values, "pismo-01.docx")
+        self.assertEqual(missing, ["Фамилия И. О."])
+        texts, _ = self.texts(self.c.out / "pismo-01.docx")
+        self.assertIn("Подпись: [уточнить: подписант]", texts)
+        _, missing = m.fill_docx(dict(values, **{"Фамилия И. О.": "А. Иванов [1]"}), "pismo-02.docx")
+        self.assertEqual(missing, [])  # скобки без пометки: не пометка
+        import docx
+        d = docx.Document(self.c.proc / "shablon.docx")
+        d.add_paragraph("Срок оплаты: [уточнить: срок оплаты]. Договор: [нет данных]")
+        d.save(self.c.proc / "shablon.docx")
+        _, missing = m.fill_docx(dict(values, **{"Фамилия И. О.": "А. Иванов"}), "pismo-03.docx")
+        self.assertEqual(missing, ["[нет данных]", "[уточнить: срок оплаты]"])
 
     @unittest.skipUnless(NODE, "нет node")
     def test_samples_pass_program_check(self):

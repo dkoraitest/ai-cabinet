@@ -5,7 +5,8 @@
     python tools/read_table.py <файл> [--sum СТОЛБЕЦ] [--by СТОЛБЕЦ] [--where СТОЛБЕЦ=ЗНАЧЕНИЕ]
 
 Что печатает: кодировку и разделитель (для CSV/TXT), листы с числом строк (для XLSX),
-строку шапки, названия столбцов, число строк данных и первые строки.
+строки над шапкой (заголовок отчёта, поставщик, период), строку шапки, названия столбцов,
+число строк данных и первые строки.
 С --sum, --by или --where: итоги по всем строкам (число строк и суммы столбцов, всего и по группам
 до двух столбцов, с отбором строк). Ими Claude проверяет расчёт программы процесса независимо от неё.
 Объединённая многоуровневая шапка (до 4 строк) разворачивается в названия «Родитель / Дочерний».
@@ -143,6 +144,8 @@ def scan(row_iter, merges, n_rows):
     """Один проход по строкам (списки строк, пустая строка = пустой список/ячейки).
 
     Объединённые вниз ячейки в строках данных заполняются значением из верхней ячейки.
+    Непустые строки над шапкой (заголовок отчёта, поставщик, период) попадают в above_header:
+    в каждой только непустые ячейки, строк не больше n_rows, как и первых строк данных.
     """
     starts = {}
     for m in merges:
@@ -151,6 +154,7 @@ def scan(row_iter, merges, n_rows):
     active = []  # (последняя строка, столбец1, столбец2, значение)
     buffer, cols, hrows = [], None, 1
     h = None
+    above = []
     nonempty, data_rows, sample = 0, 0, []
 
     def take(filled):
@@ -161,11 +165,12 @@ def scan(row_iter, merges, n_rows):
                 sample.append(filled)
 
     def resolve():
-        nonlocal cols, hrows, h, buffer
+        nonlocal cols, hrows, h, buffer, above
         h = pick_header([raw for raw, _ in buffer])
         if h is None:
             return
         cols, hrows, h = build_columns([raw for raw, _ in buffer], h, merges)
+        above = [[c for c in raw if c != ""] for raw, _ in buffer[:h] if any(raw)][:n_rows]
         for raw, filled in buffer[h + hrows:]:
             if any(raw):
                 take(filled)
@@ -202,6 +207,7 @@ def scan(row_iter, merges, n_rows):
     return {
         "header_row": (h + 1) if cols is not None else None,
         "header_rows": hrows,
+        "above_header": above,
         "columns": cols or [],
         "data_rows": data_rows,
         "total_rows": nonempty,
@@ -599,6 +605,8 @@ def format_human(r):
     if r["header_row"] is None:
         out.append("Данных в таблице нет.")
         return "\n".join(out)
+    if r["above_header"]:
+        out.append("Над шапкой: " + "; ".join(" | ".join(row) for row in r["above_header"]))
     levels = f" (шапка в {r['header_rows']} строки, объединённые ячейки развёрнуты)" if r["header_rows"] > 1 else ""
     out.append(f"Строка шапки: {r['header_row']}{levels}")
     out.append(f"Столбцов: {len(r['columns'])}")
