@@ -801,10 +801,74 @@ KZ = ["Тараптар осы шарттың талаптарын орында�
       "Сатып алушы тауар құнын төлейді.", "Дауларды тараптар келіссөз арқылы шешеді."]
 
 
-def bilingual(russian_left=False, one_row=False, other=None, mixed=False):
+KZ_FILL = "Тараптар шарттың талаптарын орындауға міндетті және жауапты "
+KZ_RUS_LETTERS = str.maketrans("әғқңөұүһіӘҒҚҢӨҰҮҺІ", "агкноуухиАГКНОУУХИ")  # казахский текст русскими буквами
+
+
+def mirror(text):
+    """Казахский текст длиной с русский абзац."""
+    return (KZ_FILL * (len(text) // len(KZ_FILL) + 1))[:max(len(text), 20)]
+
+
+def paragraphs_before_spec(d):
+    """Абзацы до первой таблицы (спецификации) и сама таблица."""
+    from docx.oxml.ns import qn
+    body = d.element.body
+    first = next(e for e in body if e.tag == qn("w:tbl"))
+    paras = []
+    for e in body:
+        if e is first:
+            break
+        if e.tag == qn("w:p"):
+            paras.append(e)
+    return paras, first
+
+
+def merged_row(table, text):
+    """Строка таблицы во всю ширину (ячейки объединены) с одним абзацем."""
+    row = table.add_row()
+    cell = row.cells[0].merge(row.cells[1])
+    for extra in cell.paragraphs[1:]:
+        extra._p.getparent().remove(extra._p)
+    cell.paragraphs[0].text = text
+    return row
+
+
+def bilingual_sections(merged_title=False, merged_headings=False, kz=mirror):
+    """Название договора над таблицами, текст до спецификации: по таблице в два столбца на раздел (казахский
+    слева, русский справа). merged_title: первая строка во всю ширину с названием на двух языках;
+    merged_headings: заголовок раздела строкой во всю ширину «4. Название / казахский заголовок»."""
+    def fn(d):
+        from docx.oxml.ns import qn
+        paras, first = paragraphs_before_spec(d)
+        groups = [[]]
+        for p in paras[1:]:  # название документа остаётся над таблицами
+            style = p.find(f"{qn('w:pPr')}/{qn('w:pStyle')}")
+            heading = style is not None and style.get(qn("w:val")) == "Heading2"
+            if heading and groups[-1]:
+                groups.append([])
+            groups[-1].append((p, heading))
+        for k, group in enumerate(groups):
+            table = d.add_table(rows=0, cols=2)
+            if merged_title and k == 0:
+                merged_row(table, "ДОГОВОР ПОСТАВКИ НЕФТЕПРОДУКТОВ / МҰНАЙ ӨНІМДЕРІН ЖЕТКІЗУ ШАРТЫ")
+            for p, heading in group:
+                text = "".join(x.text or "" for x in p.iter(qn("w:t")))
+                if heading and merged_headings:
+                    merged_row(table, f"{text} / {kz(text)}")
+                    p.getparent().remove(p)
+                    continue
+                cells = table.add_row().cells
+                cells[1]._tc.append(p)
+                cells[0].paragraphs[0].text = kz(text)
+            first.addprevious(table._tbl)
+    return fn
+
+
+def bilingual(russian_left=False, one_row=False, other=None, mixed=False, merged_title=False):
     """Текст до первой таблицы (спецификации) в таблицу в два столбца: русский абзац и рядом казахский
-    (other(текст): свой текст второго столбца; mixed: казахская фраза и в русском столбце).
-    По строке на абзац или всё в одной строке."""
+    (other(текст): свой текст второго столбца; mixed: казахская фраза и в русском столбце; merged_title:
+    сверху строка во всю ширину с названием на двух языках). По строке на абзац или всё в одной строке."""
     def fn(d):
         from docx.oxml.ns import qn
         body = d.element.body
@@ -824,6 +888,10 @@ def bilingual(russian_left=False, one_row=False, other=None, mixed=False):
             if mixed:
                 ru.add_paragraph(KZ[k % len(KZ)])
             kz.add_paragraph(other(text) if other else KZ[k % len(KZ)])
+        if merged_title:
+            row = merged_row(table, "ДОГОВОР ПОСТАВКИ НЕФТЕПРОДУКТОВ / МҰНАЙ ӨНІМДЕРІН ЖЕТКІЗУ ШАРТЫ")
+            table._tbl.remove(row._tr)
+            table.rows[0]._tr.addprevious(row._tr)
         first.addprevious(table._tbl)
     return fn
 
@@ -1038,17 +1106,13 @@ class TwoDocuments(unittest.TestCase):
         self.assertTrue(any(row[0] == f"документ: {DOC_FILE}" and "разделы не распознаны" in row[-1] for row in why))
 
     def test_contract_in_table_goes_to_person(self):
-        """Договор свёрстан таблицей, второго столбца с текстом нет: вне таблиц текста нет, подсказка, что делать."""
+        """Договор свёрстан таблицей в один столбец: вне таблиц текста нет, подсказка, что делать."""
         def in_table(d):
-            from docx.oxml.ns import qn
-            body = d.element.body
-            paras = [e for e in body if e.tag == qn("w:p")]
-            table = d.add_table(rows=1, cols=2)
-            left, right = table.rows[0].cells
+            paras, first = paragraphs_before_spec(d)
+            table = d.add_table(rows=1, cols=1)
             for p in paras:
-                right._tc.append(p)
-            left.paragraphs[0].text = "Қазақ тіліндегі мәтін"
-            body.insert(0, table._tbl)
+                table.rows[0].cells[0]._tc.append(p)
+            first.addprevious(table._tbl)
         r = self.run_variant(in_table, in_table)
         self.assertEqual(r["status"], "yellow")
         self.assertIn("Сверка неполная", r["summary"])
@@ -1064,6 +1128,12 @@ class TwoDocuments(unittest.TestCase):
             "оба двуязычные": (bilingual(), bilingual(russian_left=True, one_row=True)),
             "только договор": (None, bilingual()),
             "только форма": (bilingual(one_row=True), None),
+            "название строкой во всю ширину": (bilingual(merged_title=True), bilingual(merged_title=True)),
+            "по таблице на раздел": (bilingual_sections(), bilingual_sections()),
+            "по разделам, заголовки и название во всю ширину": (
+                bilingual_sections(merged_title=True, merged_headings=True),
+                bilingual_sections(merged_title=True, merged_headings=True)),
+            "форма одной таблицей, договор по разделам": (bilingual(), bilingual_sections(merged_headings=True)),
         }
         for name, (change_form, change_doc) in variants.items():
             with self.subTest(name):
@@ -1092,6 +1162,40 @@ class TwoDocuments(unittest.TestCase):
                 self.assertIn("вне таблиц нет текста", row[-1])
                 self.assertIn("язык столбцов не определить", row[-1])
                 self.assertTrue(row[-1].endswith(HINT), row[-1])
+
+    def test_bilingual_short_section_change_is_seen(self):
+        """По таблице на раздел, раздел 7 из одного короткого пункта: правка «один год» → «три года» видна."""
+        def short(years):
+            def fn(d):
+                p = next(p for p in d.paragraphs if p.text.startswith("7.1."))
+                set_text(p, f"7.1. Договор действует {years}.")
+                bilingual_sections(merged_headings=True)(d)
+            return fn
+        r = self.run_variant(short("один год"), short("три года"))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"7.1": "изменён"}))
+        self.assertNotIn("Сверка неполная", r["summary"])
+        self.assertIn("Договор двуязычный: сверялся русский текст.", r["summary"])
+
+    def test_bilingual_unread_tables_are_loud(self):
+        """Казахский столбец набран русскими буквами: язык не определить. Название над таблицами прочитано,
+        пункты нет: строка «вне таблиц нет текста» с подсказкой, без слов, что пункты сравнивались."""
+        change = bilingual_sections(merged_headings=True, kz=lambda text: mirror(text).translate(KZ_RUS_LETTERS))
+        r = self.run_variant(change, change)
+        self.assertEqual(r["status"], "yellow")
+        why = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        row = next(row for row in why if row[0] == f"документ: {DOC_FILE}")
+        self.assertIn("вне таблиц нет текста (документ свёрстан таблицей в два столбца, язык столбцов не определить)",
+                      row[-1])
+        self.assertNotIn("сравнивались как", row[-1])
+        self.assertTrue(row[-1].endswith(HINT), row[-1])
+        # Часть таблиц прочитана по русскому столбцу, часть нет: тоже громко, с подсказкой.
+        m = self.c.module()
+        sections = [{"label": "шапка", "items": [("шапка, абз. 1", "т", "т")], "unclear": 2, "bilingual": 5},
+                    {"label": "1", "items": [("1.1", "т", "1.1. т")]}]
+        problems = m.layout_problems(sections)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("не прочитана", problems[0])
+        self.assertTrue(problems[0].endswith(HINT))
 
     def test_paired_heading_text_change(self):
         """Одноуровневые пункты «4. Срок действия один год.» программа берёт за заголовок раздела.
