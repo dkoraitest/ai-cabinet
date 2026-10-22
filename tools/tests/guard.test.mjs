@@ -15,6 +15,8 @@ import {
   REASON_FILE,
   REASON_NO_PROMPT,
   REASON_OTHER,
+  REASON_SKILL_CMD,
+  REASON_SKILL_CMD_NO_PROMPT,
   classify,
   classifyFile,
   decide,
@@ -550,4 +552,63 @@ test('settings.json: сторож без оболочки (exec) на Bash, Powe
   for (const d of ['Edit(./input/**)', 'Edit(./tools/**)', 'Edit(./templates/**)']) assert.ok(s.permissions.deny.includes(d), d);
   assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
   assert.ok(s.permissions.allow.includes('Bash(py tools/read_table.py*)'), 'нужно разрешение Bash(py tools/read_table.py*)');
+});
+
+// Встроенные команды в скиллах: !`команда` и блок ```! выполняются при запуске скилла без вопроса.
+test('скиллы: встроенная команда в новом тексте, таблица текстов x режимы', () => {
+  const ctx = { roots: [CAB], platform: 'linux' };
+  const SK = '.claude/skills/moi/SKILL.md';
+  const texts = [
+    ['чистый текст', 'Сделай сводку по `input/a.csv`. Важно! Не меняй файл.', false],
+    ['inline-код без !', 'Запусти `node tools/check.mjs` и перескажи', false],
+    ['! в прозе', 'Важно! Это нужно сделать до пятницы!', false],
+    ['команда !`...`', 'Текущая дата: !`date`', true],
+    ['блок ```!', 'Шаги:\n```!\nls -la\n```\n', true],
+    ['команда в примере внутри блока кода', '```md\nДата: !`date`\n```\n', true],
+  ];
+  const modes = ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk', undefined];
+  const run = (tool, ti, mode) => decide({ tool_name: tool, tool_input: ti, cwd: CAB, permission_mode: mode }, ctx);
+  for (const [name, text, flagged] of texts) {
+    for (const mode of modes) {
+      const label = `${name} / ${mode}`;
+      for (const [tool, ti] of [
+        ['Write', { file_path: SK, content: text }],
+        ['Edit', { file_path: SK, old_string: 'x', new_string: text }],
+        ['MultiEdit', { file_path: SK, edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: text }] }],
+        ['Write', { file_path: `${CAB}/.claude/skills/moi/extra.md`, content: text }],
+      ]) {
+        const got = run(tool, ti, mode);
+        if (!flagged) {
+          assert.notEqual(got?.reason, REASON_SKILL_CMD, label);
+          assert.notEqual(got?.reason, REASON_SKILL_CMD_NO_PROMPT, label);
+        } else if (['default', 'manual', 'acceptEdits', 'plan', 'auto'].includes(mode)) {
+          assert.deepEqual(got, { decision: 'ask', reason: REASON_SKILL_CMD }, label);
+        } else {
+          assert.deepEqual(got, { decision: 'deny', reason: REASON_SKILL_CMD_NO_PROMPT }, label);
+        }
+      }
+    }
+  }
+  assert.match(REASON_SKILL_CMD, /^В этом скилле есть команда, которая выполнится сама при запуске скилла, без вопроса\./);
+  assert.match(REASON_SKILL_CMD_NO_PROMPT, /Shift\+Tab/);
+});
+
+test('скиллы: команда вне .claude/skills не трогается, NotebookEdit и запрет данных сохраняются', () => {
+  const ctx = { roots: [CAB], platform: 'linux' };
+  const run = (tool, ti, mode) => decide({ tool_name: tool, tool_input: ti, cwd: CAB, permission_mode: mode }, ctx);
+  assert.equal(run('Write', { file_path: 'output/n.md', content: 'x !`date`' }, 'acceptEdits'), null);
+  assert.equal(run('Write', { file_path: 'me/n.md', content: '```!\nls\n```' }, 'default'), null);
+  assert.equal(run('Write', { file_path: '.claude/skills/moi/SKILL.md', content: 'обычный текст' }, 'acceptEdits'), null);
+  assert.equal(run('NotebookEdit', { notebook_path: '.claude/skills/moi/a.ipynb', new_source: '!`date`' }, 'acceptEdits')?.reason, REASON_SKILL_CMD);
+  assert.deepEqual(run('Write', { file_path: 'tools/a.md', content: '!`date`' }, 'acceptEdits'), { decision: 'deny', reason: REASON_DATA });
+  // Относительный путь от папки скилла
+  const inSk = decide({ tool_name: 'Write', tool_input: { file_path: 'SKILL.md', content: '!`date`' }, cwd: `${CAB}/.claude/skills/moi`, permission_mode: 'acceptEdits' }, { roots: [CAB], platform: 'linux' });
+  assert.equal(inSk?.reason, REASON_SKILL_CMD);
+});
+
+test('setup-check: правило про чужие скиллы и настройка VS Code', () => {
+  const t = readFileSync(join(ROOT, '.claude', 'skills', 'setup-check', 'SKILL.md'), 'utf8');
+  assert.ok(t.includes('Чужие скиллы не ставим. Добавляйте только свои скиллы и те, что даёт курс. Скилл из интернета или от знакомых может содержать команды, которые выполнятся на вашем компьютере без вашего ведома'));
+  assert.ok(t.includes('claudeCode.initialPermissionMode') && t.includes('acceptEdits'));
+  assert.ok(!/[\u2012-\u2015]/.test(t));
 });
