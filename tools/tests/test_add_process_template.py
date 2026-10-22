@@ -594,6 +594,36 @@ CASE9_DIFFS = {
 }
 FORM_FILE, DOC_FILE = "dogovor_tipovaya_forma.docx", "dogovor_postavshchika.docx"
 RISK = "оценить риск: решает юрист"
+HINT = "Выход: положите в папку процесса русский текст договора отдельным документом Word с нумерованными разделами."
+KZ = ["Тараптар осы шарттың талаптарын орындауға міндетті.", "Жеткізуші тауарды уақытында жеткізеді.",
+      "Сатып алушы тауар құнын төлейді.", "Дауларды тараптар келіссөз арқылы шешеді."]
+
+
+def bilingual(russian_left=False, one_row=False, other=None, mixed=False):
+    """Текст до первой таблицы (спецификации) в таблицу в два столбца: русский абзац и рядом казахский
+    (other(текст): свой текст второго столбца; mixed: казахская фраза и в русском столбце).
+    По строке на абзац или всё в одной строке."""
+    def fn(d):
+        from docx.oxml.ns import qn
+        body = d.element.body
+        first = next(e for e in body if e.tag == qn("w:tbl"))
+        paras = []
+        for e in body:
+            if e is first:
+                break
+            if e.tag == qn("w:p"):
+                paras.append(e)
+        table = d.add_table(rows=1 if one_row else len(paras), cols=2)
+        for k, p in enumerate(paras):
+            cells = table.rows[0 if one_row else k].cells
+            ru, kz = (cells[0], cells[1]) if russian_left else (cells[1], cells[0])
+            text = "".join(x.text or "" for x in p.iter(qn("w:t")))
+            ru._tc.append(p)
+            if mixed:
+                ru.add_paragraph(KZ[k % len(KZ)])
+            kz.add_paragraph(other(text) if other else KZ[k % len(KZ)])
+        first.addprevious(table._tbl)
+    return fn
 
 
 def set_text(p, text):
@@ -806,8 +836,8 @@ class TwoDocuments(unittest.TestCase):
         self.assertTrue(any(row[0] == f"документ: {DOC_FILE}" and "разделы не распознаны" in row[-1] for row in why))
 
     def test_contract_in_table_goes_to_person(self):
-        """Договор свёрстан таблицей в два столбца (казахский и русский текст): вне таблиц текста нет."""
-        def bilingual(d):
+        """Договор свёрстан таблицей, второго столбца с текстом нет: вне таблиц текста нет, подсказка, что делать."""
+        def in_table(d):
             from docx.oxml.ns import qn
             body = d.element.body
             paras = [e for e in body if e.tag == qn("w:p")]
@@ -817,12 +847,80 @@ class TwoDocuments(unittest.TestCase):
                 right._tc.append(p)
             left.paragraphs[0].text = "Қазақ тіліндегі мәтін"
             body.insert(0, table._tbl)
-        r = self.run_variant(bilingual, bilingual)
+        r = self.run_variant(in_table, in_table)
         self.assertEqual(r["status"], "yellow")
         self.assertIn("Сверка неполная", r["summary"])
         self.assertEqual(r["sverka"]["по строкам"], {})
         why = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
-        self.assertTrue(any(row[0] == f"документ: {DOC_FILE}" and "вне таблиц нет текста" in row[-1] for row in why))
+        row = next(row for row in why if row[0] == f"документ: {DOC_FILE}")
+        self.assertIn("вне таблиц нет текста", row[-1])
+        self.assertTrue(row[-1].endswith(HINT), row[-1])
+
+    def test_bilingual_two_columns_read_by_russian_column(self):
+        """Договор на двух языках в два столбца: программа читает русский столбец, отличия те же, что у кейса 9."""
+        variants = {
+            "оба двуязычные": (bilingual(), bilingual(russian_left=True, one_row=True)),
+            "только договор": (None, bilingual()),
+            "только форма": (bilingual(one_row=True), None),
+        }
+        for name, (change_form, change_doc) in variants.items():
+            with self.subTest(name):
+                r = self.run_variant(change_form, change_doc)
+                self.assertEqual(r["sverka"]["по строкам"], CASE9_DIFFS)
+                self.assertEqual(r["sverka"]["итоги"]["разница спецификации"], 2000000)
+                self.assertNotIn("Сверка неполная", r["summary"])
+                phrase = "Договор двуязычный: сверялся русский текст." if change_doc else \
+                    "Типовая форма двуязычная: сверялся русский текст."
+                self.assertIn(phrase, r["summary"])
+                manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")[1:]
+                self.assertEqual(len(manual), len(CASE9_DIFFS) + 2, manual)  # как у кейса 9: отличия и два поля
+                card = dict(sheet(self.c.out / "sverka-dogovora.xlsx", "Карточка условий")[1:])
+                self.assertEqual(card["Номер"], "ПС-2026/118")
+                self.assertNotIn("[нет данных]", card.values())
+
+    def test_bilingual_language_unclear_goes_to_person(self):
+        """Оба столбца на русском (или оба с казахскими буквами): язык не определить, не угадывать."""
+        for name, change in (("оба русские", bilingual(other=lambda text: text)), ("оба с казахскими", bilingual(mixed=True))):
+            with self.subTest(name):
+                r = self.run_variant(None, change)
+                self.assertEqual(r["status"], "yellow")
+                self.assertNotIn("двуязычный", r["summary"])
+                why = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+                row = next(row for row in why if row[0] == f"документ: {DOC_FILE}")
+                self.assertIn("вне таблиц нет текста", row[-1])
+                self.assertIn("язык столбцов не определить", row[-1])
+                self.assertTrue(row[-1].endswith(HINT), row[-1])
+
+    def test_paired_heading_text_change(self):
+        """Одноуровневые пункты «4. Срок действия один год.» программа берёт за заголовок раздела.
+        Правка в такой строке («один год и более») видна: строка раздела «изменён» и человеку."""
+        def contract(last):
+            import docx
+            d = docx.Document()
+            d.add_paragraph("Договор оказания услуг № [номер]", style="Heading 1")
+            d.add_paragraph("г. Астана, [дата]")
+            for n, title, point in ((1, "Предмет договора", "Исполнитель оказывает услуги по заявкам Заказчика."),
+                                    (2, "Цена услуг", "Цена услуг указана в Приложении 1."),
+                                    (3, "Порядок оплаты", "Заказчик оплачивает услуги в течение 30 дней.")):
+                d.add_paragraph(f"{n}. {title}")
+                d.add_paragraph(f"{n}.1. {point}")
+            d.add_paragraph(f"4. Срок действия {last}.")
+            d.add_paragraph("5. Споры решаются в суде г. Астаны.")
+            return d
+        contract("один год").save(self.c.input / FORM_FILE)
+        doc = contract("один год и более")
+        doc.paragraphs[1].text = "г. Астана, 18.09.2026"
+        doc.save(self.c.input / DOC_FILE)
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        r = self.c.result()
+        self.assertEqual(r["sverka"]["по строкам"], {"4": "изменён"})
+        self.assertEqual(r["sverka"]["итоги"]["изменено"], 1)
+        manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")[1:]
+        row = next(row for row in manual if row[0] == "4")
+        self.assertEqual(row[1:], ["изменён", "4. Срок действия один год.", "4. Срок действия один год и более.", RISK])
+        m = self.c.module()
+        self.assertEqual(m.pair_status("Срок действия договора", "СРОК ДЕЙСТВИЯ ДОГОВОРА")[1], "совпадает")
 
     def test_form_blank_styles_and_underlined_spaces(self):
         """Поля формы в другом виде: [..] заменены на <..>, {..}, ……, точки, подчёркнутые пробелы. Отличия те же."""
