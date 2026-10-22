@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST } from '../init.mjs';
@@ -24,6 +24,8 @@ const read = (f) => readFileSync(join(ROOT, f), 'utf8');
 const PARTICIPANT = (f) =>
   f === 'CLAUDE.md' ||
   f === 'START.md' ||
+  f === 'start-cabinet.cmd' ||
+  f === 'start-cabinet.command' ||
   ['.claude/skills/', '.claude/hooks/', 'templates/', 'me/', 'site/'].some((p) => f.startsWith(p));
 
 // Учебный кейс: тексты Практики, стилевые правила участника на него не распространяются.
@@ -248,4 +250,22 @@ test('добавить процесс: всегда программа (kind scr
   const rules = read('CLAUDE.md');
   assert.match(rules, /\| «доработай» и название процесса/);
   assert.match(rules, /\| «добавь в словарь процесса <название>: <слово> → <тема>»/);
+});
+
+test('запуск двойным щелчком: start-cabinet.cmd и .command', () => {
+  const cmd = readFileSync(join(ROOT, 'start-cabinet.cmd'));
+  const t = cmd.toString('utf8');
+  assert.ok(t.includes('cd /d "%~dp0"'));
+  assert.ok(t.includes('node tools\\serve.mjs --open'));
+  assert.ok(t.includes('chcp 65001 >nul'));
+  assert.ok(t.includes('Окно не закрывайте, пока работаете со страницей. Закрыли окно: страница остановится.'));
+  assert.notEqual(cmd[0], 0xef, 'без BOM');
+  assert.equal(t.replace(/\r\n/g, '').match(/[\r\n]/g), null, 'все переводы строк CRLF');
+  assert.ok(t.includes('\r\n'));
+  assert.ok(files.includes('start-cabinet.cmd') && files.includes('start-cabinet.command'));
+  const sh = read('start-cabinet.command');
+  assert.ok(sh.startsWith('#!/bin/bash\n') && sh.includes('cd "$(dirname "$0")"') && sh.includes('node tools/serve.mjs --open'));
+  assert.ok(!sh.includes('\r'));
+  if (process.platform !== 'win32') assert.ok(statSync(join(ROOT, 'start-cabinet.command')).mode & 0o100, 'исполняемый');
+  assert.ok(read('START.md').includes('start-cabinet.cmd'));
 });
