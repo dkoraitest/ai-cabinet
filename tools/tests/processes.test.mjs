@@ -183,6 +183,22 @@ test('validateResult: ошибки по-русски с именем поля', 
   }
 });
 
+test('validateResult: «разобрать вручную»: строки без отметки (null) и с пометкой info, файлы Word и Excel в output/<slug>/', () => {
+  const r = {
+    ...goodResult('obr'),
+    status: 'green',
+    rows: [['11', 'АЗС-09', 'разобрать вручную'], ['1', 'АЗС-07', 'оборудование'], ['2', 'АЗС-03', 'другое']],
+    columns: ['№', 'АЗС', 'Тема'],
+    row_status: ['info', null, null],
+    row_note: ['разобрать вручную', null, null],
+    files: ['output/obr/razobrat-vruchnuyu.xlsx', 'output/obr/obrashcheniya-po-temam.xlsx', 'output/obr/pisma/pismo-01.docx'],
+    sverka: { 'итоги': { 'обращений': 3 }, 'по строкам': { 11: 'разобрать вручную' } },
+  };
+  assert.deepEqual(validateResult(r, 'obr'), { ok: true, errors: [] });
+  assert.equal(validateResult({ ...r, row_status: ['info', null, 'purple'] }, 'obr').ok, false);
+  assert.equal(validateResult({ ...r, files: ['output/obr/../drugoy/pismo.docx'] }, 'obr').ok, false);
+});
+
 test('validateResult: путь с обратной косой чертой от Windows допустим', () => {
   assert.equal(validateResult({ ...goodResult('s'), files: ['output\\s\\svetofor.xlsx'] }, 's').ok, true);
 });

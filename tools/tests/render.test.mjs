@@ -65,7 +65,30 @@ test('без row_status: строки без окраски и без столб
   assert.doesNotMatch(html, /class="mark"/);
 });
 
-test('kind claude: вместо кнопки подсказка с фразой', () => {
+test('«разобрать вручную»: строка с пометкой info и подписью, строки без отметки (null) без окраски, ссылка на файл', () => {
+  const p = {
+    ...demo,
+    slug: 'obr',
+    result: {
+      ...demo.result,
+      status: 'green',
+      summary: 'Обращений 3. Разобрать вручную: 1 (файл razobrat-vruchnuyu.xlsx).',
+      columns: ['№', 'Тема'],
+      rows: [['11', 'разобрать вручную'], ['1', 'оборудование'], ['2', 'другое']],
+      row_status: ['info', null, null],
+      row_note: ['разобрать вручную', null, null],
+      files: ['output/obr/razobrat-vruchnuyu.xlsx'],
+    },
+  };
+  const html = renderCard(p);
+  assert.deepEqual(rowsOf(html).map((r) => r.status), ['info']);
+  assert.match(rowsOf(html)[0].html, /<td class="mark">разобрать вручную<\/td>/);
+  assert.equal((html.match(/<tr><td class="mark"><\/td>/g) ?? []).length, 2);
+  assert.match(html, /Разобрать вручную: 1/);
+  assert.match(html, /<a href="output\/obr\/razobrat-vruchnuyu\.xlsx" download>razobrat-vruchnuyu\.xlsx<\/a>/);
+});
+
+test('kind claude (процесс старого вида): вместо кнопки подсказка с фразой', () => {
   const html = renderCard({ ...demo, kind: 'claude', phrase: 'напиши черновики писем' });
   assert.doesNotMatch(html, /<button/);
   assert.match(html, /Запуск фразой в Claude: «напиши черновики писем»/);

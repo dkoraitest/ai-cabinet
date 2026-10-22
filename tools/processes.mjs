@@ -1,15 +1,19 @@
-// Процессы участника: папки processes/<slug>/ с process.json и, для kind "script", run.py. Без зависимостей.
+// Процессы участника: папки processes/<slug>/ с process.json и run.py. Без зависимостей.
 // Результат процесса лежит в output/<slug>/result.json, страница «Мой кабинет» рисует его карточкой.
 // Запуск: только processes/<slug>/run.py этого кабинета, из корня кабинета, без аргументов,
 // своим Python (абсолютный путь вне кабинета), по одному запуску на процесс и не больше двух на кабинет,
 // не дольше timeoutMs, журнал output/<slug>/last-run.log не больше 20 МБ.
 // Кнопка на странице и фраза в Claude (node tools/processes.mjs run <slug>) запускают одно и то же:
 // замок output/<slug>/.running и итог последнего запуска output/<slug>/last-run.json общие для обоих.
+// Процессы kind "claude" (без программы) операция «добавить процесс» больше не создаёт; старые показываются
+// карточкой с фразой, «доработай <процесс>» делает для них программу.
 //
-//   node tools/processes.mjs list            процессы, результат и последний запуск
-//   node tools/processes.mjs run <slug>      запуск, как кнопкой «Запустить»
-//   node tools/processes.mjs input <slug>    папка input/<slug> для файлов человека, открывается в Проводнике
-//   node tools/processes.mjs demo <slug>     демо курса из templates/processes с файлом учебного кейса
+//   node tools/processes.mjs list               процессы, результат и последний запуск
+//   node tools/processes.mjs run <slug>         запуск, как кнопкой «Запустить»
+//   node tools/processes.mjs input <slug>       папка input/<slug> для файлов человека, открывается в Проводнике
+//   node tools/processes.mjs read <slug> <файл> текст файла скилла (.md, .zip, .skill) или документа Word из input/<slug>
+//   node tools/processes.mjs compare <slug>     сверка результата программы с эталоном скилла
+//   node tools/processes.mjs demo <slug>        демо курса из templates/processes с файлом учебного кейса
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -30,8 +34,9 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inflateRawSync } from 'node:zlib';
 import { isMain } from './is-main.mjs';
 
 export const SLUG_RE = /^[a-z0-9-]{1,40}$/;
@@ -148,7 +153,8 @@ export function validateResult(obj, slug) {
       errors.push(`${field}: допустимые значения ${hint}`);
     }
   };
-  perRow('row_status', (v) => ROW_STATUSES.includes(v), 'green, yellow, red, grey, info');
+  // null: строка без отметки (например, обращение с темой, когда пометку получают только строки «разобрать вручную»).
+  perRow('row_status', (v) => v === null || ROW_STATUSES.includes(v), 'green, yellow, red, grey, info или null');
   perRow('row_note', (v) => v === null || typeof v === 'string', 'текст или null');
   if (obj.files !== undefined) {
     if (!Array.isArray(obj.files)) {
@@ -736,13 +742,359 @@ function caseCopyOf(file, cases) {
   return hit ? hit.rel : null;
 }
 
+// ---------- чтение файла скилла и документа Word ----------
+
+// Скилл со второго воркшопа человек скачивает файлом: SKILL.md, архив .zip или .skill (тоже zip). Документ
+// Word (.docx) тоже zip. Читаем только в память, на диск ничего не распаковываем.
+const ZIP_FILE_LIMIT = 20 * 1024 * 1024;
+const ZIP_ENTRY_LIMIT = 5 * 1024 * 1024;
+const TEXT_LIMIT = 200 * 1024;
+const SKILL_EXT = new Set(['.md', '.txt', '.zip', '.skill']);
+const READ_EXT = new Set([...SKILL_EXT, '.docx']);
+const TEXT_EXT = /\.(md|txt|markdown)$/i;
+
+// Встроенная команда скилла: восклицательный знак и сразу команда в обратных кавычках или блок кода,
+// открытый тремя обратными кавычками с восклицательным знаком. Claude Code выполняет её при запуске скилла
+// без вопроса. Правило то же, что у сторожа кабинета при записи скилла.
+const SKILL_CMD = /![ \t]*`[^`\n]+`|```[ \t]*!/;
+
+export function skillCommandLines(text) {
+  return String(text)
+    .split(/\r?\n/)
+    .map((line, i) => ({ line: i + 1, text: line.trim() }))
+    .filter((l) => SKILL_CMD.test(l.text));
+}
+
+// Файлы архива zip: [{ name, read() }]. Только stored и deflate, без шифрования и zip64.
+export function zipEntries(buf) {
+  const bad = (why) => processError('EZIP', why);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw bad('файл не похож на архив zip');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  if (count === 0xffff || p === 0xffffffff) throw bad('архив слишком большой для чтения здесь');
+  const entries = [];
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw bad('архив повреждён');
+    const flags = buf.readUInt16LE(p + 8);
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nlen = buf.readUInt16LE(p + 28);
+    const skip = nlen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nlen);
+    p += 46 + skip;
+    const read = () => {
+      if (flags & 1) throw bad(`файл ${name} в архиве закрыт паролем`);
+      if (usize > ZIP_ENTRY_LIMIT || csize > ZIP_ENTRY_LIMIT) throw bad(`файл ${name} в архиве больше 5 МБ`);
+      if (local + 30 > buf.length || buf.readUInt32LE(local) !== 0x04034b50) throw bad('архив повреждён');
+      const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+      const data = buf.subarray(start, start + csize);
+      if (method === 0) return data;
+      if (method === 8) return inflateRawSync(data, { maxOutputLength: ZIP_ENTRY_LIMIT });
+      throw bad(`файл ${name} в архиве сжат неизвестным способом`);
+    };
+    entries.push({ name, read });
+  }
+  return entries;
+}
+
+const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const unxml = (s) =>
+  s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (m, e) => {
+    if (e[0] !== '#') return XML_ENTITIES[e.toLowerCase()] ?? m;
+    const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+  });
+
+// Текст word/document.xml: абзац на строку, строка таблицы одной строкой с ячейками через « | ».
+export function docxText(xml) {
+  const lines = [];
+  let para = '';
+  let cell = null;
+  let row = null;
+  const re = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab\/>|<w:br\/>|<\/w:p>|<w:tc[\s>]|<\/w:tc>|<w:tr[\s>]|<\/w:tr>/g;
+  for (const m of xml.matchAll(re)) {
+    const tag = m[0];
+    if (m[1] !== undefined) para += unxml(m[1]);
+    else if (tag === '<w:tab/>') para += '\t';
+    else if (tag === '<w:br/>') para += ' ';
+    else if (tag === '</w:p>') {
+      if (cell !== null) cell.push(para.trim());
+      else lines.push(para);
+      para = '';
+    } else if (tag.startsWith('<w:tr')) row = [];
+    else if (tag.startsWith('<w:tc')) cell = [];
+    else if (tag === '</w:tc>') {
+      if (row && cell) row.push(cell.filter(Boolean).join(' '));
+      cell = null;
+    } else if (tag === '</w:tr>') {
+      if (row) lines.push(row.join(' | '));
+      row = null;
+    }
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+const decodeText = (bytes) => Buffer.from(bytes).toString('utf8').replace(/^﻿/, '');
+
+// Файл из input/<slug>/ для Claude: { text, code }. Скилл: текст SKILL.md (и других текстов архива) и строки
+// со встроенными командами. Документ Word: текст по абзацам.
+export function readInputFile(root, slug, name) {
+  if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
+    return { text: 'Имя папки процесса: строчные латинские буквы, цифры и дефис, до 40 знаков.', code: 2 };
+  }
+  const dir = join(root, 'input', slug);
+  const files = isDir(dir)
+    ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && !e.name.startsWith('.') && !e.name.startsWith('~$')).map((e) => e.name)
+    : [];
+  const listing = files.length ? `Файлы в папке input/${slug}: ${files.join(', ')}.` : `Папка input/${slug} пуста или её нет.`;
+  if (!name) return { text: `Укажите файл: node tools/processes.mjs read ${slug} "<имя файла>". ${listing}`, code: 2 };
+  if (name !== basename(name) || name === '.' || name === '..' || name.includes('\\') || name.includes('/')) {
+    return { text: `Укажите только имя файла из папки input/${slug}, без папок. ${listing}`, code: 2 };
+  }
+  const file = join(dir, name);
+  const ext = extname(name).toLowerCase();
+  if (!isFile(file)) return { text: `Нет файла input/${slug}/${name}. ${listing}`, code: 2 };
+  if (!READ_EXT.has(ext)) {
+    return {
+      text: `Файл ${name} здесь не читается: нужен скилл (.md, .zip, .skill) или документ Word (.docx). Таблицы смотрите через python tools/read_table.py.`,
+      code: 2,
+    };
+  }
+  if (statSync(file).size > ZIP_FILE_LIMIT) return { text: `Файл ${name} больше 20 МБ, такой здесь не читается.`, code: 2 };
+  const buf = readFileSync(file);
+  const out = [];
+  const texts = []; // [{ label, text }] для поиска встроенных команд
+  try {
+    if (ext === '.md' || ext === '.txt') {
+      const text = decodeText(buf);
+      out.push(`Файл ${name}:`, text);
+      texts.push({ label: name, text });
+    } else if (ext === '.docx') {
+      const doc = zipEntries(buf).find((e) => e.name === 'word/document.xml');
+      if (!doc) throw processError('EZIP', 'это не документ Word: внутри нет word/document.xml');
+      out.push(`Документ Word ${name}, текст по абзацам (строки таблиц через « | »):`, docxText(decodeText(doc.read())));
+    } else {
+      const entries = zipEntries(buf).filter((e) => !e.name.endsWith('/') && !/(^|\/)(__MACOSX|\.DS_Store)/.test(e.name));
+      const depth = (e) => e.name.split('/').length;
+      const skill = entries.filter((e) => /(^|\/)skill\.md$/i.test(e.name)).sort((a, b) => depth(a) - depth(b))[0];
+      out.push(`Архив ${name}, файлов ${entries.length}: ${entries.map((e) => e.name).join(', ')}.`);
+      if (!skill) throw processError('EZIP', 'в архиве нет файла SKILL.md: это не скилл');
+      const textual = [skill, ...entries.filter((e) => e !== skill && TEXT_EXT.test(e.name))];
+      for (const e of textual) {
+        const text = decodeText(e.read());
+        out.push('', `Текст ${e.name}:`, text);
+        texts.push({ label: e.name, text });
+      }
+      const other = entries.filter((e) => !textual.includes(e));
+      if (other.length) {
+        out.push('', `Остальные файлы архива (${other.map((e) => e.name).join(', ')}) здесь не показаны: в кабинет переносится только текст скилла.`);
+      }
+    }
+  } catch (e) {
+    if (e.code === 'EZIP' || e.code === 'ERR_BUFFER_TOO_LARGE' || /inflate|incorrect|invalid/i.test(String(e.message))) {
+      return { text: `Файл ${name} не читается: ${e.code === 'EZIP' ? e.message : 'архив повреждён'}.`, code: 2 };
+    }
+    throw e;
+  }
+  let text = out.join('\n');
+  if (text.length > TEXT_LIMIT) text = `${text.slice(0, TEXT_LIMIT)}\n... (текст длиннее ${TEXT_LIMIT / 1024} КБ, дальше не показан)`;
+  if (SKILL_EXT.has(ext)) {
+    const found = texts.flatMap((t) => skillCommandLines(t.text).map((l) => `  ${t.label}, строка ${l.line}: ${l.text}`));
+    text += found.length
+      ? `\n\nВстроенные команды: ${found.length}. Они выполнятся сами при запуске скилла, без вопроса:\n${found.join('\n')}`
+      : '\n\nВстроенных команд нет.';
+  }
+  return { text, code: 0 };
+}
+
+// ---------- сверка программы с эталоном скилла ----------
+
+// Эталон output/<slug>/etalon-skilla.json записывает Claude, выполнив скилл сам на файле человека.
+// Программа пишет те же разделы в result.json, в поле sverka. Разделы (все необязательные):
+//   «итоги»: { название: число или текст }, «по категориям»: { категория: число },
+//   «документов»: число, «по строкам»: { номер или ключ строки: категория или ключевое значение }.
+export const MANUAL = 'разобрать вручную';
+export const ETALON_FILE = 'etalon-skilla.json';
+const SECTIONS = ['итоги', 'по категориям', 'документов', 'по строкам'];
+
+const normText = (v) =>
+  String(v ?? '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"“”]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.;,]$/, '');
+
+const normKey = (k) => {
+  const t = normText(k).replace(/^№\s*/, '');
+  return /^\d+([.,]0+)?$/.test(t) ? String(parseInt(t, 10)) : t;
+};
+
+const asNumber = (v) => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v !== 'string') return null;
+  const t = v.replace(/[\s  ]/g, '').replace(',', '.');
+  return /^[-+]?\d+(\.\d+)?$/.test(t) ? Number(t) : null;
+};
+
+// Число совпадает с точностью до последнего знака эталона: 12345,6 у скилла и 12345,63 у программы равны.
+function sameValue(etalon, program) {
+  const a = asNumber(etalon);
+  const b = asNumber(program);
+  if (a !== null && b !== null) {
+    const decimals = (String(etalon).replace(/\s/g, '').split(/[.,]/)[1] ?? '').length;
+    return Math.abs(a - b) <= 0.5 * 10 ** -decimals + 1e-9;
+  }
+  return normText(etalon) === normText(program);
+}
+
+const show = (v) => (v === null || v === undefined ? 'нет' : typeof v === 'number' ? String(v).replace('.', ',') : `«${v}»`);
+
+const asMap = (obj) =>
+  obj && typeof obj === 'object' && !Array.isArray(obj)
+    ? new Map(Object.entries(obj).map(([k, v]) => [normKey(k), { key: k, value: v }]))
+    : null;
+
+const SHOW_ROWS = 40;
+const listOf = (items) => (items.length > SHOW_ROWS ? [...items.slice(0, SHOW_ROWS), `  ... и ещё ${items.length - SHOW_ROWS}`] : items);
+
+// Сравнение эталона и раздела sverka программы: { lines, code, differences, manual }.
+// Строка, которую программа отправила в «разобрать вручную», расхождением не считается: она в списке
+// для человека. Разница в категории, которая целиком объясняется такими строками, тоже.
+export function compareWithEtalon(etalon, program) {
+  const lines = [];
+  let differences = 0;
+  let manual = 0;
+  const manualByCategory = new Map();
+  const eRows = asMap(etalon['по строкам']);
+  if (eRows) {
+    const pRows = asMap(program['по строкам']) ?? new Map();
+    let same = 0;
+    const wrong = [];
+    const toManual = [];
+    const missing = [];
+    for (const [k, { key, value }] of eRows) {
+      const got = pRows.get(k);
+      if (!got) missing.push(key);
+      else if (normText(got.value) === MANUAL && normText(value) !== MANUAL) {
+        toManual.push(`  ${key}: у скилла ${show(value)}`);
+        manualByCategory.set(normText(value), (manualByCategory.get(normText(value)) ?? 0) + 1);
+      } else if (sameValue(value, got.value)) same++;
+      else wrong.push(`  ${key}: у скилла ${show(value)}, у программы ${show(got.value)}`);
+    }
+    const extra = [...pRows.values()].filter((v) => !eRows.has(normKey(v.key))).map((v) => v.key);
+    manual = toManual.length;
+    lines.push(`По строкам: совпало ${same} из ${eRows.size}.`);
+    if (toManual.length) lines.push(`Программа отправила в «${MANUAL}»: ${toManual.length}.`, ...listOf(toManual));
+    if (wrong.length) lines.push(`Другой результат у программы: ${wrong.length}.`, ...listOf(wrong));
+    if (missing.length) lines.push(`Нет у программы: ${missing.length}: ${missing.slice(0, SHOW_ROWS).join(', ')}.`);
+    if (extra.length) lines.push(`Есть у программы, нет у скилла: ${extra.length}: ${extra.slice(0, SHOW_ROWS).join(', ')}.`);
+    differences += wrong.length + missing.length + extra.length;
+  }
+  const eTotals = asMap(etalon['итоги']);
+  if (eTotals) {
+    const pTotals = asMap(program['итоги']) ?? new Map();
+    const bad = [];
+    for (const [k, { key, value }] of eTotals) {
+      const got = pTotals.get(k);
+      if (!got || !sameValue(value, got.value)) bad.push(`  «${key}»: у скилла ${show(value)}, у программы ${show(got?.value)}`);
+    }
+    lines.push(bad.length ? `Итоги: не совпало ${bad.length} из ${eTotals.size}.` : `Итоги: совпали все (${eTotals.size}).`, ...bad);
+    differences += bad.length;
+  }
+  const eCats = asMap(etalon['по категориям']);
+  if (eCats) {
+    const pCats = asMap(program['по категориям']) ?? new Map();
+    const bad = [];
+    const explained = [];
+    for (const [k, { key, value }] of eCats) {
+      const got = pCats.get(k);
+      const gotValue = got ? got.value : asNumber(value) !== null ? 0 : null;
+      if (sameValue(value, gotValue)) continue;
+      const gap = asNumber(value) !== null && asNumber(gotValue) !== null ? asNumber(value) - asNumber(gotValue) : null;
+      if (gap !== null && gap > 0 && gap === (manualByCategory.get(k) ?? 0)) {
+        explained.push(`  «${key}»: у скилла ${show(value)}, у программы ${show(gotValue)}, разница ${show(gap)} в «${MANUAL}»`);
+      } else {
+        bad.push(`  «${key}»: у скилла ${show(value)}, у программы ${show(gotValue)}`);
+      }
+    }
+    for (const [k, { key, value }] of pCats) {
+      if (!eCats.has(k) && k !== MANUAL && !sameValue(0, value)) bad.push(`  «${key}»: у скилла нет, у программы ${show(value)}`);
+    }
+    if (!bad.length && !explained.length) lines.push(`По категориям: совпали все (${eCats.size}).`);
+    else {
+      lines.push(`По категориям: не совпало ${bad.length + explained.length}, из них объясняется строками «${MANUAL}»: ${explained.length}.`);
+      lines.push(...explained, ...bad);
+    }
+    differences += bad.length;
+  }
+  if (etalon['документов'] !== undefined) {
+    const got = program['документов'];
+    if (sameValue(etalon['документов'], got)) lines.push(`Документов: ${show(got)}, как у скилла.`);
+    else {
+      lines.push(`Документов: у скилла ${show(etalon['документов'])}, у программы ${show(got)}.`);
+      differences++;
+    }
+  }
+  if (!SECTIONS.some((s) => etalon[s] !== undefined)) {
+    lines.push(`В эталоне нет ни одного раздела: ${SECTIONS.map((s) => `«${s}»`).join(', ')}. Сравнивать нечего.`);
+    return { lines, code: 2, differences, manual };
+  }
+  if (differences) {
+    lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова.`);
+  } else if (manual) {
+    lines.push(`Итог сверки: программа дала тот же результат, что скилл, кроме ${manual} строк в «${MANUAL}».`);
+  } else {
+    lines.push('Итог сверки: программа дала тот же результат, что скилл.');
+  }
+  return { lines, code: differences ? 1 : 0, differences, manual };
+}
+
+export function compareProcess(root, slug) {
+  if (typeof slug !== 'string' || !SLUG_RE.test(slug)) return { text: 'Укажите процесс: node tools/processes.mjs compare <имя папки процесса>.', code: 2 };
+  const etalonRel = `output/${slug}/${ETALON_FILE}`;
+  const resultRel = `output/${slug}/result.json`;
+  const load = (rel) => {
+    try {
+      return { data: readJson(join(root, ...rel.split('/'))) };
+    } catch (e) {
+      return { error: e.code === 'ENOENT' ? 'нет файла' : 'файл повреждён или не в формате JSON' };
+    }
+  };
+  const etalon = load(etalonRel);
+  if (etalon.error) return { text: `Эталона нет: ${etalonRel}, ${etalon.error}. Сначала выполните скилл на файле человека и запишите эталон.`, code: 2 };
+  const result = load(resultRel);
+  if (result.error) return { text: `Результата программы нет: ${resultRel}, ${result.error}. Запустите node tools/processes.mjs run ${slug}.`, code: 2 };
+  const e = etalon.data;
+  const p = result.data?.sverka;
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return { text: `${etalonRel}: нужен объект JSON с разделами ${SECTIONS.map((s) => `«${s}»`).join(', ')}.`, code: 2 };
+  if (!p || typeof p !== 'object' || Array.isArray(p)) {
+    return { text: `В ${resultRel} нет раздела sverka: программа должна записать туда те же разделы, что в эталоне (${SECTIONS.map((s) => `«${s}»`).join(', ')}).`, code: 2 };
+  }
+  const head = [`Сверка «${readProcessInfo(root, slug).title}»: эталон скилла ${etalonRel}${e['файл'] ? ` (файл ${e['файл']})` : ''}, программа ${resultRel}${result.data.updated_at ? ` от ${formatTime(result.data.updated_at)}` : ''}.`];
+  const r = compareWithEtalon(e, p);
+  return { text: [...head, ...r.lines].join('\n'), code: r.code };
+}
+
 // ---------- node tools/processes.mjs ----------
 
 const USAGE = `Процессы кабинета:
-  node tools/processes.mjs list            процессы, их результат и последний запуск
-  node tools/processes.mjs run <имя>       запустить processes/<имя>/run.py, как кнопкой «Запустить»
-  node tools/processes.mjs input <имя>     создать папку input/<имя> и открыть её в Проводнике (--no-open: не открывать)
-  node tools/processes.mjs demo <имя>      поставить демо курса из templates/processes и запустить
+  node tools/processes.mjs list               процессы, их результат и последний запуск
+  node tools/processes.mjs run <имя>          запустить processes/<имя>/run.py, как кнопкой «Запустить»
+  node tools/processes.mjs input <имя>        создать папку input/<имя> и открыть её в Проводнике (--no-open: не открывать)
+  node tools/processes.mjs read <имя> <файл>  показать текст скилла (.md, .zip, .skill) или документа Word из input/<имя>
+  node tools/processes.mjs compare <имя>      сверить результат программы с эталоном скилла output/<имя>/etalon-skilla.json
+  node tools/processes.mjs demo <имя>         поставить демо курса из templates/processes и запустить
 <имя>: имя папки процесса латиницей, например svodka-prodazh.`;
 
 const COLOR = { green: 'зелёный', yellow: 'жёлтый', red: 'красный' };
@@ -819,6 +1171,9 @@ export function formatList(root) {
           ? `выполняет сам Claude${skill ? ` по скиллу ${skill}` : ''}, ${phrase}`
           : 'запуск не настроен';
     lines.push(`${i + 1}. «${p.title}» (папка ${p.slug}): ${how}.`);
+    if (p.kind === 'claude') {
+      lines.push(`   Процесс старого вида, без программы и кнопки. Чтобы появилась кнопка, скажите Claude «доработай ${p.title}».`);
+    }
     if (p.running) lines.push('   Сейчас идёт расчёт.');
     if (p.result) {
       lines.push(`   Результат: обновлён ${formatTime(p.result.updated_at)}, ${COLOR[p.result.status]}. Итог: ${p.result.summary}`);
@@ -962,6 +1317,8 @@ async function dispatch(root, argv) {
   if (cmd === 'list') return formatList(root);
   if (cmd === 'run') return cliRun(root, slug);
   if (cmd === 'input') return cliInput(root, slug, !argv.includes('--no-open'));
+  if (cmd === 'read') return readInputFile(root, slug, argv.slice(2).filter((a) => !a.startsWith('--')).join(' '));
+  if (cmd === 'compare') return compareProcess(root, slug);
   if (cmd === 'demo') return cliDemo(root, slug);
   return { text: USAGE, code: cmd ? 2 : 0 };
 }
