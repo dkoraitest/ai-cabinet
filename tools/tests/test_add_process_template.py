@@ -1240,6 +1240,50 @@ class TwoDocuments(unittest.TestCase):
                 tech = sheet(self.c.out / "sverka-dogovora.xlsx", "Техспецификация")
                 self.assertEqual(len(tech), 5)  # техспецификация в том же разделе читается как раньше
 
+    def test_conditions_table_with_kazakh_names(self):
+        """Русская таблица условий с казахскими названиями и именами (проба ревью): не договор на двух языках,
+        сверяется построчно, предоплата 30 и 100 процентов: «изменён»."""
+        def names(prepay):
+            return two_column_table((
+                ("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии, остаток после приёмки товара на нефтебазе"),
+                ("Срок поставки партии", "Не позднее пяти календарных дней с даты заявки покупателя"),
+                ("Грузополучатель", "ТОО «Қазақстан Темір Жолы», г. Қарағанды"),
+                ("Контактное лицо", "Нұрланов Ғалым Қайратұлы")))
+        r = self.run_variant(names(30), names(100))
+        key = "Приложение 2. Техническая спецификация, «Условие оплаты»"
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{key: "изменён"}))
+        status = {row[0]: row[1] for row in r["rows"]}
+        self.assertEqual(status["Приложение 2. Техническая спецификация, «Контактное лицо»"], "совпадает")
+        self.assertNotIn("двуязычн", r["summary"])
+        self.assertNotIn("Сверка неполная", r["summary"])
+        m = self.c.module()
+        self.assertFalse(m.kazakh_column("ТОО «Қазақстан Темір Жолы», г. Қарағанды Нұрланов Ғалым Қайратұлы"))
+        self.assertTrue(m.kazakh_column(" ".join(KZ)))
+
+    def test_unread_two_column_table_is_loud(self):
+        """Таблица в два столбца с длинным текстом до первого раздела русского договора не читается: строка
+        «часть текста в таблицах в два столбца не прочитана» с подсказкой, карточка жёлтая."""
+        long_text = ("Поставщик обязуется поставлять Товар партиями в соответствии с заявками Покупателя и "
+                     "обеспечивать его качество на всём протяжении срока действия договора")
+        change = two_column_table(((long_text, "Покупатель обязуется принимать и оплачивать Товар в сроки договора"),),
+                                  after="г. Астана")
+        r = self.run_variant(change, change)
+        self.assertEqual(r["sverka"]["по строкам"], CASE9_DIFFS)
+        self.assertIn("Сверка неполная", r["summary"])
+        why = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        row = next(row for row in why if row[0] == f"документ: {DOC_FILE}")
+        self.assertIn("часть текста в таблицах в два столбца не прочитана", row[-1])
+        self.assertTrue(row[-1].endswith(HINT), row[-1])
+
+    def test_repeated_condition_keys(self):
+        """Одно условие дважды в таблице: вторая строка «4, «Срок» (2)»."""
+        def table(second):
+            return two_column_table((("Срок", "Поставка в течение пяти дней"), ("Срок", second)), after="4.3.")
+        r = self.run_variant(table("Оплата в течение тридцати дней"), table("Оплата в течение десяти дней"))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Срок» (2)": "изменён"}))
+        status = {row[0]: row[1] for row in r["rows"]}
+        self.assertEqual(status["4, «Срок»"], "совпадает")
+
     def test_requisites_rows_skipped_one_by_one(self):
         """Строка реквизитов (БИН, ИИК, Адрес, Подпись, М.П. в названии условия) не сверяется; строка
         «Срок подписания акта» читается: «подписания» не реквизит. Таблица из одних реквизитов пропускается."""
@@ -1249,10 +1293,15 @@ class TwoDocuments(unittest.TestCase):
                 ("Срок подписания акта", "В течение трёх рабочих дней с даты поставки партии"),
                 ("Наименование товара", "Дизельное топливо" if prepay == 30 else "Бензин АИ-92"),
                 ("Наименование поставщика", "ТОО «Нефтегаз-Сервис»" if prepay == 30 else "ТОО «НефтеСнаб Сарыарка»"),
+                ("Адрес доставки", "нефтебаза Покупателя, г. Астана" if prepay == 30 else "склад Поставщика, г. Караганда"),
+                ("Банк-гарант", "АО «Банк А»" if prepay == 30 else "АО «Банк Б»"),
+                ("Адрес:", "г. Астана" if prepay == 30 else "г. Караганда"),
+                ("Банк получателя", "АО «Народный банк»" if prepay == 30 else "АО «Kaspi Bank»"),
                 ("БИН поставщика", bin_no)), after="4.3.")
         r = self.run_variant(mixed(30, "111111111111"), mixed(100, "123456789012"))
-        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Условие оплаты»": "изменён",
-                                                                         "4, «Наименование товара»": "изменён"}))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{
+            "4, «Условие оплаты»": "изменён", "4, «Наименование товара»": "изменён",
+            "4, «Адрес доставки»": "изменён", "4, «Банк-гарант»": "изменён"}))
         status = {row[0]: row[1] for row in r["rows"]}
         self.assertEqual(status["4, «Срок подписания акта»"], "совпадает")
         self.assertFalse([k for k in status if "БИН" in str(k) or "поставщика" in str(k)])
@@ -1269,11 +1318,12 @@ class TwoDocuments(unittest.TestCase):
         self.assertNotIn("Сверка неполная", r["summary"])
         self.assertEqual(len(manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")), len(CASE9_DIFFS) + 2 + 1)
         m = self.c.module()
-        for label in ("БИН", "Банк:", "E-mail", "М.П.", "Реквизиты сторон", "Наименование организации",
-                      "Наименование поставщика", "наименование покупателя:"):
+        for label in ("БИН", "Банк:", "Банк", "Адрес", "Адрес: г. Астана", "Адрес юридический", "Юридический адрес",
+                      "Банк получателя", "Банк плательщика:", "E-mail", "М.П.", "Реквизиты сторон",
+                      "Наименование организации", "Наименование поставщика", "наименование покупателя:"):
             self.assertTrue(m.REQUISITES_RE.match(label), label)
         for label in ("Срок подписания акта", "Банковская гарантия", "Адресная доставка", "Условие оплаты",
-                      "Наименование товара", "Наименование"):
+                      "Наименование товара", "Наименование", "Адрес доставки", "Банк-гарант"):
             self.assertFalse(m.REQUISITES_RE.match(label), label)
 
     def test_paired_heading_text_change(self):
