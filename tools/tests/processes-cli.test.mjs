@@ -339,55 +339,57 @@ test('input: копия файла учебного кейса помечена,
   assert.doesNotMatch(r.out, /sales_azs_1c\.csv \(копия/);
 });
 
-// Файл кейса, пересобранный заново (как в архиве платформы курса): то же содержимое, другие время файлов
-// в zip, сжатие и docProps. change(имя, байты) правит члены архива.
-function rezip(buf, change = (name, data) => data) {
-  const locals = [];
+// Архив zip из членов [[имя, байты]]: время файлов, сжатие и порядок не как у файла кейса. local(имя, данные)
+// может подменить сжатые данные и объявленный размер члена (бомба: один поток на все члены).
+function zipOf(members, local = null) {
+  const parts = [];
   const centrals = [];
   let offset = 0;
-  const entries = zipEntries(buf).reverse(); // и порядок членов другой
-  for (const e of entries) {
-    const data = change(e.name, e.read());
-    const comp = deflateRawSync(data, { level: 1 });
-    const name = Buffer.from(e.name, 'utf8');
-    const head = (size, sig) => {
-      const h = Buffer.alloc(size);
-      h.writeUInt32LE(sig, 0);
-      return h;
+  const shared = new Map();
+  for (const [nameText, data] of members) {
+    const name = Buffer.from(nameText, 'utf8');
+    const own = local ? local(nameText, data) : { comp: deflateRawSync(data, { level: 1 }), size: data.length, crc: crc32(data) };
+    const fields = (h, at) => {
+      h.writeUInt16LE(8, at);
+      h.writeUInt16LE(0x6000, at + 2); // 12:00
+      h.writeUInt16LE(0x5b57, at + 4); // 23.10.2025
+      h.writeUInt32LE(own.crc, at + 6);
+      h.writeUInt32LE(own.comp.length, at + 10);
+      h.writeUInt32LE(own.size, at + 14);
+      h.writeUInt16LE(name.length, at + 18);
     };
-    const local = head(30, 0x04034b50);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(8, 8);
-    local.writeUInt16LE(0x6000, 10); // 12:00
-    local.writeUInt16LE(0x5b57, 12); // 23.10.2025
-    local.writeUInt32LE(crc32(data), 14);
-    local.writeUInt32LE(comp.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(name.length, 26);
-    const central = head(46, 0x02014b50);
+    let at = offset;
+    if (own.shared && shared.has(own.shared)) at = shared.get(own.shared);
+    else {
+      const head = Buffer.alloc(30);
+      head.writeUInt32LE(0x04034b50, 0);
+      head.writeUInt16LE(20, 4);
+      fields(head, 8);
+      parts.push(head, name, own.comp);
+      if (own.shared) shared.set(own.shared, offset);
+      offset += 30 + name.length + own.comp.length;
+    }
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(8, 10);
-    central.writeUInt16LE(0x6000, 12);
-    central.writeUInt16LE(0x5b57, 14);
-    central.writeUInt32LE(crc32(data), 16);
-    central.writeUInt32LE(comp.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(name.length, 28);
-    central.writeUInt32LE(offset, 42);
-    locals.push(local, name, comp);
+    fields(central, 10);
+    central.writeUInt32LE(at, 42);
     centrals.push(central, name);
-    offset += 30 + name.length + comp.length;
   }
   const cd = Buffer.concat(centrals);
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt16LE(members.length, 8);
+  end.writeUInt16LE(members.length, 10);
   end.writeUInt32LE(cd.length, 12);
   end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, cd, end]);
+  return Buffer.concat([...parts, cd, end]);
 }
+
+// Файл кейса, пересобранный заново (как в архиве платформы курса): то же содержимое, другие время файлов
+// в zip, сжатие, порядок членов и docProps. change(имя, байты) правит члены архива.
+const rezip = (buf, change = (name, data) => data) => zipOf(zipEntries(buf).reverse().map((e) => [e.name, change(e.name, e.read())]));
 
 // Одна ячейка (или абзац) другая: первый знак первого значения в листе или документе.
 const oneCell = (member) => (name, data) =>
@@ -419,6 +421,36 @@ test('input: копия файла кейса из архива платформ
     assert.ok(!r.out.includes(`${own} (копия`), `${own}: правка ячейки, это не копия кейса`);
   }
   assert.match(r.out, /reestr\.csv \(копия файла учебного кейса reestr_dogovorov\.xlsx\)/); // байт в байт: как раньше
+});
+
+test('input: копия кейса с лимитами: бомба zip, битый файл, повтор имени члена не копия, команда не падает', () => {
+  const data = join(cab, 'input', 'case-azs', 'data');
+  const dir = join(cab, 'input', 'bomby');
+  mkdirSync(dir, { recursive: true });
+  const xlsx = readFileSync(join(data, 'reestr_dogovorov.xlsx'));
+  const members = zipEntries(xlsx).map((e) => [e.name, e.read()]);
+  const zeros = deflateRawSync(Buffer.alloc(5 * 1024 * 1024 - 1), { level: 9 });
+  const bomb = (size) => () => ({ comp: zeros, size, crc: 0, shared: 'zeros' });
+  // Проба ревью: 1500 членов на одном потоке в 5 МБ (раньше 2 ГБ в памяти и падение).
+  const many = Array.from({ length: 1500 }, (_, k) => [String(k).padStart(6, '0'), Buffer.alloc(0)]);
+  writeFileSync(join(dir, 'bomba.xlsx'), zipOf(many, bomb(5 * 1024 * 1024 - 1)));
+  // Оглавление как у файла кейса (те же имена и размеры), а каждый член распаковывается в 5 МБ нулей.
+  writeFileSync(join(dir, 'bomba kak reestr.xlsx'), zipOf(members, (name, d) => bomb(d.length)()));
+  // Больше 2000 членов: не копия, даже без распаковки.
+  writeFileSync(join(dir, 'mnogo chlenov.xlsx'), zipOf(Array.from({ length: 2001 }, (_, k) => [`m${k}`, Buffer.from('x')])));
+  writeFileSync(join(dir, 'bityi.xlsx'), xlsx.subarray(0, Math.floor(xlsx.length / 2)));
+  writeFileSync(join(dir, 'ne zip.docx'), 'просто текст');
+  // Повтор имени: первым свой лист, за ним лист кейса с тем же именем. Excel откроет первый.
+  const sheet = members.find(([name]) => name === 'xl/worksheets/sheet1.xml');
+  writeFileSync(join(dir, 'povtor.xlsx'), zipOf([[sheet[0], Buffer.from(sheet[1].toString('utf8').replace('<sheetData>', '<sheetData><!-- свой -->'))], ...members]));
+  const started = Date.now();
+  const r = cli(['input', 'bomby', '--no-open']);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(Date.now() - started < 10000, `долго: ${Date.now() - started} мс`);
+  for (const name of ['bomba.xlsx', 'bomba kak reestr.xlsx', 'mnogo chlenov.xlsx', 'bityi.xlsx', 'ne zip.docx', 'povtor.xlsx']) {
+    assert.ok(r.out.includes(name), `${name}: ${r.out}`);
+    assert.ok(!r.out.includes(`${name} (копия`), `${name}: не копия кейса`);
+  }
 });
 
 test('без трейсбека: неожиданная ошибка даёт короткую русскую строку и код 2; имена вроде constructor не ломают demo', () => {

@@ -731,27 +731,55 @@ function caseFiles(root) {
   return out;
 }
 
-// Содержимое документа xlsx или docx: { член архива: байты } без docProps/ (время создания и правки, автор).
-// Файл кейса из архива платформы курса пересобран: члены те же, а время в zip и docProps другие. Не читается: null.
+// Оглавление документа xlsx или docx без docProps/ (время создания и правки, автор): { член: { size, read } }
+// из центрального каталога zip, без распаковки. Файл кейса из архива платформы курса пересобран: члены и их
+// байты те же, а время в zip и docProps другие. Не zip, больше OFFICE_MEMBERS членов, повтор имени: null.
 const OFFICE_EXT = new Set(['.xlsx', '.docx']);
-function officeContent(path) {
+const OFFICE_MEMBERS = 2000;
+const OFFICE_INFLATE_LIMIT = 64 * 1024 * 1024; // распаковка своего файла при сверке с кейсом, всего
+function officeIndex(path) {
   try {
     if (statSync(path).size > ZIP_FILE_LIMIT) return null;
-    const members = new Map();
-    for (const e of zipEntries(readFileSync(path))) {
-      if (!e.name.endsWith('/') && !/^docProps\//i.test(e.name)) members.set(e.name, e.read());
+    const entries = zipEntries(readFileSync(path));
+    if (entries.length > OFFICE_MEMBERS) return null;
+    const names = new Set();
+    const index = new Map();
+    for (const e of entries) {
+      if (names.has(e.name)) return null;
+      names.add(e.name);
+      if (!e.name.endsWith('/') && !/^docProps\//i.test(e.name)) index.set(e.name, e);
     }
-    return members;
+    return index;
   } catch {
     return null;
   }
 }
 
-const sameMembers = (a, b) => a !== null && b !== null && a.size === b.size && [...a].every(([name, data]) => b.get(name)?.equals(data));
+// Те же члены с теми же объявленными размерами: дёшево, по каталогу, до распаковки.
+const sameIndex = (a, b) => a !== null && b !== null && a.size === b.size && [...a].every(([name, e]) => b.get(name)?.size === e.size);
+
+// Те же байты членов. Член своего файла распаковывается не больше объявленного размера (он равен размеру
+// члена кейса), всего не больше budget.left байт; бюджет кончился или член не читается: не копия.
+function sameMembers(mine, theirs, budget) {
+  try {
+    for (const [name, e] of mine) {
+      const c = theirs.get(name);
+      c.data ??= c.read();
+      if (budget.left < e.size) return false;
+      const data = e.read(e.size);
+      budget.left -= data.length;
+      if (!data.equals(c.data)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Копия файла учебного кейса: то же содержимое, имя может быть другим. Возвращает имя файла кейса или null.
-// Сначала байт в байт; xlsx и docx ещё и по содержимому архива (только с файлами кейса того же вида), другие
-// виды файлов только байт в байт. Содержимое файла кейса читается один раз за вызов caseFiles.
+// Сначала байт в байт; xlsx и docx ещё и по содержимому архива (только с файлами кейса того же вида и с тем же
+// оглавлением), другие виды файлов только байт в байт. Оглавление и члены файла кейса читаются один раз за
+// вызов caseFiles.
 function caseCopyOf(file, cases) {
   let size;
   try {
@@ -763,11 +791,12 @@ function caseCopyOf(file, cases) {
   const ext = extname(file).toLowerCase();
   if (!hit && OFFICE_EXT.has(ext)) {
     const same = cases.filter((c) => extname(c.path).toLowerCase() === ext);
-    const mine = same.length ? officeContent(file) : null;
+    const mine = same.length ? officeIndex(file) : null;
+    const budget = { left: OFFICE_INFLATE_LIMIT };
     if (mine) {
       hit = same.find((c) => {
-        if (c.content === undefined) c.content = officeContent(c.path);
-        return sameMembers(mine, c.content);
+        if (c.index === undefined) c.index = officeIndex(c.path);
+        return sameIndex(mine, c.index) && sameMembers(mine, c.index, budget);
       });
     }
   }
@@ -799,7 +828,8 @@ export function skillCommandLines(text) {
     .filter((l) => SKILL_CMD.test(l.text));
 }
 
-// Файлы архива zip: [{ name, read() }]. Только stored и deflate, без шифрования и zip64.
+// Файлы архива zip: [{ name, size, read(limit) }], size: размер без сжатия из каталога, read распаковывает не
+// больше limit байт (и не больше 5 МБ). Только stored и deflate, без шифрования и zip64.
 export function zipEntries(buf) {
   const bad = (why) => processError('EZIP', why);
   let eocd = -1;
@@ -825,17 +855,17 @@ export function zipEntries(buf) {
     const local = buf.readUInt32LE(p + 42);
     const name = buf.toString('utf8', p + 46, p + 46 + nlen);
     p += 46 + skip;
-    const read = () => {
+    const read = (limit = ZIP_ENTRY_LIMIT) => {
       if (flags & 1) throw bad(`файл ${name} в архиве закрыт паролем`);
       if (usize > ZIP_ENTRY_LIMIT || csize > ZIP_ENTRY_LIMIT) throw bad(`файл ${name} в архиве больше 5 МБ`);
       if (local + 30 > buf.length || buf.readUInt32LE(local) !== 0x04034b50) throw bad('архив повреждён');
       const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
       const data = buf.subarray(start, start + csize);
       if (method === 0) return data;
-      if (method === 8) return inflateRawSync(data, { maxOutputLength: ZIP_ENTRY_LIMIT });
+      if (method === 8) return inflateRawSync(data, { maxOutputLength: Math.max(1, Math.min(limit, ZIP_ENTRY_LIMIT)) });
       throw bad(`файл ${name} в архиве сжат неизвестным способом`);
     };
-    entries.push({ name, read });
+    entries.push({ name, size: usize, read });
   }
   return entries;
 }
