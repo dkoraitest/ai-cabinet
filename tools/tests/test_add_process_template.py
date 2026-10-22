@@ -834,10 +834,11 @@ def merged_row(table, text):
     return row
 
 
-def bilingual_sections(merged_title=False, merged_headings=False, kz=mirror):
+def bilingual_sections(merged_title=False, merged_headings=False, kz=mirror, ru_left=False):
     """Название договора над таблицами, текст до спецификации: по таблице в два столбца на раздел (казахский
     слева, русский справа). merged_title: первая строка во всю ширину с названием на двух языках;
-    merged_headings: заголовок раздела строкой во всю ширину «4. Название / казахский заголовок»."""
+    merged_headings: заголовок раздела строкой во всю ширину «4. Название / казахский заголовок»;
+    ru_left: русский столбец слева."""
     def fn(d):
         from docx.oxml.ns import qn
         paras, first = paragraphs_before_spec(d)
@@ -859,8 +860,9 @@ def bilingual_sections(merged_title=False, merged_headings=False, kz=mirror):
                     p.getparent().remove(p)
                     continue
                 cells = table.add_row().cells
-                cells[1]._tc.append(p)
-                cells[0].paragraphs[0].text = kz(text)
+                ru, other = (cells[0], cells[1]) if ru_left else (cells[1], cells[0])
+                ru._tc.append(p)
+                other.paragraphs[0].text = kz(text)
             first.addprevious(table._tbl)
     return fn
 
@@ -878,6 +880,14 @@ def two_column_table(rows, after=None):
             body = d.element.body
             body.insert(len(body) - 1, table._tbl)  # перед свойствами раздела документа
     return fn
+
+
+def kazakh_names_table(prepay):
+    """Русская таблица условий с казахскими названиями и именами (проба ревью), предоплата prepay процентов."""
+    return (("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии, остаток после приёмки товара на нефтебазе"),
+            ("Срок поставки партии", "Не позднее пяти календарных дней с даты заявки покупателя"),
+            ("Грузополучатель", "ТОО «Қазақстан Темір Жолы», г. Қарағанды"),
+            ("Контактное лицо", "Нұрланов Ғалым Қайратұлы"))
 
 
 def conditions(prepay, after=None):
@@ -1243,13 +1253,7 @@ class TwoDocuments(unittest.TestCase):
     def test_conditions_table_with_kazakh_names(self):
         """Русская таблица условий с казахскими названиями и именами (проба ревью): не договор на двух языках,
         сверяется построчно, предоплата 30 и 100 процентов: «изменён»."""
-        def names(prepay):
-            return two_column_table((
-                ("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии, остаток после приёмки товара на нефтебазе"),
-                ("Срок поставки партии", "Не позднее пяти календарных дней с даты заявки покупателя"),
-                ("Грузополучатель", "ТОО «Қазақстан Темір Жолы», г. Қарағанды"),
-                ("Контактное лицо", "Нұрланов Ғалым Қайратұлы")))
-        r = self.run_variant(names(30), names(100))
+        r = self.run_variant(two_column_table(kazakh_names_table(30)), two_column_table(kazakh_names_table(100)))
         key = "Приложение 2. Техническая спецификация, «Условие оплаты»"
         self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{key: "изменён"}))
         status = {row[0]: row[1] for row in r["rows"]}
@@ -1259,6 +1263,44 @@ class TwoDocuments(unittest.TestCase):
         m = self.c.module()
         self.assertFalse(m.kazakh_column("ТОО «Қазақстан Темір Жолы», г. Қарағанды Нұрланов Ғалым Қайратұлы"))
         self.assertTrue(m.kazakh_column(" ".join(KZ)))
+
+    def test_russian_table_in_bilingual_contract(self):
+        """Договор на двух языках по разделам и в разделе 4 русская таблица условий с казахскими именами (пробы
+        ревью «a»: русский столбец справа, «b»: слева). Таблица сверяется построчно: «4, «Условие оплаты»» изменён."""
+        def contract(prepay, ru_left):
+            def fn(d):
+                bilingual_sections(merged_headings=True, ru_left=ru_left)(d)
+                section4 = next(t for t in d.tables if any("4.3. " in c.text for row in t.rows for c in row.cells))
+                table = d.add_table(rows=0, cols=2)
+                for left, right in kazakh_names_table(prepay):
+                    cells = table.add_row().cells
+                    cells[0].text, cells[1].text = left, right
+                section4._tbl.addnext(table._tbl)
+            return fn
+        for name, ru_left in (("a: русский справа", False), ("b: русский слева", True)):
+            with self.subTest(name):
+                r = self.run_variant(contract(30, ru_left), contract(100, ru_left))
+                self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Условие оплаты»": "изменён"}))
+                status = {row[0]: row[1] for row in r["rows"]}
+                self.assertEqual(status["4, «Контактное лицо»"], "совпадает")
+                self.assertIn("Договор двуязычный: сверялся русский текст.", r["summary"])
+                self.assertNotIn("Сверка неполная", r["summary"])
+        # Русская таблица не вида «условие | значение» (длинный текст до первого раздела): абзацы слева направо.
+        long_text = ("Поставщик обязуется поставлять Товар партиями в соответствии с заявками Покупателя и "
+                     "обеспечивать его качество на всём протяжении срока действия договора")
+
+        def top(days):
+            def fn(d):
+                bilingual_sections(merged_headings=True)(d)
+                two_column_table(((long_text, f"Покупатель обязуется принимать и оплачивать Товар в течение {days} дней"),),
+                                 after="Договор поставки")(d)
+            return fn
+        r = self.run_variant(top(30), top(10))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"шапка, абз. 3": "изменён"}))
+        self.assertNotIn("Сверка неполная", r["summary"])
+        m = self.c.module()
+        self.assertFalse(m.looks_kazakh("ТОО «Қазақстан Темір Жолы», г. Қарағанды Нұрланов Ғалым Қайратұлы"))
+        self.assertTrue(m.looks_kazakh("Шарт бір жыл әрекет етеді."))  # коротко и без служебных слов
 
     def test_unread_two_column_table_is_loud(self):
         """Таблица в два столбца с длинным текстом до первого раздела русского договора не читается: строка
