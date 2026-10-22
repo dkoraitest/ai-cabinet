@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-cd /d "%~dp0"
+pushd "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
   echo Не найден Node.js. Позовите тренера: Node.js ставит ИТ.

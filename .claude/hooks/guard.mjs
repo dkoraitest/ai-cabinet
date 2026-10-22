@@ -31,7 +31,7 @@
 // Вход: JSON в stdin (tool_name, tool_input, cwd, permission_mode). Выход: пусто (решения нет) или
 // {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"|"deny","permissionDecisionReason":"..."}}.
 // Код выхода всегда 0.
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -282,9 +282,11 @@ export function classifyFile(file, ctx = {}) {
 // Встроенная команда в тексте скилла: !`команда` (восклицательный знак, затем в той же строке команда в
 // обратных кавычках) или блок, открытый как ```!. Claude Code выполняет её при запуске скилла без вопроса.
 // Флажок: команда внутри примера в блоке кода тоже считается (безопаснее спросить лишний раз). Обычное
-// «Важно!» и `код` без ! перед ним не считаются; «Важно! `код`» через пробел считается (осторожно).
-const SKILL_CMD = /![ \t]*`[^`\n]+`|```[ \t]*!/;
-const SKILL_DIR = /(^|\/)(\.claude|claude~\d)\/skills\//i;
+// «Важно!» и `код` без ! перед ним не считаются; «Готово! `файл`» через пробел тоже нет: ! и кавычка
+// должны стоять вплотную, как в настоящем синтаксисе. Правки Edit и MultiEdit проверяются по тексту файла
+// целиком после правки (команду можно собрать из двух правок). Так же защищён .claude/commands/.
+const SKILL_CMD = /!`[^`\n]+`|```[ \t]*!/;
+const SKILL_DIR = /(^|\/)(\.claude|claude~\d)\/(skills|commands)\//i;
 
 export const hasSkillCommand = (text) => typeof text === 'string' && SKILL_CMD.test(text);
 
@@ -305,6 +307,37 @@ function inSkills(file, { cwds = [], roots = [], platform = process.platform, ho
   if (/^~([\\/]|$)/.test(raw)) raw = P.join(home, raw.slice(1));
   const cands = P.isAbsolute(raw) ? [P.resolve(raw)] : [...cwds, ...roots].filter(Boolean).map((b) => P.resolve(b, raw));
   return cands.some((c) => SKILL_DIR.test(fold(c))) || SKILL_DIR.test(fold(raw));
+}
+
+// Что окажется в файле после Edit или MultiEdit: читаем файл с диска и применяем правки по порядку.
+// Не вышло (файла нет, old_string не найден): { texts: фрагменты, unsure: true }.
+function textsAfterEdit(tool, ti, { cwds = [], roots = [], platform = process.platform, home = homedir() } = {}) {
+  const edits =
+    tool === 'Edit'
+      ? [{ o: ti?.old_string, n: ti?.new_string, all: ti?.replace_all === true }]
+      : (Array.isArray(ti?.edits) ? ti.edits : []).map((e) => ({ o: e?.old_string, n: e?.new_string, all: e?.replace_all === true }));
+  const fragments = edits.map((e) => e.n);
+  try {
+    const P = platform === 'win32' ? win32 : posix;
+    let raw = String(ti?.file_path ?? '').trim();
+    if (/^~([\\/]|$)/.test(raw)) raw = P.join(home, raw.slice(1));
+    const cands = P.isAbsolute(raw) ? [P.resolve(raw)] : [...cwds, ...roots].filter(Boolean).map((b) => P.resolve(b, raw));
+    const file = cands.find((c) => existsSync(c));
+    if (!file) return { texts: fragments, unsure: true };
+    let text = readFileSync(file, 'utf8');
+    for (const e of edits) {
+      if (typeof e.o !== 'string' || typeof e.n !== 'string') return { texts: [text, ...fragments], unsure: true };
+      if (e.o === '') {
+        text += e.n;
+        continue;
+      }
+      if (!text.includes(e.o)) return { texts: [text, ...fragments], unsure: true };
+      text = e.all ? text.split(e.o).join(e.n) : text.replace(e.o, () => e.n);
+    }
+    return { texts: [text, ...fragments], unsure: false };
+  } catch {
+    return { texts: fragments, unsure: true };
+  }
 }
 
 // Пути, куда пишет инструмент записи. Artifact: out_dir и out_dir/<path или paths>; без out_dir не пишет.
@@ -329,10 +362,15 @@ export function decide(input, ctx = {}) {
     if (FILE_TOOLS.has(tool)) {
       const base = classifyFile(filePathsOf(tool, ti), full);
       if (base?.decision === 'deny' && base.reason === REASON_DATA) return base;
-      const skillCmd =
-        tool !== 'Artifact' &&
-        newContentOf(tool, ti).some(hasSkillCommand) &&
-        filePathsOf(tool, ti).some((f) => inSkills(f, full));
+      let skillCmd = false;
+      if (tool !== 'Artifact' && filePathsOf(tool, ti).some((f) => inSkills(f, full))) {
+        if (tool === 'Edit' || tool === 'MultiEdit') {
+          const { texts, unsure } = textsAfterEdit(tool, ti, full);
+          skillCmd = texts.some(hasSkillCommand) || (unsure && texts.some((x) => typeof x === 'string' && x.includes('`')));
+        } else {
+          skillCmd = newContentOf(tool, ti).some(hasSkillCommand);
+        }
+      }
       if (!skillCmd) return base;
       return canPrompt(mode)
         ? { decision: 'ask', reason: REASON_SKILL_CMD }

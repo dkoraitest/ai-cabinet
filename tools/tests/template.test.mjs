@@ -201,7 +201,7 @@ test('в tools нет системного копирования папок (п
 test('запуск двойным щелчком: start-cabinet.cmd и .command', () => {
   const cmd = readFileSync(join(ROOT, 'start-cabinet.cmd'));
   const t = cmd.toString('utf8');
-  assert.ok(t.includes('cd /d "%~dp0"'));
+  assert.ok(t.includes('pushd "%~dp0"'));
   assert.ok(t.includes('node tools\\serve.mjs --open'));
   assert.ok(t.includes('chcp 65001 >nul'));
   assert.ok(t.includes('Окно не закрывайте, пока работаете со страницей. Закрыли окно: страница остановится.'));
