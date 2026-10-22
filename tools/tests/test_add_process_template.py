@@ -1247,12 +1247,15 @@ class TwoDocuments(unittest.TestCase):
             return two_column_table((
                 ("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии"),
                 ("Срок подписания акта", "В течение трёх рабочих дней с даты поставки партии"),
+                ("Наименование товара", "Дизельное топливо" if prepay == 30 else "Бензин АИ-92"),
+                ("Наименование поставщика", "ТОО «Нефтегаз-Сервис»" if prepay == 30 else "ТОО «НефтеСнаб Сарыарка»"),
                 ("БИН поставщика", bin_no)), after="4.3.")
         r = self.run_variant(mixed(30, "111111111111"), mixed(100, "123456789012"))
-        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Условие оплаты»": "изменён"}))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Условие оплаты»": "изменён",
+                                                                         "4, «Наименование товара»": "изменён"}))
         status = {row[0]: row[1] for row in r["rows"]}
         self.assertEqual(status["4, «Срок подписания акта»"], "совпадает")
-        self.assertFalse([k for k in status if "БИН" in str(k)])
+        self.assertFalse([k for k in status if "БИН" in str(k) or "поставщика" in str(k)])
         manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")[1:]
         self.assertFalse([row for row in manual if "БИН" in str(row[0])])
         self.assertFalse([k for k in r["sverka"]["по строкам"] if "БИН" in k])
@@ -1266,9 +1269,11 @@ class TwoDocuments(unittest.TestCase):
         self.assertNotIn("Сверка неполная", r["summary"])
         self.assertEqual(len(manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")), len(CASE9_DIFFS) + 2 + 1)
         m = self.c.module()
-        for label in ("БИН", "Банк:", "E-mail", "М.П.", "Реквизиты сторон", "Наименование"):
+        for label in ("БИН", "Банк:", "E-mail", "М.П.", "Реквизиты сторон", "Наименование организации",
+                      "Наименование поставщика", "наименование покупателя:"):
             self.assertTrue(m.REQUISITES_RE.match(label), label)
-        for label in ("Срок подписания акта", "Банковская гарантия", "Адресная доставка", "Условие оплаты"):
+        for label in ("Срок подписания акта", "Банковская гарантия", "Адресная доставка", "Условие оплаты",
+                      "Наименование товара", "Наименование"):
             self.assertFalse(m.REQUISITES_RE.match(label), label)
 
     def test_paired_heading_text_change(self):
