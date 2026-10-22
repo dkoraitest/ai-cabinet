@@ -731,7 +731,27 @@ function caseFiles(root) {
   return out;
 }
 
+// Содержимое документа xlsx или docx: { член архива: байты } без docProps/ (время создания и правки, автор).
+// Файл кейса из архива платформы курса пересобран: члены те же, а время в zip и docProps другие. Не читается: null.
+const OFFICE_EXT = new Set(['.xlsx', '.docx']);
+function officeContent(path) {
+  try {
+    if (statSync(path).size > ZIP_FILE_LIMIT) return null;
+    const members = new Map();
+    for (const e of zipEntries(readFileSync(path))) {
+      if (!e.name.endsWith('/') && !/^docProps\//i.test(e.name)) members.set(e.name, e.read());
+    }
+    return members;
+  } catch {
+    return null;
+  }
+}
+
+const sameMembers = (a, b) => a !== null && b !== null && a.size === b.size && [...a].every(([name, data]) => b.get(name)?.equals(data));
+
 // Копия файла учебного кейса: то же содержимое, имя может быть другим. Возвращает имя файла кейса или null.
+// Сначала байт в байт; xlsx и docx ещё и по содержимому архива (только с файлами кейса того же вида), другие
+// виды файлов только байт в байт. Содержимое файла кейса читается один раз за вызов caseFiles.
 function caseCopyOf(file, cases) {
   let size;
   try {
@@ -739,7 +759,18 @@ function caseCopyOf(file, cases) {
   } catch {
     return null;
   }
-  const hit = cases.find((c) => c.size === size && sameBytes(c.path, file));
+  let hit = cases.find((c) => c.size === size && sameBytes(c.path, file));
+  const ext = extname(file).toLowerCase();
+  if (!hit && OFFICE_EXT.has(ext)) {
+    const same = cases.filter((c) => extname(c.path).toLowerCase() === ext);
+    const mine = same.length ? officeContent(file) : null;
+    if (mine) {
+      hit = same.find((c) => {
+        if (c.content === undefined) c.content = officeContent(c.path);
+        return sameMembers(mine, c.content);
+      });
+    }
+  }
   return hit ? hit.rel : null;
 }
 

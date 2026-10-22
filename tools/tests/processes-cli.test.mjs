@@ -9,7 +9,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyDir } from './copy-dir.mjs';
 import { createCabinetServer, listenFirstFree } from '../serve.mjs';
-import { processStatus } from '../processes.mjs';
+import { crc32, deflateRawSync } from 'node:zlib';
+import { processStatus, zipEntries } from '../processes.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TOKEN = '0123456789abcdef0123456789abcdef';
@@ -336,6 +337,88 @@ test('input: копия файла учебного кейса помечена,
   assert.match(r.out, /prodazhi\.csv \(копия файла учебного кейса sales_azs_1c\.csv\)/);
   assert.match(r.out, /sales_azs_1c\.csv(?! \()/);
   assert.doesNotMatch(r.out, /sales_azs_1c\.csv \(копия/);
+});
+
+// Файл кейса, пересобранный заново (как в архиве платформы курса): то же содержимое, другие время файлов
+// в zip, сжатие и docProps. change(имя, байты) правит члены архива.
+function rezip(buf, change = (name, data) => data) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  const entries = zipEntries(buf).reverse(); // и порядок членов другой
+  for (const e of entries) {
+    const data = change(e.name, e.read());
+    const comp = deflateRawSync(data, { level: 1 });
+    const name = Buffer.from(e.name, 'utf8');
+    const head = (size, sig) => {
+      const h = Buffer.alloc(size);
+      h.writeUInt32LE(sig, 0);
+      return h;
+    };
+    const local = head(30, 0x04034b50);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(0x6000, 10); // 12:00
+    local.writeUInt16LE(0x5b57, 12); // 23.10.2025
+    local.writeUInt32LE(crc32(data), 14);
+    local.writeUInt32LE(comp.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = head(46, 0x02014b50);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt16LE(0x6000, 12);
+    central.writeUInt16LE(0x5b57, 14);
+    central.writeUInt32LE(crc32(data), 16);
+    central.writeUInt32LE(comp.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, comp);
+    centrals.push(central, name);
+    offset += 30 + name.length + comp.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, end]);
+}
+
+// Одна ячейка (или абзац) другая: первый знак первого значения в листе или документе.
+const oneCell = (member) => (name, data) =>
+  name === member ? Buffer.from(data.toString('utf8').replace(/(<(?:v|t|w:t)(?:\s[^>]*)?>)([^<])/, (m, tag, c) => tag + (c === '1' ? '2' : '1'))) : data;
+const newProps = (name, data) => (name.startsWith('docProps/') ? Buffer.from(data.toString('utf8').replace(/<\/cp:coreProperties>|<\/Properties>/, '<!-- пересобран -->$&')) : data);
+
+test('input: копия файла кейса из архива платформы (xlsx и docx пересобраны) узнаётся по содержимому, правка ячейки нет', () => {
+  const data = join(cab, 'input', 'case-azs', 'data');
+  writeFileSync(join(data, 'template_pismo_postavshchiku.docx'), readFileSync(join(ROOT, 'input', 'case-azs', 'data', 'template_pismo_postavshchiku.docx')));
+  const dir = join(cab, 'input', 'platforma');
+  mkdirSync(dir, { recursive: true });
+  const xlsx = readFileSync(join(data, 'reestr_dogovorov.xlsx'));
+  const docx = readFileSync(join(data, 'template_pismo_postavshchiku.docx'));
+  const files = {
+    'reestr s platformy.xlsx': rezip(xlsx, newProps),
+    'Реестр правка.xlsx': rezip(xlsx, oneCell('xl/worksheets/sheet1.xml')),
+    'pismo s platformy.docx': rezip(docx, newProps),
+    'Письмо правка.docx': rezip(docx, oneCell('word/document.xml')),
+    'reestr.csv': xlsx, // то же содержимое, другое расширение: только байт в байт с файлом кейса того же вида
+  };
+  for (const [name, buf] of Object.entries(files)) writeFileSync(join(dir, name), buf);
+  assert.notDeepEqual(files['reestr s platformy.xlsx'], xlsx);
+  const r = cli(['input', 'platforma', '--no-open']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /reestr s platformy\.xlsx \(копия файла учебного кейса reestr_dogovorov\.xlsx\)/);
+  assert.match(r.out, /pismo s platformy\.docx \(копия файла учебного кейса template_pismo_postavshchiku\.docx\)/);
+  for (const own of ['Реестр правка.xlsx', 'Письмо правка.docx']) {
+    assert.ok(r.out.includes(own), r.out);
+    assert.ok(!r.out.includes(`${own} (копия`), `${own}: правка ячейки, это не копия кейса`);
+  }
+  assert.match(r.out, /reestr\.csv \(копия файла учебного кейса reestr_dogovorov\.xlsx\)/); // байт в байт: как раньше
 });
 
 test('без трейсбека: неожиданная ошибка даёт короткую русскую строку и код 2; имена вроде constructor не ломают demo', () => {
