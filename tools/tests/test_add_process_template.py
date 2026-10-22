@@ -865,6 +865,28 @@ def bilingual_sections(merged_title=False, merged_headings=False, kz=mirror):
     return fn
 
 
+def two_column_table(rows, after=None):
+    """Таблица в два столбца по строкам rows: после абзаца, который начинается с after, или в конце текста."""
+    def fn(d):
+        table = d.add_table(rows=0, cols=2)
+        for left, right in rows:
+            cells = table.add_row().cells
+            cells[0].text, cells[1].text = left, right
+        if after:
+            next(p for p in d.paragraphs if p.text.startswith(after))._p.addnext(table._tbl)
+        else:
+            body = d.element.body
+            body.insert(len(body) - 1, table._tbl)  # перед свойствами раздела документа
+    return fn
+
+
+def conditions(prepay, after=None):
+    """Таблица условий «условие | значение», как в пробе ревью: предоплата prepay процентов."""
+    return two_column_table((
+        ("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии, остаток после приёмки товара на нефтебазе"),
+        ("Срок поставки партии", "Не позднее пяти календарных дней с даты заявки покупателя")), after)
+
+
 def bilingual(russian_left=False, one_row=False, other=None, mixed=False, merged_title=False):
     """Текст до первой таблицы (спецификации) в таблицу в два столбца: русский абзац и рядом казахский
     (other(текст): свой текст второго столбца; mixed: казахская фраза и в русском столбце; merged_title:
@@ -1196,6 +1218,38 @@ class TwoDocuments(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("не прочитана", problems[0])
         self.assertTrue(problems[0].endswith(HINT))
+
+    def test_conditions_table_compared_row_by_row(self):
+        """Таблица «условие | значение» в русском договоре: строки сверяются как пункты раздела, где она стоит.
+        Предоплата 30 процентов в форме, 100 в договоре: «изменён» и человеку, остальные строки совпадают."""
+        for name, after, key in (("в конце, как в пробе ревью", None, "Приложение 2. Техническая спецификация"),
+                                 ("в разделе 4", "4.3.", "4")):
+            with self.subTest(name):
+                r = self.run_variant(conditions(30, after), conditions(100, after))
+                key = f"{key}, «Условие оплаты»"
+                self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{key: "изменён"}))
+                status = {row[0]: row[1] for row in r["rows"]}
+                self.assertEqual(status[key.replace("Условие оплаты", "Срок поставки партии")], "совпадает")
+                manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")[1:]
+                row = next(row for row in manual if row[0] == key)
+                self.assertIn("Предоплата 30 процентов", row[2])
+                self.assertIn("Предоплата 100 процентов", row[3])
+                self.assertEqual(row[-1], RISK)
+                self.assertNotIn("Сверка неполная", r["summary"])
+                tech = sheet(self.c.out / "sverka-dogovora.xlsx", "Техспецификация")
+                self.assertEqual(len(tech), 5)  # техспецификация в том же разделе читается как раньше
+
+    def test_requisites_table_skipped_silently(self):
+        """Таблица реквизитов сторон (БИН, ИИК, подпись) в два столбца: как раньше, не сверяется и без тревоги."""
+        def requisites(bin_no):
+            return two_column_table((
+                (f"Поставщик: ТОО «Нефтегаз-Сервис», БИН {bin_no}, г. Астана, ИИК KZ12345678901234567890",
+                 "Покупатель: ТОО «Дала Ойл», БИН 987654321098, г. Астана, ИИК KZ09876543210987654321"),
+                ("Директор _________ подпись, М.П.", "Директор по закупкам _________ подпись, М.П.")))
+        r = self.run_variant(requisites("111111111111"), requisites("123456789012"))
+        self.assertEqual(r["sverka"]["по строкам"], CASE9_DIFFS)
+        self.assertNotIn("Сверка неполная", r["summary"])
+        self.assertEqual(len(manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")), len(CASE9_DIFFS) + 2 + 1)
 
     def test_paired_heading_text_change(self):
         """Одноуровневые пункты «4. Срок действия один год.» программа берёт за заголовок раздела.
