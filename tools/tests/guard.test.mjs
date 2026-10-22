@@ -564,6 +564,7 @@ test('скиллы: встроенная команда в новом текст
     ['! в прозе', 'Важно! Это нужно сделать до пятницы!', false],
     ['команда !`...`', 'Текущая дата: !`date`', true],
     ['блок ```!', 'Шаги:\n```!\nls -la\n```\n', true],
+    ['! с пробелом перед кодом', 'Готово! `output/a.xlsx` сохранён', false],
     ['команда в примере внутри блока кода', '```md\nДата: !`date`\n```\n', true],
   ];
   const modes = ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk', undefined];
@@ -577,6 +578,8 @@ test('скиллы: встроенная команда в новом текст
         ['MultiEdit', { file_path: SK, edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: text }] }],
         ['Write', { file_path: `${CAB}/.claude/skills/moi/extra.md`, content: text }],
       ]) {
+        // Edit по файлу, которого нет, с кавычкой во фрагменте спрашивает (тест ниже): здесь только Write.
+        if (!flagged && text.includes('`') && tool !== 'Write') continue;
         const got = run(tool, ti, mode);
         if (!flagged) {
           assert.notEqual(got?.reason, REASON_SKILL_CMD, label);
@@ -611,4 +614,48 @@ test('setup-check: правило про чужие скиллы и настро
   assert.ok(t.includes('Чужие скиллы не ставим. Добавляйте только свои скиллы и те, что даёт курс. Скилл из интернета или от знакомых может содержать команды, которые выполнятся на вашем компьютере без вашего ведома'));
   assert.ok(t.includes('claudeCode.initialPermissionMode') && t.includes('acceptEdits'));
   assert.ok(!/[\u2012-\u2015]/.test(t));
+});
+
+test('скиллы: команду нельзя собрать из двух правок и в .claude/commands', () => {
+  const base = mkdtempSync(join(tmpdir(), 'guard-skill-'));
+  try {
+    const cab = realpathSync(base);
+    mkdirSync(join(cab, '.claude', 'skills', 'moi'), { recursive: true });
+    mkdirSync(join(cab, '.claude', 'commands'), { recursive: true });
+    const sk = join(cab, '.claude', 'skills', 'moi', 'SKILL.md');
+    const ctx = { roots: [cab], platform: process.platform };
+    const run = (tool, ti, mode) => decide({ tool_name: tool, tool_input: ti, cwd: cab, permission_mode: mode }, ctx);
+    const PROMPT = ['default', 'manual', 'acceptEdits', 'plan', 'auto'];
+    const NOPROMPT = ['bypassPermissions', 'dontAsk', undefined];
+    const expectAll = (tool, ti) => {
+      for (const m of PROMPT) assert.deepEqual(run(tool, ti, m), { decision: 'ask', reason: REASON_SKILL_CMD }, `${tool} ${m}`);
+      for (const m of NOPROMPT) assert.deepEqual(run(tool, ti, m), { decision: 'deny', reason: REASON_SKILL_CMD_NO_PROMPT }, `${tool} ${m}`);
+    };
+    // Write «Дата: !», потом Edit добавляет `date`
+    writeFileSync(sk, 'Дата: !\n');
+    expectAll('Edit', { file_path: sk, old_string: 'Дата: !', new_string: 'Дата: !`date`' });
+    expectAll('Edit', { file_path: sk, old_string: '!', new_string: '!`date`' });
+    // Правка вставляет только `date`, а ! уже в файле
+    expectAll('Edit', { file_path: sk, old_string: 'Дата: !\n', new_string: 'Дата: !`date`\n' });
+    // MultiEdit: две правки по отдельности безобидны
+    writeFileSync(sk, 'АБ\n');
+    expectAll('MultiEdit', { file_path: sk, edits: [{ old_string: 'А', new_string: 'Дата: !' }, { old_string: 'Б', new_string: '`date`' }] });
+    // replace_all
+    writeFileSync(sk, 'x ! y\n');
+    expectAll('Edit', { file_path: sk, old_string: ' y', new_string: '`date`', replace_all: true });
+    // безобидная правка безобидного файла
+    writeFileSync(sk, 'Привет\n');
+    for (const m of [...PROMPT, ...NOPROMPT]) assert.notEqual(run('Edit', { file_path: sk, old_string: 'Привет', new_string: 'Готово! `a.xlsx`' }, m)?.reason, REASON_SKILL_CMD, m);
+    // файл не прочитать или old_string не найден: во фрагменте есть кавычка, значит спрашиваем
+    expectAll('Edit', { file_path: join(cab, '.claude', 'skills', 'new', 'SKILL.md'), old_string: 'a', new_string: '`date`' });
+    expectAll('Edit', { file_path: sk, old_string: 'нет такого', new_string: '`date`' });
+    assert.notEqual(run('Edit', { file_path: sk, old_string: 'нет такого', new_string: 'просто текст' }, 'acceptEdits')?.reason, REASON_SKILL_CMD);
+    // .claude/commands
+    const cmd = join(cab, '.claude', 'commands', 'x.md');
+    expectAll('Write', { file_path: cmd, content: 'Дата: !`date`' });
+    writeFileSync(cmd, 'Дата: !\n');
+    expectAll('Edit', { file_path: cmd, old_string: '!', new_string: '!`date`' });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
