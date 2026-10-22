@@ -205,6 +205,39 @@ jobs:
           }
           exit 0
 
+      - name: Windows (PowerShell 5.1), запуск двойным щелчком (start-cabinet.cmd)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:USERPROFILE = $env:PROFILE_DIR
+          $env:HOME = $env:PROFILE_DIR
+          $clone = "$env:PROFILE_DIR\ai-cabinet"
+          $log = "$env:RUNNER_TEMP\launcher.log"
+          $err = "$env:RUNNER_TEMP\launcher.err"
+          $p = Start-Process cmd -ArgumentList '/c', 'start-cabinet.cmd' -WorkingDirectory $clone -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err
+          try {
+            $url = $null
+            for ($i = 0; $i -lt 30; $i++) {
+              if (Test-Path $log) {
+                $txt = [string](Get-Content -Encoding UTF8 -Raw $log)
+                if ($txt) {
+                  $m = [regex]::Match($txt, 'http://127\.0\.0\.1:\d+/[0-9a-f]{32}/')
+                  if ($m.Success) { $url = $m.Value; break }
+                }
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $url) { throw 'launcher: page address did not appear within 30 seconds' }
+            $resp = Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
+            if ($resp.StatusCode -ne 200) { throw "launcher: status $($resp.StatusCode)" }
+            if ($resp.Content -notmatch 'data-cabinet=.ok.') { throw 'launcher: page marker not found' }
+            Write-Host 'launcher opens the page'
+          } finally {
+            taskkill /T /F /PID $p.Id | Out-Null
+          }
+          exit 0
+
       - name: Windows (PowerShell 5.1), демо-процесс кнопкой на странице
         if: runner.os == 'Windows'
         shell: powershell
