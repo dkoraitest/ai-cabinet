@@ -195,3 +195,57 @@ test('в tools нет системного копирования папок (п
   const bad = files.filter((f) => f.startsWith('tools/') && read(f).includes(word));
   assert.deepEqual(bad, []);
 });
+
+// Скиллы курса загружаются как скиллы: встроенная команда в их тексте выполнилась бы сама при запуске.
+// Шаблон тот же, что у сторожа кабинета: восклицательный знак и команда в обратных кавычках или блок ```!.
+test('скиллы курса без встроенных команд', () => {
+  const pattern = new RegExp(['!', '[ \\t]*`[^`\\n]+`|', '`'.repeat(3), '[ \\t]*!'].join(''));
+  const bad = files.filter((f) => f.startsWith('.claude/skills/') && pattern.test(read(f)));
+  assert.deepEqual(bad, []);
+});
+
+// Фразы, которые Claude говорит человеку (в кавычках «...»), без технических слов. Перечень самих слов
+// («скрипт», «порт») в правилах для Claude не фраза человеку и не считается.
+function quotes(text) {
+  const out = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of text) {
+    if (ch === '«') {
+      if (depth > 0) cur += ch;
+      depth++;
+    } else if (ch === '»' && depth > 0) {
+      depth--;
+      if (depth === 0) {
+        out.push(cur);
+        cur = '';
+      } else cur += ch;
+    } else if (depth > 0) cur += ch;
+  }
+  return out;
+}
+
+test('скиллы процессов: фразы человеку без слов скрипт, порт, сервер, терминал, консоль, в фоне', () => {
+  const words = /(^|[^а-яё])(скрипт|порт|сервер|терминал|консол|в фоне)/i;
+  for (const f of ['.claude/skills/add-process/SKILL.md', '.claude/skills/run-process/SKILL.md', '.claude/skills/demo-process/SKILL.md']) {
+    const bad = quotes(read(f)).filter((q) => words.test(q) && !/^(скрипт|код|сервер|порт|терминал|консоль|в фоне)$/.test(q.trim()));
+    assert.deepEqual(bad, [], f);
+  }
+});
+
+test('добавить процесс: всегда программа (kind script), процесс без программы не создаётся; справка с образцами на месте', () => {
+  const skill = read('.claude/skills/add-process/SKILL.md');
+  assert.match(skill, /"kind": "script"/);
+  assert.doesNotMatch(skill, /"kind": "claude"|kind: claude/);
+  for (const must of ['etalon-skilla.json', 'sverka-so-skillom.md', 'razobrat-vruchnuyu.xlsx', 'slovar.json', 'shablon.docx',
+    'node tools/processes.mjs compare', 'node tools/processes.mjs read', 'programma.md']) {
+    assert.ok(skill.includes(must), `в скилле нет ${must}`);
+  }
+  assert.ok(files.includes('.claude/skills/add-process/programma.md'));
+  const run = read('.claude/skills/run-process/SKILL.md');
+  assert.match(run, /## Доработать процесс/);
+  assert.match(run, /## Добавить слово в словарь/);
+  const rules = read('CLAUDE.md');
+  assert.match(rules, /\| «доработай» и название процесса/);
+  assert.match(rules, /\| «добавь в словарь процесса <название>: <слово> → <тема>»/);
+});
