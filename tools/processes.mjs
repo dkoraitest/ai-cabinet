@@ -12,7 +12,8 @@
 //   node tools/processes.mjs run <slug>         запуск, как кнопкой «Запустить»
 //   node tools/processes.mjs input <slug>       папка input/<slug> для файлов человека, открывается в Проводнике
 //   node tools/processes.mjs read <slug> <файл> текст файла скилла (.md, .zip, .skill) или документа Word из input/<slug>
-//   node tools/processes.mjs compare <slug>     сверка результата программы с эталоном скилла
+//   node tools/processes.mjs compare <slug>     проверка программы и сверка её результата с эталоном скилла
+//   node tools/processes.mjs skills             свои скиллы человека в .claude/skills
 //   node tools/processes.mjs demo <slug>        демо курса из templates/processes с файлом учебного кейса
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -975,6 +976,13 @@ const asMap = (obj) =>
 const SHOW_ROWS = 40;
 const listOf = (items) => (items.length > SHOW_ROWS ? [...items.slice(0, SHOW_ROWS), `  ... и ещё ${items.length - SHOW_ROWS}`] : items);
 
+// Эталон по части файла (большой файл: скилл выполнен на первых строках): поле «строк в эталоне» с числом.
+// Тогда сравниваются только строки эталона, остальные строки программы в эталон не входят и расхождением
+// не считаются; итоги, категории и документы по части файла с программой не сравнить.
+export const COVERAGE = 'строк в эталоне';
+// Доля «разобрать вручную», выше которой сверка предупреждает: словарю, скорее всего, не хватает слов.
+const MANUAL_WARN_SHARE = 0.2;
+
 // Сравнение эталона и раздела sverka программы: { lines, code, differences, manual }.
 // Строка, которую программа отправила в «разобрать вручную», расхождением не считается: она в списке
 // для человека. Разница в категории, которая целиком объясняется такими строками, тоже.
@@ -983,9 +991,11 @@ export function compareWithEtalon(etalon, program) {
   let differences = 0;
   let manual = 0;
   const manualByCategory = new Map();
+  const partial = typeof etalon[COVERAGE] === 'number' && Number.isFinite(etalon[COVERAGE]);
   const eRows = asMap(etalon['по строкам']);
+  const pRowsAll = asMap(program['по строкам']);
   if (eRows) {
-    const pRows = asMap(program['по строкам']) ?? new Map();
+    const pRows = pRowsAll ?? new Map();
     let same = 0;
     const wrong = [];
     const toManual = [];
@@ -1005,10 +1015,18 @@ export function compareWithEtalon(etalon, program) {
     if (toManual.length) lines.push(`Программа отправила в «${MANUAL}»: ${toManual.length}.`, ...listOf(toManual));
     if (wrong.length) lines.push(`Другой результат у программы: ${wrong.length}.`, ...listOf(wrong));
     if (missing.length) lines.push(`Нет у программы: ${missing.length}: ${missing.slice(0, SHOW_ROWS).join(', ')}.`);
-    if (extra.length) lines.push(`Есть у программы, нет у скилла: ${extra.length}: ${extra.slice(0, SHOW_ROWS).join(', ')}.`);
-    differences += wrong.length + missing.length + extra.length;
+    if (extra.length && partial) {
+      lines.push(`Не входят в эталон: ${extra.length} строк программы (эталон по ${etalon[COVERAGE]} строкам файла), их не сравниваем.`);
+    } else if (extra.length) {
+      lines.push(`Есть у программы, нет у скилла: ${extra.length}: ${extra.slice(0, SHOW_ROWS).join(', ')}.`);
+    }
+    differences += wrong.length + missing.length + (partial ? 0 : extra.length);
   }
-  const eTotals = asMap(etalon['итоги']);
+  const whole = ['итоги', 'по категориям', 'документов'].filter((sec) => etalon[sec] !== undefined);
+  if (partial && whole.length) {
+    lines.push(`Эталон по части файла: ${whole.map((sec) => `«${sec}»`).join(', ')} по всему файлу с ним не сравнить, не сравниваем.`);
+  }
+  const eTotals = partial ? null : asMap(etalon['итоги']);
   if (eTotals) {
     const pTotals = asMap(program['итоги']) ?? new Map();
     const bad = [];
@@ -1019,7 +1037,7 @@ export function compareWithEtalon(etalon, program) {
     lines.push(bad.length ? `Итоги: не совпало ${bad.length} из ${eTotals.size}.` : `Итоги: совпали все (${eTotals.size}).`, ...bad);
     differences += bad.length;
   }
-  const eCats = asMap(etalon['по категориям']);
+  const eCats = partial ? null : asMap(etalon['по категориям']);
   if (eCats) {
     const pCats = asMap(program['по категориям']) ?? new Map();
     const bad = [];
@@ -1045,7 +1063,7 @@ export function compareWithEtalon(etalon, program) {
     }
     differences += bad.length;
   }
-  if (etalon['документов'] !== undefined) {
+  if (!partial && etalon['документов'] !== undefined) {
     const got = program['документов'];
     if (sameValue(etalon['документов'], got)) lines.push(`Документов: ${show(got)}, как у скилла.`);
     else {
@@ -1053,9 +1071,16 @@ export function compareWithEtalon(etalon, program) {
       differences++;
     }
   }
-  if (!SECTIONS.some((s) => etalon[s] !== undefined)) {
-    lines.push(`В эталоне нет ни одного раздела: ${SECTIONS.map((s) => `«${s}»`).join(', ')}. Сравнивать нечего.`);
+  if (!SECTIONS.some((sec) => etalon[sec] !== undefined)) {
+    lines.push(`В эталоне нет ни одного раздела: ${SECTIONS.map((sec) => `«${sec}»`).join(', ')}. Сравнивать нечего.`);
     return { lines, code: 2, differences, manual };
+  }
+  // Предупреждение, не расхождение: много строк ушло человеку, словарь стоит дополнить.
+  if (pRowsAll && pRowsAll.size) {
+    const sent = [...pRowsAll.values()].filter((v) => normText(v.value) === MANUAL).length;
+    if (sent / pRowsAll.size > MANUAL_WARN_SHARE) {
+      lines.push(`Внимание: в «${MANUAL}» ушло ${sent} из ${pRowsAll.size} строк. Проверьте словарь: скорее всего, в нём не хватает слов.`);
+    }
   }
   if (differences) {
     lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова.`);
@@ -1065,6 +1090,33 @@ export function compareWithEtalon(etalon, program) {
     lines.push('Итог сверки: программа дала тот же результат, что скилл.');
   }
   return { lines, code: differences ? 1 : 0, differences, manual };
+}
+
+// Что программе процесса нельзя: она запускается кнопкой без Claude и без окна. Проверка по строкам
+// processes/<slug>/run.py (строки-комментарии пропускаются). Возвращает [{ line, text, why }].
+const PROGRAM_RULES = [
+  [/\b(subprocess|socket|urllib|urllib3|requests|httpx|ctypes|importlib|ftplib|smtplib|telnetlib|webbrowser)\b/, 'запуск программ или выход в сеть'],
+  [/\bhttp\.(client|server)\b|^\s*(import|from)\s+http\b/, 'выход в сеть'],
+  [/\bos\.(system|popen|exec\w*|spawn\w*|startfile|fork)\b/, 'запуск программ'],
+  [/(?<![\w.])(eval|exec|compile|__import__)\s*\(/, 'выполнение текста как программы'],
+  [/\bshutil\.rmtree\b/, 'удаление папок'],
+  [/\bPath\.home\b|\bexpanduser\b|["'](?:[A-Za-z]:[\\/]|\\\\\\\\[A-Za-z]|\/[A-Za-z]|~[\\/])/, 'путь вне кабинета'],
+];
+
+export function programProblems(text) {
+  const found = [];
+  String(text)
+    .split(/\r?\n/)
+    .forEach((line, i) => {
+      if (/^\s*#/.test(line)) return;
+      for (const [re, why] of PROGRAM_RULES) {
+        if (re.test(line)) {
+          found.push({ line: i + 1, text: line.trim(), why });
+          break;
+        }
+      }
+    });
+  return found;
 }
 
 export function compareProcess(root, slug) {
@@ -1078,19 +1130,67 @@ export function compareProcess(root, slug) {
       return { error: e.code === 'ENOENT' ? 'нет файла' : 'файл повреждён или не в формате JSON' };
     }
   };
+  // Сначала сама программа: то, что ей нельзя, закрывает «готово» при любом итоге сверки.
+  let program = '';
+  try {
+    program = readFileSync(join(root, 'processes', slug, 'run.py'), 'utf8');
+  } catch {
+    // нет программы: сверять нечего, это скажет вывод ниже
+  }
+  const problems = programProblems(program);
+  const banned = problems.length
+    ? [
+        `В программе processes/${slug}/run.py есть то, что программе процесса нельзя (она работает без Claude и без окна):`,
+        ...problems.slice(0, SHOW_ROWS).map((x) => `  строка ${x.line}: ${x.why}: ${x.text}`),
+        'Итог проверки программы: уберите это из программы, «готово» нельзя.',
+      ]
+    : [];
+  const fail = (text, code) => ({ text: [text, ...banned].join('\n'), code: banned.length ? 1 : code });
   const etalon = load(etalonRel);
-  if (etalon.error) return { text: `Эталона нет: ${etalonRel}, ${etalon.error}. Сначала выполните скилл на файле человека и запишите эталон.`, code: 2 };
+  if (etalon.error) return fail(`Эталона нет: ${etalonRel}, ${etalon.error}. Сначала выполните скилл на файле человека и запишите эталон.`, 2);
   const result = load(resultRel);
-  if (result.error) return { text: `Результата программы нет: ${resultRel}, ${result.error}. Запустите node tools/processes.mjs run ${slug}.`, code: 2 };
+  if (result.error) return fail(`Результата программы нет: ${resultRel}, ${result.error}. Запустите node tools/processes.mjs run ${slug}.`, 2);
   const e = etalon.data;
   const p = result.data?.sverka;
-  if (!e || typeof e !== 'object' || Array.isArray(e)) return { text: `${etalonRel}: нужен объект JSON с разделами ${SECTIONS.map((s) => `«${s}»`).join(', ')}.`, code: 2 };
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return fail(`${etalonRel}: нужен объект JSON с разделами ${SECTIONS.map((s) => `«${s}»`).join(', ')}.`, 2);
   if (!p || typeof p !== 'object' || Array.isArray(p)) {
-    return { text: `В ${resultRel} нет раздела sverka: программа должна записать туда те же разделы, что в эталоне (${SECTIONS.map((s) => `«${s}»`).join(', ')}).`, code: 2 };
+    return fail(`В ${resultRel} нет раздела sverka: программа должна записать туда те же разделы, что в эталоне (${SECTIONS.map((s) => `«${s}»`).join(', ')}).`, 2);
   }
   const head = [`Сверка «${readProcessInfo(root, slug).title}»: эталон скилла ${etalonRel}${e['файл'] ? ` (файл ${e['файл']})` : ''}, программа ${resultRel}${result.data.updated_at ? ` от ${formatTime(result.data.updated_at)}` : ''}.`];
   const r = compareWithEtalon(e, p);
-  return { text: [...head, ...r.lines].join('\n'), code: r.code };
+  return { text: [...head, ...r.lines, ...banned].join('\n'), code: banned.length ? 1 : r.code };
+}
+
+// ---------- свои скиллы человека ----------
+
+// Скиллы курса: их кабинет привозит сам, «своими» они не считаются.
+export const COURSE_SKILLS = ['about-me', 'setup-check', 'update-cabinet', 'add-process', 'run-process', 'demo-process'];
+
+// Список своих скиллов из .claude/skills для операции «добавить процесс». Командой курса, без окна:
+// ls или find с папкой .claude спрашивают окно разрешения, а поиска файлов без команды может не быть.
+export function listSkills(root) {
+  const dir = join(root, '.claude', 'skills');
+  let names = [];
+  try {
+    names = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name);
+  } catch {
+    // папки нет: своих скиллов нет
+  }
+  const own = names.filter((n) => !COURSE_SKILLS.includes(n) && isFile(join(dir, n, 'SKILL.md'))).sort();
+  if (!own.length) return { text: 'Своих скиллов в кабинете нет, только скиллы курса.', code: 0 };
+  const lines = [`Свои скиллы в кабинете: ${own.length}. Текст скилла: .claude/skills/<папка>/SKILL.md.`];
+  for (const n of own) {
+    let desc = '';
+    try {
+      const head = readFileSync(join(dir, n, 'SKILL.md'), 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+      const m = head.match(/^---\n[\s\S]*?^description:\s*(.+)$/m);
+      desc = m ? m[1].trim().replace(/^["']|["']$/g, '') : '';
+    } catch {
+      // не прочитался: только имя
+    }
+    lines.push(`- ${n}${desc ? `: ${desc.length > 200 ? `${desc.slice(0, 200)}...` : desc}` : ''}`);
+  }
+  return { text: lines.join('\n'), code: 0 };
 }
 
 // ---------- node tools/processes.mjs ----------
@@ -1100,7 +1200,8 @@ const USAGE = `Процессы кабинета:
   node tools/processes.mjs run <имя>          запустить processes/<имя>/run.py, как кнопкой «Запустить»
   node tools/processes.mjs input <имя>        создать папку input/<имя> и открыть её в Проводнике (--no-open: не открывать)
   node tools/processes.mjs read <имя> <файл>  показать текст скилла (.md, .zip, .skill) или документа Word из input/<имя>
-  node tools/processes.mjs compare <имя>      сверить результат программы с эталоном скилла output/<имя>/etalon-skilla.json
+  node tools/processes.mjs compare <имя>      проверить программу и сверить её результат с эталоном скилла output/<имя>/etalon-skilla.json
+  node tools/processes.mjs skills             свои скиллы человека в .claude/skills (без скиллов курса)
   node tools/processes.mjs demo <имя>         поставить демо курса из templates/processes и запустить
 <имя>: имя папки процесса латиницей, например svodka-prodazh.`;
 
@@ -1326,6 +1427,7 @@ async function dispatch(root, argv) {
   if (cmd === 'input') return cliInput(root, slug, !argv.includes('--no-open'));
   if (cmd === 'read') return readInputFile(root, slug, argv.slice(2).filter((a) => !a.startsWith('--')).join(' '));
   if (cmd === 'compare') return compareProcess(root, slug);
+  if (cmd === 'skills') return listSkills(root);
   if (cmd === 'demo') return cliDemo(root, slug);
   return { text: USAGE, code: cmd ? 2 : 0 };
 }

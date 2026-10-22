@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync } from 'node:zlib';
 import { copyDir } from './copy-dir.mjs';
-import { compareWithEtalon, skillCommandLines, zipEntries } from '../processes.mjs';
+import { compareWithEtalon, programProblems, skillCommandLines, zipEntries } from '../processes.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 let base, cab;
@@ -170,6 +170,25 @@ test('read: понятные отказы: нет SKILL.md, битый архи�
   }
 });
 
+test('skills: свои скиллы с описанием, скиллы курса и папки без SKILL.md не показываются', () => {
+  const sk = join(cab, '.claude', 'skills');
+  let r = cli('skills');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /Своих скиллов в кабинете нет, только скиллы курса\./);
+  for (const [name, text] of [
+    ['add-process', '---\nname: add-process\ndescription: курс\n---\n'],
+    ['razbor-obrashcheniy', '---\nname: razbor-obrashcheniy\ndescription: Разбирает обращения по темам.\n---\n# Текст\n'],
+    ['bez-opisaniya', '# Скилл без шапки\n'],
+  ]) {
+    mkdirSync(join(sk, name), { recursive: true });
+    writeFileSync(join(sk, name, 'SKILL.md'), text);
+  }
+  mkdirSync(join(sk, 'pustaya'), { recursive: true });
+  r = cli('skills');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.out.trim(), ['Свои скиллы в кабинете: 2. Текст скилла: .claude/skills/<папка>/SKILL.md.', '- bez-opisaniya', '- razbor-obrashcheniy: Разбирает обращения по темам.'].join('\n'));
+});
+
 // ---------- compare ----------
 
 const ETALON = {
@@ -220,6 +239,76 @@ test('compareWithEtalon: другая категория, другой итог,
   assert.match(text, /«чистота»: у скилла нет, у программы 1/);
   assert.match(text, /Документов: у скилла 3, у программы 2\./);
   assert.match(r.lines.at(-1), /^Итог сверки: расхождений 6\. Поправьте словарь или программу/);
+});
+
+test('compareWithEtalon: эталон по части большого файла: строки вне эталона не расхождение, итоги не сравниваются', () => {
+  const r = compareWithEtalon(
+    { 'строк в эталоне': 2, 'по строкам': { 1: 'оборудование', 2: 'другое' }, 'итоги': { 'обращений': 2 } },
+    { 'итоги': { 'обращений': 3 }, 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } },
+  );
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.equal(r.differences, 0);
+  const text = r.lines.join('\n');
+  assert.match(text, /По строкам: совпало 2 из 2\./);
+  assert.match(text, /Не входят в эталон: 1 строк программы \(эталон по 2 строкам файла\), их не сравниваем\./);
+  assert.match(text, /Эталон по части файла: «итоги» по всему файлу с ним не сравнить, не сравниваем\./);
+  assert.equal(r.lines.at(-1), 'Итог сверки: программа дала тот же результат, что скилл.');
+  // Без пометки о части файла лишняя строка остаётся расхождением.
+  const full = compareWithEtalon({ 'по строкам': { 1: 'оборудование', 2: 'другое' } }, { 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } });
+  assert.equal(full.code, 1);
+});
+
+test('compareWithEtalon: больше 20% строк в «разобрать вручную» → предупреждение, не расхождение', () => {
+  const e = { 'по строкам': { 1: 'а', 2: 'б', 3: 'а', 4: 'б', 5: 'а' } };
+  const r = compareWithEtalon(e, { 'по строкам': { 1: 'а', 2: 'разобрать вручную', 3: 'а', 4: 'разобрать вручную', 5: 'а' } });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.ok(r.lines.includes('Внимание: в «разобрать вручную» ушло 2 из 5 строк. Проверьте словарь: скорее всего, в нём не хватает слов.'));
+  const few = compareWithEtalon(e, { 'по строкам': { 1: 'а', 2: 'разобрать вручную', 3: 'а', 4: 'б', 5: 'а' } });
+  assert.ok(!few.lines.some((l) => l.startsWith('Внимание')));
+});
+
+test('programProblems: запуск программ, сеть, eval, абсолютные пути; комментарии и обычные строки не трогает', () => {
+  const bad = [
+    'import subprocess',
+    'os.system("del *")',
+    'from urllib.request import urlopen',
+    'import requests',
+    'from http import client',
+    'v = eval(text)',
+    'data = open("/Users/aigul/secret.txt").read()',
+    'p = "C:\\\\Users\\\\secret.xlsx"',
+    'home = Path.home()',
+    'shutil.rmtree(ROOT)',
+  ];
+  for (const line of bad) assert.equal(programProblems(line).length, 1, line);
+  const good = ['# subprocess не нужен', 'r = re.compile(r"\\d+")', 'out = OUT / "result.json"', 'tmp.unlink(missing_ok=True)', 's.replace("\\\\", "/")', 'os.replace(tmp, target)'];
+  for (const line of good) assert.deepEqual(programProblems(line), [], line);
+});
+
+test('compare: запрещённое в программе процесса закрывает «готово» (код 1), даже без эталона и при совпадении', () => {
+  const slug = 'opasno';
+  const dir = join(cab, 'processes', slug);
+  const out = join(cab, 'output', slug);
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(out, { recursive: true });
+  writeFileSync(join(dir, 'process.json'), JSON.stringify({ title: 'Опасно', phrase: 'запусти опасно', kind: 'script' }));
+  writeFileSync(join(dir, 'run.py'), 'import json\nimport subprocess\nsubprocess.run(["curl", "x"])\n');
+  let r = cli('compare', slug);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /Эталона нет/);
+  assert.match(r.out, /В программе processes\/opasno\/run\.py есть то, что программе процесса нельзя/);
+  assert.match(r.out, /строка 2: запуск программ или выход в сеть: import subprocess/);
+  const sverka = { 'по строкам': { 1: 'а' } };
+  writeFileSync(join(out, 'etalon-skilla.json'), JSON.stringify(sverka));
+  writeFileSync(join(out, 'result.json'), JSON.stringify({ title: 'Опасно', updated_at: '2026-10-22T10:00:00+05:00', status: 'green', summary: 'x', columns: [], rows: [], sverka }));
+  r = cli('compare', slug);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /Итог сверки: программа дала тот же результат, что скилл\./);
+  assert.match(r.out, /Итог проверки программы: уберите это из программы, «готово» нельзя\.$/m);
+  writeFileSync(join(dir, 'run.py'), 'import json\nprint("ok")\n');
+  r = cli('compare', slug);
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /нельзя/);
 });
 
 test('compare: эталон и result.json из файлов; нет эталона, нет sverka, пустой эталон → код 2', () => {

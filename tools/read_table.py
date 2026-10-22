@@ -405,8 +405,11 @@ def analyze(path, sheet=None, n_rows=10):
 
 MAX_GROUPS = 300
 LIMIT_TOTALS = 10 ** 6  # строк для итогов: файл больше, вывод об этом скажет
-DATE_DMY = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$")
-DATE_ISO = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})")
+# Дата и, в выгрузках 1С, время после неё: «14.09.2026», «14.09.2026 0:00:00», «2026-09-14 10:30:00».
+TIME_TAIL = r"(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?"
+DATE_DMY = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})" + TIME_TAIL + "$")
+DATE_ISO = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})" + TIME_TAIL + "$")
+NUMBER_RE = re.compile(r"^[-+]?\d+(?:\.\d+)?$")
 
 
 def norm_text(s):
@@ -414,12 +417,12 @@ def norm_text(s):
 
 
 def to_number(text):
-    """Число из ячейки: «1 234,5» или «1234.5», пробелы любые (и неразрывный из 1С). Не число: None."""
+    """Число из ячейки: «1 234,5» или «1234.5», пробелы любые (и неразрывный из 1С). Не число: None.
+
+    Только цифры, знак и одна дробная часть: nan, inf, 1_000 и 1e5 числом не считаются.
+    """
     t = "".join(str(text).split()).replace(",", ".")
-    try:
-        return float(t) if t else None
-    except ValueError:
-        return None
+    return float(t) if NUMBER_RE.match(t) else None
 
 
 def to_date(text):
@@ -459,6 +462,7 @@ def in_range(convert, low, high):
     def test(text):
         v = convert(text)
         return v is not None and low <= v <= high
+    test.convert = convert  # чем читается значение: по нему считаются строки, где оно не читается
     return test
 
 
@@ -500,15 +504,24 @@ def group_totals(r, sums=(), by=(), where=()):
     by_i = [find_column(cols, b) for b in by]
     sum_i = [find_column(cols, s) for s in sums]
     conds = parse_where(cols, where)
+    # Отбор по диапазону: строки, где дата (или число) в столбце не читается, в отбор не входят; их считаем.
+    ranged = {i: tests[0][1].convert for i, tests in conds.items()
+              if all(hasattr(t, "convert") for _, t in tests)}
+    unreadable = {i: 0 for i in ranged}
     groups, order = {}, []
     total = {"rows": 0, "sums": [0.0] * len(sum_i), "empty": [0] * len(sum_i), "bad": [[] for _ in sum_i]}
     for n, row in enumerate(rows, start=1):
+        for i, convert in ranged.items():
+            if convert(row[i]) is None:
+                unreadable[i] += 1
         if not all(any(test(row[i]) for _, test in tests) for i, tests in conds.items()):
             continue
-        key = tuple(row[i] for i in by_i)
+        # Группа без учёта регистра и лишних пробелов, как в отборе; подпись: первое написание в файле.
+        shown = tuple(" ".join(str(row[i]).split()) for i in by_i)
+        key = tuple(norm_text(v) for v in shown)
         g = groups.get(key)
         if g is None:
-            g = groups[key] = {"rows": 0, "sums": [0.0] * len(sum_i)}
+            g = groups[key] = {"rows": 0, "sums": [0.0] * len(sum_i), "label": shown}
             order.append(key)
         g["rows"] += 1
         total["rows"] += 1
@@ -528,8 +541,10 @@ def group_totals(r, sums=(), by=(), where=()):
         "sums": [cols[i] for i in sum_i],
         "where": [item for tests in conds.values() for item, _ in tests],
         "data_rows": len(rows),
-        "groups": [{"key": list(k), "rows": groups[k]["rows"], "sums": groups[k]["sums"]} for k in order],
+        "groups": [{"key": list(groups[k]["label"]), "rows": groups[k]["rows"], "sums": groups[k]["sums"]} for k in order],
         "total": total,
+        "unreadable": [{"column": cols[i], "kind": "дата" if ranged[i] is to_date else "число", "rows": c}
+                       for i, c in unreadable.items() if c],
     }
 
 
@@ -545,6 +560,8 @@ def format_totals(t, r):
     if t["where"]:
         out.append("Отбор: " + "; ".join(t["where"]))
     out.append(f"Строк в отборе: {t['total']['rows']} из {t['data_rows']}.")
+    for u in t.get("unreadable", []):
+        out.append(f"Внимание: «{u['column']}»: {u['kind']} не читается в {u['rows']} строках, в отбор не вошли.")
     if t["data_rows"] < r["data_rows"]:
         out.append(f"Внимание: в файле {r['data_rows']} строк, посчитаны первые {t['data_rows']}.")
     head = t["by"] + ["строк"] + t["sums"]

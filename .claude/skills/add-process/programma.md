@@ -18,6 +18,7 @@
 - Ячейка с `None` на карточке пустая. Строке с пропуском ставь `row_status` `grey` (подпись «нет данных»), а в итоге скажи, чего не хватает: «нет данных о литрах АЗС-03 за 15.09.2026».
 - Даты пиши как в данных, период бери из данных. Дату расчёта бери, как решили с человеком; на файлах учебного кейса это дата легенды, записанная постоянной (как `CALC_DATE` в демо `templates/processes/svetofor-dogovorov/run.py`). Дату компьютера там не подставляй. Дату расчёта назови в итоге («на 21.09.2026»).
 - Понятная причина остановки (нет файла, нет нужного столбца): `raise StopRun("...")`, одна строка по-русски, код выхода 2, без трейсбека. Файл результата открыт в Excel или Word: код 3, это делает `replace_file`.
+- Программа читает только `input/<имя>/` (процесс на учебном кейсе ещё и `input/case-azs/`), пишет только в `output/<имя>/` (и шаблон `processes/<имя>/shablon.docx`), пути строит от `ROOT`. Нельзя: запускать другие программы (`subprocess`, `os.system`), ходить в сеть (`socket`, `urllib`, `requests`, `http`), выполнять текст как программу (`eval`, `exec`), абсолютные пути и домашняя папка. Перед записью перечитай программу на это сам. `node tools/processes.mjs compare <имя>` проверяет её на эти слова и без их удаления «готово» не даёт.
 
 ## Программа из скилла
 
@@ -27,7 +28,7 @@
 - вход: файл из `input/<имя>/` через `newest_input` и `read_table.analyze` вместо путей и аргументов командной строки программы скилла;
 - выход: файлы в `output/<имя>/` через `write_excel` (Excel с формулами можно оставить, как в программе скилла, но запись через временный файл и `replace_file`), плюс `result.json` для карточки, «разобрать вручную» и раздел `sverka`;
 - библиотеки: только стандартный Python, openpyxl, python-docx и `tools/read_table.py`. Места на pandas и других библиотеках перепиши на стандартный Python;
-- убери из неё всё, что ходит в интернет, запускает другие программы или пишет вне `output/<имя>/`.
+- убери из неё всё, что ходит в интернет, запускает другие программы, читает вне `input/<имя>/` или пишет вне `output/<имя>/`, и абсолютные пути (правило выше, в «Правилах для любой программы»). Перед записью перечитай её на это.
 
 Результат такой программы сверяется с эталоном так же, как у любой другой.
 
@@ -71,6 +72,8 @@
 - `по строкам`: `{"номер или ключ строки": категория или ключевое значение}`; строка, отложенная человеку, получает значение «разобрать вручную». Ключ: номер строки из файла (столбец «№», если он есть) или другое значение, которое однозначно называет строку.
 
 Раздел, которого нет в эталоне, можно не писать.
+
+Эталон по части большого файла (скилл выполнен на первых 100 строках) записывает поле `"строк в эталоне": 100` и только раздел `по строкам`. Программа всё равно пишет `по строкам` для всех строк файла: сверка сравнивает только строки эталона, остальные называет «не входят в эталон» и расхождением не считает.
 
 ## Основа
 
@@ -118,13 +121,10 @@ def newest_input(exts=(".csv", ".xlsx", ".txt")):
 
 
 def number(text):
-    """Число из ячейки: «1 234,5» или «1234.5». Не число: None."""
+    """Число из ячейки: «1 234,5» или «1234.5». Не число (и nan, inf, 1_000, 1e5): None."""
     # split() без аргументов убирает любые пробелы, и неразрывный между разрядами в выгрузках 1С тоже.
     t = "".join(str(text).split()).replace(",", ".")
-    try:
-        return float(t) if t else None
-    except ValueError:
-        return None
+    return float(t) if re.fullmatch(r"[-+]?\d+(\.\d+)?", t) else None
 
 
 def replace_file(tmp, target):
@@ -364,7 +364,7 @@ def main():
 
 ## Шаблон Word
 
-Шаблон лежит рядом с программой: `processes/<имя>/shablon.docx`. Поле в шаблоне пишется в двойных фигурных скобках: `{{Наименование поставщика}}`. Человек может открыть шаблон в Word и поправить текст; поля оставляет как есть.
+Шаблон лежит рядом с программой: `processes/<имя>/shablon.docx`. Поле в шаблоне пишется в двойных фигурных скобках: `{{Наименование поставщика}}`. Человек может открыть шаблон в Word и поправить текст; поля оставляет как есть. Поля заполняются везде: в тексте, таблицах, надписях, элементах управления, во всех колонтитулах (и первой страницы бланка). Поле, до которого замена не достала, программа находит после заполнения и отправляет документ в «разобрать вручную». Оформление текста вокруг поля сохраняется.
 
 Шаблона ещё нет: программа делает его сама при первом запуске:
 
@@ -385,6 +385,11 @@ SHABLON_TEXT = [  # шаблон из текста скилла, по строк
 ]
 FIELD_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 BRACKET_RE = re.compile(r"\[([^\[\]]+)\]")
+# Части документа с текстом: основной текст, все колонтитулы (и первой страницы, и чётных), сноски.
+WORD_PARTS = re.compile(r"^/word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$")
+# Куски текста абзаца, и внутри ссылок, правок, полей и элементов управления содержимым.
+RUN_PATH = ("./w:r | ./w:hyperlink/w:r | ./w:ins/w:r | ./w:smartTag/w:r | ./w:fldSimple/w:r"
+            " | ./w:customXml/w:r | ./w:sdt/w:sdtContent/w:r")
 
 
 def load_docx():
@@ -395,33 +400,67 @@ def load_docx():
     return docx
 
 
+def word_parts(doc):
+    for part in doc.part.package.iter_parts():
+        if WORD_PARTS.match(str(part.partname)):
+            yield part
+
+
 def paragraphs(doc):
-    """Все абзацы документа: текст, таблицы (и вложенные), колонтитулы."""
-    def walk(part):
-        for p in part.paragraphs:
-            yield p
-        for t in part.tables:
-            for row in t.rows:
-                for cell in row.cells:
-                    yield from walk(cell)
-    yield from walk(doc)
-    for s in doc.sections:
-        for part in (s.header, s.footer):
-            if not part.is_linked_to_previous:
-                yield from walk(part)
+    """Все абзацы документа: текст, таблицы, надписи, элементы управления, все колонтитулы, сноски."""
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+    for part in word_parts(doc):
+        root = getattr(part, "element", None)  # часть без разбора python-docx: её проверяет leftover_fields
+        if root is not None:
+            for p in root.iter(qn("w:p")):
+                yield Paragraph(p, part)
 
 
 def replace_fields(p, pattern, func):
-    """Замена полей в абзаце с сохранением оформления. Поле, которое Word разбил на куски, собирается в первый кусок."""
-    for run in p.runs:
-        if pattern.search(run.text):
-            run.text = pattern.sub(func, run.text)
-    runs = p.runs
-    full = "".join(r.text for r in runs)
-    if runs and pattern.search(full):
-        runs[0].text = pattern.sub(func, full)
-        for r in runs[1:]:
-            r.text = ""
+    """Замена полей в абзаце. Поле внутри одного куска текста заменяется в нём. Поле, которое Word разбил
+    на несколько кусков, собирается в первый из них, а остальные куски этого поля укорачиваются:
+    текст вне полей и его оформление (жирный, курсив) не меняются."""
+    from docx.text.run import Run
+    pos = 0
+    while True:
+        runs = [Run(r, p) for r in p._p.xpath(RUN_PATH)]
+        texts = [r.text for r in runs]
+        m = pattern.search("".join(texts), pos)
+        if not m:
+            return
+        new = func(m)
+        starts, at = [], 0
+        for t in texts:
+            starts.append(at)
+            at += len(t)
+        first = next(i for i, t in enumerate(texts) if starts[i] <= m.start() < starts[i] + len(t))
+        last = next(i for i, t in enumerate(texts) if starts[i] < m.end() <= starts[i] + len(t))
+        if first == last:
+            t = texts[first]
+            runs[first].text = t[:m.start() - starts[first]] + new + t[m.end() - starts[first]:]
+        else:
+            runs[first].text = texts[first][:m.start() - starts[first]] + new
+            for i in range(first + 1, last):
+                runs[i].text = ""
+            runs[last].text = texts[last][m.end() - starts[last]:]
+        pos = m.start() + len(new)
+
+
+def leftover_fields(doc):
+    """Поля {{...}}, которые остались в документе после заполнения (в любой части, и в сносках)."""
+    from docx.oxml.ns import qn
+    found = []
+    for part in word_parts(doc):
+        root = getattr(part, "element", None)
+        if root is not None:
+            texts = ["".join(t.text or "" for t in p.iter(qn("w:t"))) for p in root.iter(qn("w:p"))]
+        else:
+            xml = part.blob.decode("utf-8", "replace")
+            texts = ["".join(re.findall(r"<w:t(?:\s[^>]*)?>([^<]*)</w:t>", x))
+                     for x in re.findall(r"<w:p[ >].*?</w:p>", xml, re.S)]
+        found += [f.strip() for t in texts for f in FIELD_RE.findall(t)]
+    return found
 
 
 def ensure_template():
@@ -434,7 +473,7 @@ def ensure_template():
         if not src.is_file():
             raise StopRun(f"Нет шаблона input/{SLUG}/{SOURCE_TEMPLATE}. Положите его в папку и запустите снова.")
         doc = docx.Document(src)
-        for p in paragraphs(doc):
+        for p in list(paragraphs(doc)):
             replace_fields(p, BRACKET_RE, lambda m: "{{" + m.group(1).strip() + "}}")
     else:
         doc = docx.Document()
@@ -462,9 +501,9 @@ def put_table(doc, p, rows):
         cells = table.add_row().cells
         for i, v in enumerate(r):
             cells[i].text = "" if v is None else str(v)
-    p._p.addnext(table._tbl)
+    p._p.addprevious(table._tbl)
     if p._p.getparent().tag.endswith("}tc"):
-        p.text = ""  # в ячейке Word нужен абзац после таблицы
+        p.text = ""  # ячейка Word должна кончаться абзацем: он остаётся после таблицы пустым
     else:
         p._p.getparent().remove(p._p)
 
@@ -490,6 +529,7 @@ def fill_docx(values, name):
             put_table(doc, p, v)
         else:
             replace_fields(p, FIELD_RE, value)
+    missing += leftover_fields(doc)  # поле там, куда замена не достаёт: документ тоже человеку
     OUT.mkdir(parents=True, exist_ok=True)
     target = OUT / name
     tmp = target.with_name(target.name + ".tmp")

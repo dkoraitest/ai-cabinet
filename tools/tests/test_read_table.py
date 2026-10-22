@@ -309,6 +309,39 @@ class TotalsTests(FixtureCase):
         self.assertEqual(rng.returncode, 2)
         self.assertIn("две даты", rng.stderr)
 
+    def test_1c_datetime_in_range_and_unreadable_dates_reported(self):
+        p = self.dir / "1с даты.csv"
+        text = (
+            "Дата;АЗС;Литры\r\n"
+            "14.09.2026 0:00:00;АЗС-01 ;100\r\n"
+            "15.09.2026 13:45:10;азс-01;50\r\n"
+            "2026-09-16 10:30:00;АЗС-02;25\r\n"
+            "вчера;АЗС-02;7\r\n"
+            ";АЗС-02;3\r\n"
+            "21.09.2026 0:00:00;АЗС-02;1\r\n"
+        )
+        p.write_bytes(text.encode("cp1251"))
+        t = run_json(p, "--by", "АЗС", "--sum", "Литры", "--where", "Дата=14.09.2026..20.09.2026")
+        self.assertEqual(t["total"]["rows"], 3)
+        self.assertAlmostEqual(t["total"]["sums"][0], 175)
+        groups = {g["key"][0]: g for g in t["groups"]}
+        self.assertEqual(list(groups), ["АЗС-01", "АЗС-02"])  # «АЗС-01 » и «азс-01» одна группа
+        self.assertEqual(groups["АЗС-01"]["rows"], 2)
+        self.assertEqual(t["unreadable"], [{"column": "Дата", "kind": "дата", "rows": 2}])
+        out = run(p, "--sum", "Литры", "--where", "Дата=14.09.2026..20.09.2026")
+        self.assertIn("Внимание: «Дата»: дата не читается в 2 строках, в отбор не вошли.", out.stdout)
+        ok = run(p, "--sum", "Литры")
+        self.assertNotIn("не читается", ok.stdout)
+
+    def test_number_digits_only(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("read_table_num", SCRIPT)
+        rt = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rt)
+        self.assertEqual(rt.to_number("1 234,5"), 1234.5)
+        for bad in ("nan", "inf", "1_000", "1e5", "Infinity"):
+            self.assertIsNone(rt.to_number(bad), bad)
+
     def test_case_sales_week(self):
         t = run_json(CASE_DATA / "sales_azs_1c.csv", "--sum", "Количество", "--where", "Дата=14.09.2026..20.09.2026",
                      "--where", "Операция=Реализация")

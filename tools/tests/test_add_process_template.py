@@ -141,6 +141,16 @@ class Base(unittest.TestCase):
         self.assertEqual(rows[1][0], "Всё разобрано программой.")
         self.assertIn("sverka", r)
 
+    def test_number_digits_only(self):
+        c = Cabinet(compose())
+        self.addCleanup(c.close)
+        m = c.module()
+        self.assertEqual(m.number("1 234,5"), 1234.5)
+        self.assertEqual(m.number("374\u00a0433,50"), 374433.5)
+        self.assertEqual(m.number("-12"), -12.0)
+        for bad in ("nan", "inf", "-inf", "1_000", "1e5", "", "н/д", "1.2.3"):
+            self.assertIsNone(m.number(bad), bad)
+
     def test_no_input_clear_stop(self):
         c = Cabinet(compose())
         self.addCleanup(c.close)
@@ -293,6 +303,71 @@ class Word(unittest.TestCase):
         self.assertEqual([c.text for c in d.tables[0].rows[1].cells], ["№ 41", "6 195 000,00"])
         self.assertFalse(any("{{" in t for t in texts))
 
+    def test_first_page_and_even_headers_content_control_and_formatting(self):
+        """Бланк с отдельным колонтитулом первой страницы, поле в элементе управления содержимым,
+        поле, разбитое на куски с разным оформлением: всё заполнено, жирный и курсив вне поля на месте."""
+        import docx
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls
+        d = docx.Document()
+        p = d.add_paragraph()
+        a = p.add_run("Жирное начало ")
+        a.bold = True
+        p.add_run("и поле {{Наименование ")
+        b = p.add_run("поставщика}}")
+        b.italic = True
+        c = p.add_run(" и курсивный хвост")
+        c.italic = True
+        s = d.sections[0]
+        s.different_first_page_header_footer = True
+        s.first_page_header.paragraphs[0].text = "Бланк, исх. от {{дата}}"
+        d.settings.odd_and_even_pages_header_footer = True
+        s.even_page_footer.paragraphs[0].text = "Чётная страница {{дата}}"
+        d.element.body.insert(0, parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtContent><w:p><w:r><w:t>В элементе: {{{{дата}}}}</w:t></w:r></w:p></w:sdtContent></w:sdt>'))
+        d.save(self.c.proc / "shablon.docx")
+        m = self.c.module()
+        _, missing = m.fill_docx({"Наименование поставщика": "ТОО «Ромашка»", "дата": "21.09.2026"}, "pismo-01.docx")
+        self.assertEqual(missing, [])
+        out = docx.Document(self.c.out / "pismo-01.docx")
+        sec = out.sections[0]
+        self.assertEqual(sec.first_page_header.paragraphs[0].text, "Бланк, исх. от 21.09.2026")
+        self.assertEqual(sec.even_page_footer.paragraphs[0].text, "Чётная страница 21.09.2026")
+        texts, _ = self.texts(self.c.out / "pismo-01.docx")
+        self.assertIn("В элементе: 21.09.2026", texts)
+        runs = [(r.text, r.bold, r.italic) for r in out.paragraphs[0].runs if r.text]
+        self.assertEqual(runs[0], ("Жирное начало ", True, None))
+        self.assertEqual(runs[1], ("и поле ТОО «Ромашка»", None, None))
+        self.assertEqual(runs[-1], (" и курсивный хвост", None, True))
+
+    def test_field_out_of_reach_goes_to_missing(self):
+        """Поле там, куда замена не достаёт (перемещённый текст в режиме правок): документ человеку."""
+        import docx
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls
+        d = docx.Document()
+        d.add_paragraph("Обычное {{дата}}")
+        d.element.body.insert(0, parse_xml(
+            f'<w:p {nsdecls("w")}><w:moveTo w:id="1" w:author="a"><w:r><w:t>Перенесено {{{{Подпись}}}}</w:t></w:r></w:moveTo></w:p>'))
+        d.save(self.c.proc / "shablon.docx")
+        m = self.c.module()
+        _, missing = m.fill_docx({"дата": "21.09.2026"}, "pismo-01.docx")
+        self.assertEqual(missing, ["Подпись"])
+
+    def test_table_field_inside_cell_keeps_paragraph_after(self):
+        import docx
+        d = docx.Document()
+        t = d.add_table(rows=1, cols=1)
+        t.cell(0, 0).text = "{{Таблица}}"
+        d.save(self.c.proc / "shablon.docx")
+        m = self.c.module()
+        m.fill_docx({"Таблица": [["Документ", "Сумма"], ["№ 41", "1"]]}, "pismo-01.docx")
+        out = docx.Document(self.c.out / "pismo-01.docx")
+        tc = out.tables[0].cell(0, 0)._tc
+        kids = [k.tag.split("}")[1] for k in tc if not k.tag.endswith("}tcPr")]
+        self.assertEqual(kids, ["tbl", "p"])  # ячейка кончается абзацем, иначе Word считает файл испорченным
+        self.assertEqual(out.tables[0].cell(0, 0).tables[0].cell(1, 0).text, "№ 41")
+
     def test_template_from_person_file_brackets_become_fields(self):
         shutil.copy(CASE / "template_pismo_postavshchiku.docx", self.c.input / "template.docx")
         code = (self.c.proc / "run.py").read_text(encoding="utf-8").replace('SOURCE_TEMPLATE = ""', 'SOURCE_TEMPLATE = "template.docx"')
@@ -340,6 +415,18 @@ class Word(unittest.TestCase):
             code, out = self.c.node("list")
             self.assertEqual(code, 0, out)
             self.assertNotIn("Ошибка", out)
+            code, out = self.c.node("compare", "proba")  # эталона нет, но проверка программы прошла
+            self.assertEqual(code, 2, out)
+            self.assertNotIn("нельзя", out)
+
+    @unittest.skipUnless(NODE, "нет node")
+    def test_samples_pass_program_check(self):
+        """Образцы справки не содержат того, что сверка запрещает программе процесса."""
+        for parts in ((), ("slovar", "main_slovar"), ("word", "main_word"), ("slovar", "word", "main_word")):
+            c = Cabinet(compose(*parts))
+            self.addCleanup(c.close)
+            code, out = c.node("compare", "proba")
+            self.assertNotIn("нельзя", out, parts)
 
 
 if __name__ == "__main__":
