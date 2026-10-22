@@ -931,8 +931,10 @@ export function readInputFile(root, slug, name) {
 //   «итоги»: { название: число или текст }, «по категориям»: { категория: число },
 //   «документов»: число, «по строкам»: { номер или ключ строки: категория или ключевое значение },
 //   «срочно»: [ номера или ключи срочных строк ].
-// Строка с двумя темами у скилла: «X / Y» в «по строкам» (в «по категориям» она посчитана по первой теме X);
-// программа взяла X или Y, это совпадение.
+// Строка с двумя темами у скилла (классификация): «X / Y» в «по строкам» (в «по категориям» она посчитана
+// по первой теме X); программа взяла X или Y, это совпадение.
+// Программа по темам пишет ещё «найдено»: { строка: { тема: [слова словаря] } }. По нему сверка подсказывает
+// слабые слова: слово темы, которое стоит в строке другой темы у скилла.
 export const MANUAL = 'разобрать вручную';
 export const ETALON_FILE = 'etalon-skilla.json';
 export const URGENT_SECTION = 'срочно';
@@ -977,8 +979,24 @@ const asMap = (obj) =>
     ? new Map(Object.entries(obj).map(([k, v]) => [normKey(k), { key: k, value: v }]))
     : null;
 
-// Темы строки у скилла: «X / Y» значит две темы, первая главная. Иначе одна.
-const topicsOf = (v) => (typeof v === 'string' && v.includes(' / ') ? v.split(' / ').map((t) => t.trim()).filter(Boolean) : [v]);
+// Темы эталона классификации: названия из «по категориям» и темы строк без « / ». Не классификация: null.
+function etalonTopics(etalon) {
+  const cats = asMap(etalon['по категориям']);
+  if (!cats) return null;
+  const topics = new Set([...cats.values()].map((c) => normText(c.key)));
+  for (const { value } of asMap(etalon['по строкам'])?.values() ?? []) {
+    if (typeof value === 'string' && !value.includes(' / ') && !['повтор', MANUAL].includes(normText(value))) topics.add(normText(value));
+  }
+  return topics;
+}
+
+// Темы строки у скилла: «X / Y» значит две темы, первая главная, только если обе части темы эталона.
+// Иначе (черновик, сводная, часть не тема) значение одно, целиком.
+const topicsOf = (v, topics) => {
+  if (!topics || typeof v !== 'string' || !v.includes(' / ')) return [v];
+  const parts = v.split(' / ').map((t) => t.trim()).filter(Boolean);
+  return parts.length > 1 && parts.every((t) => topics.has(normText(t))) ? parts : [v];
+};
 
 // Номера строк раздела «срочно»: список (или объект: его ключи).
 const keysOf = (v) => (Array.isArray(v) ? v : v && typeof v === 'object' ? Object.keys(v) : null);
@@ -1007,6 +1025,7 @@ export function compareWithEtalon(etalon, program) {
   const partial = typeof etalon[COVERAGE] === 'number' && Number.isFinite(etalon[COVERAGE]);
   const eRows = asMap(etalon['по строкам']);
   const pRowsAll = asMap(program['по строкам']);
+  const topicSet = etalonTopics(etalon);
   if (eRows) {
     const pRows = pRowsAll ?? new Map();
     let same = 0;
@@ -1016,7 +1035,7 @@ export function compareWithEtalon(etalon, program) {
     const missing = [];
     for (const [k, { key, value }] of eRows) {
       const got = pRows.get(k);
-      const topics = topicsOf(value);
+      const topics = topicsOf(value, topicSet);
       if (!got) missing.push(key);
       else if (normText(got.value) === MANUAL && normText(value) !== MANUAL) {
         toManual.push(`  ${key}: у скилла ${show(value)}`);
@@ -1057,6 +1076,34 @@ export function compareWithEtalon(etalon, program) {
     } else lines.push(`Срочные строки: совпали все (${eHot.length}).`);
     if (extraHot.length) lines.push(`Программа отметила срочными ещё ${extraHot.length}: ${extraHot.slice(0, SHOW_ROWS).join(', ')}. Это не расхождение: срочное лучше проверить лишний раз.`);
     differences += missed.length;
+  } else {
+    const pHot = keysOf(program[URGENT_SECTION]) ?? [];
+    if (pHot.length) lines.push(`В эталоне нет раздела «срочно»: срочные строки программы (${pHot.length}: ${pHot.slice(0, SHOW_ROWS).join(', ')}) не сверены.`);
+  }
+  // Слабые слова: слово темы, которое нашлось в строке другой темы у скилла. Не расхождение: подсказка
+  // для словаря (на новой неделе такое слово уводит строку не в ту тему; помеченное «?» тему само не решает).
+  const found = program['найдено'];
+  if (topicSet && eRows && found && typeof found === 'object' && !Array.isArray(found)) {
+    const byRow = new Map(Object.entries(found).map(([k, v]) => [normKey(k), v]));
+    const weak = new Map();
+    for (const [k, { key, value }] of eRows) {
+      const hits = byRow.get(k);
+      if (!hits || typeof hits !== 'object' || [MANUAL, 'повтор'].includes(normText(value))) continue;
+      const own = new Set(topicsOf(value, topicSet).map(normText));
+      for (const [topic, words] of Object.entries(hits)) {
+        if (own.has(normText(topic)) || !Array.isArray(words)) continue;
+        for (const word of words) {
+          if (String(word).trim().endsWith('?')) continue;
+          const id = `«${word}» (${topic})`;
+          if (!weak.has(id)) weak.set(id, []);
+          weak.get(id).push(key);
+        }
+      }
+    }
+    if (weak.size) {
+      const list = [...weak].slice(0, SHOW_ROWS).map(([id, rows]) => `${id}: ${rows.slice(0, 10).join(', ')}${rows.length > 10 ? ' ...' : ''}`);
+      lines.push(`Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: ${list.join('; ')}. Перед правкой напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»`);
+    }
   }
   const whole = ['по категориям', 'документов'].filter((sec) => etalon[sec] !== undefined);
   if (partial && whole.length) {
@@ -1131,7 +1178,7 @@ export function compareWithEtalon(etalon, program) {
     }
   }
   if (differences) {
-    lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова.`);
+    lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова. Перед правкой напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»`);
   } else if (manual) {
     lines.push(`Итог сверки: программа дала тот же результат, что скилл, кроме ${manual} строк в «${MANUAL}».`);
   } else {

@@ -258,6 +258,11 @@ test('добавить процесс: всегда программа (kind scr
   assert.ok(skill.includes('"срочно": ['), 'в примере эталона нет раздела «срочно»');
   assert.ok(run.includes('→ срочно') && run.includes('«срочно (не тема)»'));
   assert.ok(read('tools/processes.mjs').includes('Добавьте в раздел «срочно (не тема)»'));
+  // Слабые слова «?»: правило с примерами в справке и в шаге 4, проверка строк «проверьте» при пополнении.
+  for (const text of [guide, skill]) assert.ok(text.includes('«не работает», «ждать», «не принимают»') && text.includes('"касса?"'));
+  assert.ok(guide.includes('WEAK = "?"') && run.includes('слабое слово сильным не делай'));
+  // Правка программы или словаря после сверки: строка про окно перед каждой правкой.
+  assert.ok(skill.includes('Без этой строки `run.py` и `slovar.json` не правь.'));
   const rules = read('CLAUDE.md');
   assert.match(rules, /\| «доработай» и название процесса/);
   assert.match(rules, /\| «добавь в словарь процесса <название>: <слово> → <тема>»/);
