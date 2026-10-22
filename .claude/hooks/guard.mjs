@@ -43,6 +43,9 @@ export const REASON_FILE =
 export const REASON_NO_PROMPT =
   'В этом режиме Claude не может спросить вас, поэтому изменения программ процессов и настроек кабинета закрыты. Переключите режим на обычный (Shift+Tab) и повторите.';
 export const REASON_DATA = 'Это файлы курса или ваши исходные данные, Claude их не меняет.';
+export const REASON_SKILL_CMD =
+  'В этом скилле есть команда, которая выполнится сама при запуске скилла, без вопроса. Сохраняйте его, только если знаете, что эта команда делает.';
+export const REASON_SKILL_CMD_NO_PROMPT = `${REASON_SKILL_CMD} В этом режиме Claude не может спросить вас. Переключите режим на обычный (Shift+Tab) и повторите.`;
 export const REASON_OTHER =
   'Claude хочет выполнить команду, которая не входит в курс. Разрешите, только если вы сами это просили.';
 
@@ -276,6 +279,34 @@ export function classifyFile(file, ctx = {}) {
   return guarded(ctx.mode, REASON_FILE);
 }
 
+// Встроенная команда в тексте скилла: !`команда` (восклицательный знак, затем в той же строке команда в
+// обратных кавычках) или блок, открытый как ```!. Claude Code выполняет её при запуске скилла без вопроса.
+// Флажок: команда внутри примера в блоке кода тоже считается (безопаснее спросить лишний раз). Обычное
+// «Важно!» и `код` без ! перед ним не считаются; «Важно! `код`» через пробел считается (осторожно).
+const SKILL_CMD = /![ \t]*`[^`\n]+`|```[ \t]*!/;
+const SKILL_DIR = /(^|\/)(\.claude|claude~\d)\/skills\//i;
+
+export const hasSkillCommand = (text) => typeof text === 'string' && SKILL_CMD.test(text);
+
+// Новый текст, который запись кладёт в файл.
+export function newContentOf(tool, ti) {
+  if (tool === 'Write') return [ti?.content];
+  if (tool === 'Edit') return [ti?.new_string];
+  if (tool === 'MultiEdit') return Array.isArray(ti?.edits) ? ti.edits.map((e) => e?.new_string) : [];
+  if (tool === 'NotebookEdit') return [ti?.new_source];
+  return [];
+}
+
+// Путь внутри .claude/skills/ кабинета (относительный путь берётся и от папки команды).
+function inSkills(file, { cwds = [], roots = [], platform = process.platform, home = homedir() } = {}) {
+  if (typeof file !== 'string' || !file.trim()) return false;
+  const P = platform === 'win32' ? win32 : posix;
+  let raw = file.trim();
+  if (/^~([\\/]|$)/.test(raw)) raw = P.join(home, raw.slice(1));
+  const cands = P.isAbsolute(raw) ? [P.resolve(raw)] : [...cwds, ...roots].filter(Boolean).map((b) => P.resolve(b, raw));
+  return cands.some((c) => SKILL_DIR.test(fold(c))) || SKILL_DIR.test(fold(raw));
+}
+
 // Пути, куда пишет инструмент записи. Artifact: out_dir и out_dir/<path или paths>; без out_dir не пишет.
 export function filePathsOf(tool, ti) {
   if (tool === 'Artifact') {
@@ -295,7 +326,18 @@ export function decide(input, ctx = {}) {
   const cwds = ctx.cwds ?? [typeof input?.cwd === 'string' ? input.cwd : process.cwd()];
   const full = { ...ctx, tool, mode, cwds };
   try {
-    if (FILE_TOOLS.has(tool)) return classifyFile(filePathsOf(tool, ti), full);
+    if (FILE_TOOLS.has(tool)) {
+      const base = classifyFile(filePathsOf(tool, ti), full);
+      if (base?.decision === 'deny' && base.reason === REASON_DATA) return base;
+      const skillCmd =
+        tool !== 'Artifact' &&
+        newContentOf(tool, ti).some(hasSkillCommand) &&
+        filePathsOf(tool, ti).some((f) => inSkills(f, full));
+      if (!skillCmd) return base;
+      return canPrompt(mode)
+        ? { decision: 'ask', reason: REASON_SKILL_CMD }
+        : { decision: 'deny', reason: REASON_SKILL_CMD_NO_PROMPT };
+    }
     if (!TOOLS.has(tool)) return null;
     // Команда в поле command; если поле названо иначе, проверяем все строки ввода.
     const command =
