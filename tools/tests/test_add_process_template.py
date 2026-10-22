@@ -412,9 +412,33 @@ class Word(unittest.TestCase):
         self.assertEqual(code.count(old), 1, f"в образце нет ровно одной строки {old!r}")
         (self.c.proc / "run.py").write_text(code.replace(old, new), encoding="utf-8")
 
+    def type_into_template(self, old, new):
+        """Человек открыл shablon.docx в Word и напечатал своё вместо поля."""
+        import docx
+        d = docx.Document(self.c.proc / "shablon.docx")
+        m = self.c.module()
+        found = [p for p in m.paragraphs(d) if old in p.text]
+        self.assertTrue(found, f"в шаблоне нет {old}")
+        for p in found:
+            p.runs[0].text = p.text.replace(old, new)
+            for r in p.runs[1:]:
+                r.text = ""
+        d.save(self.c.proc / "shablon.docx")
+
     def test_example_main_one_document_per_row(self):
         self.write_rows()
         self.make_template(with_table=False)
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        r = self.c.result()
+        # Подписи в программе нет: пока поле в шаблоне, каждое письмо человеку.
+        self.assertEqual(r["row_status"], ["info", "info"])
+        texts, _ = self.texts(self.c.out / "pismo-01.docx")
+        self.assertIn("Подпись: [нет данных]", texts)
+        rows = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        self.assertEqual([x[-1] for x in rows[1:]], ["поля с пометкой: Фамилия И. О.", "поля с пометкой: Сумма, Фамилия И. О."])
+        # Человек один раз напечатал подпись в шаблоне вместо поля: дальше она обычный текст.
+        self.type_into_template("{{Фамилия И. О.}}", "А. Иванов")
         proc = self.c.run()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         r = self.c.result()
@@ -425,7 +449,7 @@ class Word(unittest.TestCase):
         self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Василёк»": "разобрать вручную", "ТОО «Ромашка»": "1 250 000,00"})
         self.assertTrue((self.c.out / "pismo-01.docx").is_file() and (self.c.out / "pismo-02.docx").is_file())
         texts, _ = self.texts(self.c.out / "pismo-01.docx")
-        self.assertIn("Подпись: А. Иванов", texts)  # подпись человек назвал один раз: постоянная строка
+        self.assertIn("Подпись: А. Иванов", texts)
         texts, _ = self.texts(self.c.out / "pismo-02.docx")
         self.assertIn("Сумма: [нет данных] тенге, дата 21.09.2026.", texts)
         rows = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
@@ -438,12 +462,30 @@ class Word(unittest.TestCase):
             self.assertEqual(code, 2, out)
             self.assertNotIn("нельзя", out)
 
+    def test_skill_marker_field_keeps_document_manual(self):
+        """Поле, которое скилл помечает «[уточнить: ...]», отдаёт письмо человеку и при вписанной подписи."""
+        self.write_rows()
+        self.make_template(with_table=False)
+        self.c.module().ensure_template()
+        self.type_into_template("{{Фамилия И. О.}}", "А. Иванов")
+        import docx
+        d = docx.Document(self.c.proc / "shablon.docx")
+        d.add_paragraph("Ответить до: {{Срок ответа}}")
+        d.save(self.c.proc / "shablon.docx")
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        r = self.c.result()
+        self.assertEqual(r["row_status"], ["info", "info"])
+        texts, _ = self.texts(self.c.out / "pismo-01.docx")
+        self.assertIn("Ответить до: [уточнить: срок ответа]", texts)
+        rows = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        self.assertEqual([x[-1] for x in rows[1:]], ["поля с пометкой: Срок ответа", "поля с пометкой: Срок ответа, Сумма"])
+
     def test_marker_from_skill_documents_go_to_manual(self):
-        """Скилл пишет «[уточнить]», подпись человек не назвал: пометка в каждом письме, все письма человеку."""
+        """Скилл пишет «[уточнить]»: та же пометка у полей без данных, письма с ней человеку."""
         self.write_rows()
         self.make_template(with_table=False)
         self.edit_program('NO_DATA = "[нет данных]"', 'NO_DATA = "[уточнить]"')
-        self.edit_program('"А. Иванов"', "None")
         proc = self.c.run()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         r = self.c.result()
