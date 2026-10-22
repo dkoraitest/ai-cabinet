@@ -1734,6 +1734,33 @@ class TwoDocuments(unittest.TestCase):
         self.assertFalse(m.looks_kazakh("ТОО «Қазақстан Темір Жолы», г. Қарағанды Нұрланов Ғалым Қайратұлы"))
         self.assertTrue(m.looks_kazakh("Шарт бір жыл әрекет етеді."))  # коротко и без служебных слов
 
+    def test_conditions_with_kazakh_addresses_in_bilingual_contract(self):
+        """Договор на двух языках, русский столбец слева; в разделе 4 русская таблица условий, в адресах строчные
+        казахские слова («көшесі», «даңғылы»). Слева короткие подписи: это таблица условий, не текст на двух
+        языках, и правка значения видна: предоплата 30 и 100 процентов, «4, «Условие оплаты»» изменён."""
+        rows = lambda prepay: (("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии"),
+                               ("Адрес доставки", "Астана қ., Қабанбай батыр даңғылы, 12, нефтебаза"),
+                               ("Адрес склада", "Қарағанды қ., Бұқар жырау көшесі, 5"))
+
+        def contract(prepay):
+            def fn(d):
+                bilingual_sections(merged_headings=True, ru_left=True)(d)
+                section4 = next(t for t in d.tables if any("4.3. " in c.text for row in t.rows for c in row.cells))
+                table = d.add_table(rows=0, cols=2)
+                for left, right in rows(prepay):
+                    cells = table.add_row().cells
+                    cells[0].text, cells[1].text = left, right
+                section4._tbl.addnext(table._tbl)
+            return fn
+        r = self.run_variant(contract(30), contract(100))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Условие оплаты»": "изменён"}))
+        status = {row[0]: row[1] for row in r["rows"]}
+        self.assertEqual(status["4, «Адрес доставки»"], "совпадает")
+        self.assertIn("Договор двуязычный: сверялся русский текст.", r["summary"])
+        self.assertNotIn("Сверка неполная", r["summary"])
+        m = self.c.module()
+        self.assertTrue(m.looks_kazakh(" ".join(v for _k, v in rows(30))))  # значения похожи на казахский текст
+
     def test_unread_two_column_table_is_loud(self):
         """Таблица в два столбца с длинным текстом до первого раздела русского договора не читается: строка
         «часть текста в таблицах в два столбца не прочитана» с подсказкой, карточка жёлтая."""

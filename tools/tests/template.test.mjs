@@ -278,6 +278,10 @@ test('запуск двойным щелчком: start-cabinet.cmd и .command'
   assert.ok(t.includes('pushd "%~dp0"'));
   assert.ok(t.includes('node tools\\serve.mjs --open'));
   assert.ok(t.includes('chcp 65001 >nul'));
+  // node.cmd в папке кабинета не запустится вместо настоящего node: cmd.exe не ищет программы в текущей папке.
+  const lines = t.split('\r\n');
+  const noCwd = lines.indexOf('set "NoDefaultCurrentDirectoryInExePath=1"');
+  assert.ok(noCwd > lines.indexOf('chcp 65001 >nul') && noCwd < lines.findIndex((l) => l.startsWith('where node')), 'NoDefaultCurrentDirectoryInExePath после chcp и до where node');
   assert.ok(t.includes('Окно не закрывайте, пока работаете со страницей. Закрыли окно: страница остановится.'));
   assert.notEqual(cmd[0], 0xef, 'без BOM');
   assert.equal(t.replace(/\r\n/g, '').match(/[\r\n]/g), null, 'все переводы строк CRLF');

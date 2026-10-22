@@ -114,6 +114,10 @@ const COURSE_CMDS = [
   'python tools/read_table.py "input/case-azs/data/sales_azs_1c.csv" --rows 3',
   'py tools/read_table.py "input\\svodka\\Продажи сентябрь.xlsx" --sheet 2',
   'python tools/read_table.py "processes/svodka/data.csv"',
+  // Скобки внутри кавычек: имя скачанного файла «skill (1).zip».
+  'node tools/processes.mjs read razbor "skill (1).zip"',
+  "node tools/processes.mjs read razbor 'skill (1).zip'",
+  'python tools/read_table.py "input/svodka/Отчёт (2).xlsx" --from 101 --rows 100',
 ];
 
 // Команды вне курса, которые не называют processes и .claude: в обычных режимах без решения сторожа
@@ -140,12 +144,43 @@ const OTHER = [
 
 const NONE = [...COURSE_CMDS, ...OTHER];
 
-const COURSE_POWERSHELL = ['node tools\\processes.mjs run svetofor-dogovorov', 'py tools\\read_table.py "input\\Отчёт сентябрь.xlsx"'];
+const COURSE_POWERSHELL = [
+  'node tools\\processes.mjs run svetofor-dogovorov',
+  'py tools\\read_table.py "input\\Отчёт сентябрь.xlsx"',
+  'node tools\\processes.mjs read razbor "skill (1).zip"',
+];
 const OTHER_POWERSHELL = [
   "Get-Content input\\case-azs\\data\\sales_azs_1c.csv -TotalCount 5",
   "Copy-Item -LiteralPath 'input\\case-azs\\data\\reestr_dogovorov.xlsx' -Destination 'output\\reestr.xlsx'",
 ];
 const NONE_POWERSHELL = [...COURSE_POWERSHELL, ...OTHER_POWERSHELL];
+
+// Скобки вне кавычек остаются под запретом: в PowerShell (выражение) внутри аргументов выполняется. Кавычки
+// считаются так же, как их видит оболочка: «"» и «'», а «“ ” „ ‘ ’» PowerShell тоже принимает за кавычки.
+const NOT_COURSE = [
+  'node tools/processes.mjs read razbor skill (1).zip',
+  'node tools/processes.mjs read razbor "x"(Remove-Item output)"y"',
+  'node tools/processes.mjs read razbor "x”(Remove-Item output)“y"',
+  "node tools/processes.mjs read razbor '\"'(Remove-Item output)'\"'",
+  "node tools/processes.mjs read razbor 'x’(Remove-Item output)‘y'",
+  'node tools/processes.mjs read razbor "skill (1).zip',
+  'node tools/processes.mjs read razbor "$(rm -rf output)"',
+  'node tools/processes.mjs read razbor "x`(y)"',
+  'node tools/processes.mjs read razbor "skill (1).zip"; rm -rf output',
+  'node tools/processes.mjs read razbor \\"(touch x)\\"',
+];
+
+test('сторож: скобки в кавычках у команды курса без окна, вне кавычек и с подменой кавычек не команда курса', () => {
+  for (const ctx of [NIX, GITBASH, WIN]) {
+    for (const cmd of NOT_COURSE) {
+      assert.equal(classify(cmd, { ...ctx, mode: 'auto' })?.decision, 'ask', `${ctx.tool}: ${cmd}`);
+      assert.equal(classify(cmd, { ...ctx, mode: 'bypassPermissions' })?.decision, 'deny', `${ctx.tool}: ${cmd}`);
+    }
+    for (const cmd of ['node tools/processes.mjs read razbor "skill (1).zip"', "node tools/processes.mjs read razbor 'skill (1).zip'"]) {
+      assert.equal(classify(cmd, { ...ctx, mode: 'auto' }), null, `${ctx.tool}: ${cmd}`);
+    }
+  }
+});
 
 function check(table, ctx, want) {
   const wrong = [];

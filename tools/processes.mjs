@@ -755,10 +755,11 @@ const READ_EXT = new Set([...SKILL_EXT, '.docx']);
 const TEXT_EXT = /\.(md|txt|markdown)$/i;
 const PROGRAM_EXT = /\.py$/i;
 
-// Встроенная команда скилла: восклицательный знак и сразу команда в обратных кавычках или блок кода,
-// открытый тремя обратными кавычками с восклицательным знаком. Claude Code выполняет её при запуске скилла
-// без вопроса. Правило то же, что у сторожа кабинета при записи скилла.
-const SKILL_CMD = /![ \t]*`[^`\n]+`|```[ \t]*!/;
+// Встроенная команда скилла: восклицательный знак и сразу, вплотную, команда в обратных кавычках или блок
+// кода, открытый тремя обратными кавычками с восклицательным знаком. Claude Code выполняет её при запуске
+// скилла без вопроса. Правило то же, что у сторожа кабинета при записи скилла (SKILL_CMD в guard.mjs):
+// «Готово! `файл`» через пробел не команда.
+const SKILL_CMD = /!`[^`\n]+`|```[ \t]*!/;
 
 export function skillCommandLines(text) {
   return String(text)
@@ -1011,11 +1012,15 @@ const listOf = (items) => (items.length > SHOW_ROWS ? [...items.slice(0, SHOW_RO
 export const COVERAGE = 'строк в эталоне';
 // Доля «разобрать вручную», выше которой сверка предупреждает: словарю, скорее всего, не хватает слов.
 const MANUAL_WARN_SHARE = 0.2;
+// Напоминание Claude перед правкой программы или словаря после сверки: одной строкой, один раз за вывод.
+export const FIX_NOTE =
+  'Для Claude: перед правкой программы или словаря напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»';
 
 // Сравнение эталона и раздела sverka программы: { lines, code, differences, manual }.
 // Строка, которую программа отправила в «разобрать вручную», расхождением не считается: она в списке
 // для человека. Разница в категории, которая целиком объясняется такими строками, тоже.
-export function compareWithEtalon(etalon, program) {
+// slovar: у процесса есть словарь (по умолчанию: программа пишет «найдено», так пишет программа по темам).
+export function compareWithEtalon(etalon, program, { slovar = program?.['найдено'] !== undefined } = {}) {
   const lines = [];
   let differences = 0;
   let manual = 0;
@@ -1083,6 +1088,7 @@ export function compareWithEtalon(etalon, program) {
   // Слабые слова: слово темы, которое нашлось в строке другой темы у скилла. Не расхождение: подсказка
   // для словаря (на новой неделе такое слово уводит строку не в ту тему; помеченное «?» тему само не решает).
   const found = program['найдено'];
+  let weakWords = false;
   if (topicSet && eRows && found && typeof found === 'object' && !Array.isArray(found)) {
     const byRow = new Map(Object.entries(found).map(([k, v]) => [normKey(k), v]));
     const weak = new Map();
@@ -1102,7 +1108,8 @@ export function compareWithEtalon(etalon, program) {
     }
     if (weak.size) {
       const list = [...weak].slice(0, SHOW_ROWS).map(([id, rows]) => `${id}: ${rows.slice(0, 10).join(', ')}${rows.length > 10 ? ' ...' : ''}`);
-      lines.push(`Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: ${list.join('; ')}. Перед правкой напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»`);
+      lines.push(`Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: ${list.join('; ')}.`);
+      weakWords = true;
     }
   }
   const whole = ['по категориям', 'документов'].filter((sec) => etalon[sec] !== undefined);
@@ -1174,11 +1181,13 @@ export function compareWithEtalon(etalon, program) {
   if (pRowsAll && pRowsAll.size) {
     const sent = [...pRowsAll.values()].filter((v) => normText(v.value) === MANUAL).length;
     if (sent / pRowsAll.size > MANUAL_WARN_SHARE) {
-      lines.push(`Внимание: в «${MANUAL}» ушло ${sent} из ${pRowsAll.size} строк. Проверьте словарь: скорее всего, в нём не хватает слов.`);
+      const why = slovar ? 'Проверьте словарь: скорее всего, в нём не хватает слов.' : `Причины в списке «${MANUAL}».`;
+      lines.push(`Внимание: в «${MANUAL}» ушло ${sent} из ${pRowsAll.size} строк. ${why}`);
     }
   }
+  if (differences || weakWords) lines.push(FIX_NOTE);
   if (differences) {
-    lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова. Перед правкой напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»`);
+    lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова.`);
   } else if (manual) {
     lines.push(`Итог сверки: программа дала тот же результат, что скилл, кроме ${manual} строк в «${MANUAL}».`);
   } else {
@@ -1286,6 +1295,7 @@ export function compareProcess(root, slug) {
     ? [
         `В программе processes/${slug}/run.py есть то, что программе процесса нельзя (она работает без Claude и без окна):`,
         ...problems.slice(0, SHOW_ROWS).map((x) => `  строка ${x.line}: ${x.why}: ${x.text}`),
+        FIX_NOTE,
         'Итог проверки программы: уберите это из программы, «готово» нельзя.',
       ]
     : [];
@@ -1301,8 +1311,10 @@ export function compareProcess(root, slug) {
     return fail(`В ${resultRel} нет раздела sverka: программа должна записать туда те же разделы, что в эталоне (${SECTIONS.map((s) => `«${s}»`).join(', ')}).`, 2);
   }
   const head = [`Сверка «${readProcessInfo(root, slug).title}»: эталон скилла ${etalonRel}${e['файл'] ? ` (файл ${e['файл']})` : ''}, программа ${resultRel}${result.data.updated_at ? ` от ${formatTime(result.data.updated_at)}` : ''}.`];
-  const r = compareWithEtalon(e, p);
-  return { text: [...head, ...r.lines, ...banned].join('\n'), code: banned.length ? 1 : r.code };
+  const r = compareWithEtalon(e, p, { slovar: isFile(join(root, 'processes', slug, 'slovar.json')) });
+  // Напоминание про окно перед правкой один раз: оно уже есть в выводе сверки, у запрещённого его не повторяем.
+  const tail = r.lines.includes(FIX_NOTE) ? banned.filter((l) => l !== FIX_NOTE) : banned;
+  return { text: [...head, ...r.lines, ...tail].join('\n'), code: banned.length ? 1 : r.code };
 }
 
 // ---------- свои скиллы человека ----------

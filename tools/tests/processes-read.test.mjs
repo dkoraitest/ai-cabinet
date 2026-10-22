@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { deflateRawSync } from 'node:zlib';
 import { copyDir } from './copy-dir.mjs';
 import { compareWithEtalon, programProblems, skillCommandLines, zipEntries } from '../processes.mjs';
+import { hasSkillCommand } from '../../.claude/hooks/guard.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 let base, cab;
@@ -60,6 +61,7 @@ const BANG = '!';
 const TICK = '`';
 const CMD_LINE = `Сегодня: ${BANG}${TICK}date${TICK}`;
 const BLOCK_LINE = `${TICK.repeat(3)}${BANG}`;
+const FIX_NOTE = 'Для Claude: перед правкой программы или словаря напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»';
 
 const SKILL = `---
 name: razbor-obrashcheniy
@@ -121,6 +123,23 @@ test('read: встроенные команды скилла показаны с
   assert.match(r.out, /chuzhoy skill\.md, строка 10: Сегодня: !`date`/);
   assert.match(r.out, /chuzhoy skill\.md, строка 12: ```!/);
   assert.deepEqual(skillCommandLines('Важно! Не трогайте файл.\nКоманда `ls` без восклицательного знака.'), []);
+});
+
+test('read и сторож узнают встроенную команду одинаково: «Готово! `файл`» через пробел не команда', () => {
+  const texts = [
+    CMD_LINE,
+    `${BLOCK_LINE}\nls\n${TICK.repeat(3)}`,
+    `${TICK.repeat(3)} \t${BANG}`,
+    `Готово${BANG} ${TICK}output/a.xlsx${TICK} сохранён`,
+    `Готово${BANG}\t${TICK}файл${TICK}`,
+    `${BANG}${TICK}${TICK}`,
+    'Важно! Не трогайте файл.',
+    'Команда `ls` без восклицательного знака.',
+    `строка 1\nстрока 2: ${BANG}${TICK}whoami${TICK}`,
+  ];
+  const differ = texts.filter((text) => (skillCommandLines(text).length > 0) !== hasSkillCommand(text));
+  assert.deepEqual(differ, []);
+  assert.deepEqual(skillCommandLines(`Готово${BANG} ${TICK}output/a.xlsx${TICK} сохранён`), []);
 });
 
 test('read: архив .zip скилла: список файлов, SKILL.md и тексты, текст программы из scripts без запуска, команды из всех текстов', () => {
@@ -358,7 +377,8 @@ test('compareWithEtalon: срочные строки: пропуск срочн�
   const missed = compareWithEtalon(etalon, { 'по строкам': rows, 'срочно': [] });
   assert.equal(missed.code, 1, missed.lines.join('\n'));
   assert.ok(missed.lines.includes('Срочные строки: программа не отметила срочной 1 из 1: 1. Добавьте в раздел «срочно (не тема)» слово об опасности из этой строки.'), missed.lines.join('\n'));
-  assert.match(missed.lines.at(-1), /^Итог сверки: расхождений 1\. Поправьте словарь или программу и запустите снова\. Перед правкой напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» \(разрешить\)\.»$/);
+  assert.equal(missed.lines.at(-1), 'Итог сверки: расхождений 1. Поправьте словарь или программу и запустите снова.');
+  assert.equal(missed.lines.at(-2), FIX_NOTE);
   const noSection = compareWithEtalon(etalon, { 'по строкам': rows });
   assert.equal(noSection.code, 1);
   // Срочная строка в «разобрать вручную» по теме: срочность всё равно сверяется, это не расхождение.
@@ -432,16 +452,30 @@ test('compareWithEtalon: слабые слова: слово темы стоит
   const r = compareWithEtalon(etalon, program);
   assert.equal(r.code, 0, r.lines.join('\n'));
   // «касса» в строке 2 (персонал) чужая; в строке 3 у скилла две темы, «оплата» одна из них; «чек?» уже слабое.
-  assert.ok(r.lines.includes('Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: «касса» (оплата): 2. Перед правкой напишите человеку текстом ответа: «Поправляю программу, нажмите «Allow» (разрешить).»'), r.lines.join('\n'));
+  assert.ok(r.lines.includes('Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: «касса» (оплата): 2.'), r.lines.join('\n'));
+  assert.equal(r.lines.filter((l) => l === FIX_NOTE).length, 1);
   const none = compareWithEtalon(etalon, { ...program, 'найдено': { 1: { 'оплата': ['касса'] } } });
   assert.ok(!none.lines.some((l) => l.startsWith('Слабые слова')));
+  assert.ok(!none.lines.includes(FIX_NOTE), 'править нечего: напоминания нет');
+  // Слабые слова и расхождение сразу: напоминание всё равно одно, перед итогом.
+  const both = compareWithEtalon(etalon, { ...program, 'по строкам': { ...program['по строкам'], 1: 'персонал' } });
+  assert.equal(both.code, 1);
+  assert.equal(both.lines.filter((l) => l.includes('Поправляю программу')).length, 1, both.lines.join('\n'));
+  assert.equal(both.lines.at(-2), FIX_NOTE);
 });
 
-test('compareWithEtalon: больше 20% строк в «разобрать вручную» → предупреждение, не расхождение', () => {
+test('compareWithEtalon: больше 20% строк в «разобрать вручную» → предупреждение, не расхождение; словарь, только если он есть', () => {
   const e = { 'по строкам': { 1: 'а', 2: 'б', 3: 'а', 4: 'б', 5: 'а' } };
-  const r = compareWithEtalon(e, { 'по строкам': { 1: 'а', 2: 'разобрать вручную', 3: 'а', 4: 'разобрать вручную', 5: 'а' } });
+  const sent = { 'по строкам': { 1: 'а', 2: 'разобрать вручную', 3: 'а', 4: 'разобрать вручную', 5: 'а' } };
+  const r = compareWithEtalon(e, sent, { slovar: true });
   assert.equal(r.code, 0, r.lines.join('\n'));
   assert.ok(r.lines.includes('Внимание: в «разобрать вручную» ушло 2 из 5 строк. Проверьте словарь: скорее всего, в нём не хватает слов.'));
+  // Без словаря (сводная, черновики) о словаре ни слова; программа по темам пишет «найдено»: словарь есть.
+  const plain = compareWithEtalon(e, sent);
+  assert.ok(plain.lines.includes('Внимание: в «разобрать вручную» ушло 2 из 5 строк. Причины в списке «разобрать вручную».'), plain.lines.join('\n'));
+  assert.ok(!plain.lines.some((l) => l.includes('словар')), plain.lines.join('\n'));
+  const found = compareWithEtalon(e, { ...sent, 'найдено': { 1: { 'а': ['слово'] } } });
+  assert.ok(found.lines.some((l) => l.includes('Проверьте словарь')));
   const few = compareWithEtalon(e, { 'по строкам': { 1: 'а', 2: 'разобрать вручную', 3: 'а', 4: 'б', 5: 'а' } });
   assert.ok(!few.lines.some((l) => l.startsWith('Внимание')));
 });
@@ -526,6 +560,13 @@ test('compare: запрещённое в программе процесса з�
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /Итог сверки: программа дала тот же результат, что скилл\./);
   assert.match(r.out, /Итог проверки программы: уберите это из программы, «готово» нельзя\.$/m);
+  assert.equal(r.out.split('\n').filter((l) => l === FIX_NOTE).length, 1, r.out);
+  // Запрещённое и расхождение сразу: напоминание про окно одно.
+  writeFileSync(join(out, 'result.json'), JSON.stringify({ title: 'Опасно', updated_at: '2026-10-22T10:00:00+05:00', status: 'green', summary: 'x', columns: [], rows: [], sverka: { 'по строкам': { 1: 'б' } } }));
+  r = cli('compare', slug);
+  assert.equal(r.code, 1, r.out);
+  assert.equal(r.out.split('\n').filter((l) => l.includes('Поправляю программу')).length, 1, r.out);
+  writeFileSync(join(out, 'result.json'), JSON.stringify({ title: 'Опасно', updated_at: '2026-10-22T10:00:00+05:00', status: 'green', summary: 'x', columns: [], rows: [], sverka }));
   writeFileSync(join(dir, 'run.py'), 'import json\nprint("ok")\n');
   r = cli('compare', slug);
   assert.equal(r.code, 0, r.out);

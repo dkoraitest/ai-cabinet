@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+set "NoDefaultCurrentDirectoryInExePath=1"
 pushd "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
