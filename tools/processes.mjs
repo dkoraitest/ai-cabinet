@@ -1188,29 +1188,78 @@ export function compareWithEtalon(etalon, program) {
 }
 
 // Что программе процесса нельзя: она запускается кнопкой без Claude и без окна. Проверка по строкам
-// processes/<slug>/run.py (строки-комментарии пропускаются). Возвращает [{ line, text, why }].
+// processes/<slug>/run.py (строки-комментарии пропускаются). Это проверка по словам, не песочница: она ловит
+// запрещённое, написанное прямо, и известные обходы (функция по имени, другое имя для os). Возвращает
+// [{ line, text, why }], по одной причине на строку.
+// Библиотеки только из списка: стандартный Python, который нужен образцам справки, openpyxl, python-docx и
+// read_table из tools. Остальные (asyncio, pty, runpy, shutil, subprocess и любые другие) по словам не проверить.
+export const ALLOWED_IMPORTS = new Set([
+  '__future__', 'json', 'os', 're', 'sys', 'datetime', 'pathlib', 'csv', 'math', 'decimal', 'collections',
+  'itertools', 'difflib', 'unicodedata', 'zipfile', 'io', 'statistics', 'functools', 'string', 'typing',
+  'dataclasses', 'copy', 'time', 'calendar', 'textwrap', 'enum', 'openpyxl', 'docx', 'read_table',
+]);
+// Что можно взять из os и sys через from ... import: остальное у них запуск программ и обходы проверки.
+const FROM_LIMITS = { os: ['path'], sys: ['argv', 'exit', 'path', 'stderr', 'stdout'] };
+const NOT_ALLOWED_IMPORT = 'библиотека не из списка (стандартный Python из справки, openpyxl, python-docx, read_table)';
+
+// Сначала названные прямо опасности (у них понятная причина), потом библиотеки не из списка, потом обходы.
 const PROGRAM_RULES = [
   [/\b(subprocess|socket|urllib|urllib3|requests|httpx|ctypes|importlib|ftplib|smtplib|telnetlib|webbrowser)\b/, 'запуск программ или выход в сеть'],
   [/\bhttp\.(client|server)\b|^\s*(import|from)\s+http\b/, 'выход в сеть'],
-  [/\bos\.(system|popen|exec\w*|spawn\w*|startfile|fork)\b/, 'запуск программ'],
+  [/\bos\.(system|popen|exec\w*|spawn\w*|posix_spawn\w*|startfile|fork\w*)\b/, 'запуск программ'],
   [/(?<![\w.])(eval|exec|compile|__import__)\s*\(/, 'выполнение текста как программы'],
-  [/\bshutil\.rmtree\b/, 'удаление папок'],
-  [/\bPath\.home\b|\bexpanduser\b|["'](?:[A-Za-z]:[\\/]|\\\\\\\\[A-Za-z]|\/[A-Za-z]|~[\\/])/, 'путь вне кабинета'],
 ];
+const BYPASS_RULES = [
+  [/\b(getattr|globals|locals|vars)\s*\(|__import__|builtins|\bsys\s*\.\s*(modules|_\w*)\b|__(subclasses|globals|dict|code)__/,
+    'обход проверки: функция по имени (getattr, globals, builtins и подобные)'],
+  [/\bos\s*\.\s*(?!path\b|replace\b)\w/, 'из os можно только os.path и os.replace'],
+  [/(?<![\w.'"])(os|sys)\b(?!\s*\.)/, 'os или sys под другим именем', { skipImport: true }],
+  [/\bshutil\.rmtree\b/, 'удаление папок'],
+  [/\bPath\.home\b|\bexpanduser\b|["'](?:[A-Za-z]:[\\/]|\\\\\\\\[A-Za-z]|\/[A-Za-z]|~[\\/]|\.\.(?:[\\/]|["']))/, 'путь вне кабинета'],
+];
+
+// Почему импорт нельзя (или null). stmt: «import a.b as c, d» или «from a import (b, c)» одной строкой.
+function importProblem(stmt) {
+  const from = /^from\s+(\S+)\s+import\s+(.+)$/s.exec(stmt);
+  if (from) {
+    const [, mod, list] = from;
+    if (!ALLOWED_IMPORTS.has(mod.split('.')[0])) return NOT_ALLOWED_IMPORT;
+    const names = list.replace(/[()\\]/g, ' ').split(',').map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
+    const limit = FROM_LIMITS[mod];
+    return limit && names.some((n) => !limit.includes(n)) ? `из ${mod} можно взять только ${limit.join(', ')}` : null;
+  }
+  for (const part of stmt.replace(/^import\s+/, '').replace(/\\/g, ' ').split(',')) {
+    const [name, as] = part.trim().split(/\s+/);
+    if (!name || !ALLOWED_IMPORTS.has(name.split('.')[0])) return NOT_ALLOWED_IMPORT;
+    if (as === 'as' && FROM_LIMITS[name]) return 'os или sys под другим именем';
+  }
+  return null;
+}
+
+// Импорты строки (и после «;», «try:»), с продолжением на следующих строках: «\» в конце или «(» без «)».
+// Комментарий в конце строки не в счёт.
+function importsAt(lines, i) {
+  const code = (k) => lines[k].replace(/#.*$/, '');
+  let text = code(i);
+  for (let j = i + 1; j < lines.length && (/\\\s*$/.test(text) || (/^\s*from\s/.test(text) && (text.match(/\(/g) ?? []).length > (text.match(/\)/g) ?? []).length)); j++) {
+    text = `${text.replace(/\\\s*$/, '')} ${code(j)}`;
+  }
+  return text
+    .split(';')
+    .map((piece) => /(?:^|:)\s*((?:import|from)\s.*)$/s.exec(piece)?.[1].trim())
+    .filter((stmt) => stmt && (/^import\s/.test(stmt) || /^from\s+\S+\s+import\b/.test(stmt)));
+}
 
 export function programProblems(text) {
   const found = [];
-  String(text)
-    .split(/\r?\n/)
-    .forEach((line, i) => {
-      if (/^\s*#/.test(line)) return;
-      for (const [re, why] of PROGRAM_RULES) {
-        if (re.test(line)) {
-          found.push({ line: i + 1, text: line.trim(), why });
-          break;
-        }
-      }
-    });
+  const lines = String(text).split(/\r?\n/);
+  lines.forEach((line, i) => {
+    if (/^\s*#/.test(line)) return;
+    const stmts = importsAt(lines, i);
+    const rule = (rules) => rules.find(([re, , opts]) => !(opts?.skipImport && stmts.length) && re.test(line))?.[1];
+    const why = rule(PROGRAM_RULES) ?? stmts.map(importProblem).find(Boolean) ?? rule(BYPASS_RULES);
+    if (why) found.push({ line: i + 1, text: line.trim(), why });
+  });
   return found;
 }
 

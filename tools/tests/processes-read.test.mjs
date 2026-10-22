@@ -464,6 +464,48 @@ test('programProblems: запуск программ, сеть, eval, абсол
   for (const line of good) assert.deepEqual(programProblems(line), [], line);
 });
 
+// Обходы проверки из финального ревью v1.2 и похожие: каждый ловится. Программа процесса подключает только
+// библиотеки из списка, os только как os.path и os.replace, функции по имени не достаёт.
+test('programProblems: обходы ревью (from os import, asyncio, pty, runpy, posix_spawn, builtins.exec) и похожие ловятся', () => {
+  const bypasses = {
+    'from os import system': 'from os import system\nsystem("del *")',
+    'from os import (system)': 'from os import (\n    path,\n    system,\n)',
+    'asyncio.create_subprocess_exec': 'import asyncio\nasyncio.run(asyncio.create_subprocess_exec("cmd"))',
+    'pty.spawn': 'import pty\npty.spawn("sh")',
+    runpy: 'import runpy\nrunpy.run_path("x.py")',
+    'os.posix_spawn': 'import os\nos.posix_spawn(exe, ["sh"], {})',
+    'builtins.exec': 'import builtins\nbuiltins.exec("print(1)")',
+    '__builtins__': 'f = __builtins__["ex" + "ec"]',
+    'getattr(os, ...)': 'import os\ngetattr(os, "sys" + "tem")("ls")',
+    '__import__': 'm = __import__("subprocess")',
+    'globals()': 'f = globals()["__builtins__"]',
+    importlib: 'import importlib\nimportlib.import_module("subprocess")',
+    'os.remove': 'import os\nos.remove(ROOT / "input" / "x.xlsx")',
+    'import os as': 'import os as o\no.system("ls")',
+    'import через ;': 'import json; import shutil',
+    'import через \\': 'import json, \\\n    shutil',
+    'sys.modules': 'import sys\nsys.modules["os"].system("ls")',
+    '__subclasses__': 'x = ().__class__.__base__.__subclasses__()',
+    'путь вверх ..': 'data = (ROOT / ".." / "secret.txt").read_text()',
+    'from . import': 'from . import secret',
+    'import shutil': 'import shutil\nshutil.copy("a", "b")',
+  };
+  const missed = Object.entries(bypasses).filter(([, code]) => programProblems(code).length === 0).map(([name]) => name);
+  assert.deepEqual(missed, []);
+  // Обычные программы: импорты из списка, os.path и os.replace, hasattr, open файла из ROOT.
+  const ok = [
+    'import json, re, sys\nfrom datetime import date, datetime\nfrom pathlib import Path',
+    'import os\nimport os.path\nfrom os import path\nfrom os.path import join\nos.path.join("a", "b")\nos.replace(tmp, target)',
+    'import csv, math, decimal, collections, itertools, difflib, unicodedata, zipfile, io, statistics, functools, string',
+    'from openpyxl import Workbook\nfrom openpyxl.styles import Font\nimport docx\nfrom docx.oxml.ns import qn\nimport read_table',
+    'root = part.element if hasattr(part, "element") else None',
+    'with open(ROOT / "input" / SLUG / "a.csv", encoding="utf-8") as f:\n    pass',
+    'raise StopRun("нет файла") from None',
+    'if __name__ == "__main__":\n    main()',
+  ];
+  for (const code of ok) assert.deepEqual(programProblems(code), [], code);
+});
+
 test('compare: запрещённое в программе процесса закрывает «готово» (код 1), даже без эталона и при совпадении', () => {
   const slug = 'opasno';
   const dir = join(cab, 'processes', slug);

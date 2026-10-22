@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Быстро заглянуть в таблицу (Excel или выгрузка 1С) перед любым расчётом.
 
-    python tools/read_table.py <файл> [--sheet N|имя] [--rows 10] [--json]
+    python tools/read_table.py <файл> [--sheet N|имя] [--rows 10] [--from N] [--json]
     python tools/read_table.py <файл> [--sum СТОЛБЕЦ] [--by СТОЛБЕЦ] [--where СТОЛБЕЦ=ЗНАЧЕНИЕ]
 
 Что печатает: кодировку и разделитель (для CSV/TXT), листы с числом строк (для XLSX),
 строки над шапкой (заголовок отчёта, поставщик, период), строку шапки, названия столбцов,
-число строк данных и первые строки.
+число строк данных и первые строки. С --from N: строки данных с N-й (страница длинного файла:
+--from 1 --rows 100, затем --from 101 --rows 100 и так до конца; вывод скажет, откуда читать дальше).
 С --sum, --by или --where: итоги по всем строкам (число строк и суммы столбцов, всего и по группам
 до двух столбцов, с отбором строк). Ими Claude проверяет расчёт программы процесса независимо от неё.
 Объединённая многоуровневая шапка (до 4 строк) разворачивается в названия «Родитель / Дочерний».
@@ -620,9 +621,21 @@ def format_human(r):
     out.append(f"Строк данных: {r['data_rows']}")
     for w in r.get("warnings", []):
         out.append(f"Внимание: {w}")
-    out.append(f"Первые строки ({len(r['rows'])}):")
+    first = r.get("first_row")
+    if first is None:
+        out.append(f"Первые строки ({len(r['rows'])}):")
+    elif not r["rows"]:
+        out.append(f"Строк с {first} нет: строк данных {r['data_rows']}." if first > r["data_rows"]
+                   else "Строки не показаны: укажите --rows больше нуля.")
+        return "\n".join(out)
+    else:
+        last = first + len(r["rows"]) - 1
+        out.append(f"Строки {first}-{last} из {r['data_rows']}:")
     for row in r["rows"]:
         out.append("  " + " | ".join(row))
+    if first is not None:
+        more = last < r["data_rows"]
+        out.append(f"Дальше: --from {last + 1} --rows {len(r['rows'])}." if more else "Это последние строки файла.")
     return "\n".join(out)
 
 
@@ -636,6 +649,8 @@ def main(argv=None):
     ap.add_argument("file", help="путь к .xlsx, .csv или .txt")
     ap.add_argument("--sheet", help="номер листа (с 1) или имя; по умолчанию первый")
     ap.add_argument("--rows", type=int, default=10, help="сколько первых строк показать (10)")
+    ap.add_argument("--from", dest="first", type=int, metavar="N",
+                    help="показать строки данных с N-й (с 1): страница длинного файла вместе с --rows")
     ap.add_argument("--json", action="store_true", help="вывод в JSON для скриптов")
     ap.add_argument("--sum", action="append", default=[], metavar="СТОЛБЕЦ",
                     help="итоги: сумма столбца (номер с 1, название или часть названия), можно несколько")
@@ -646,7 +661,12 @@ def main(argv=None):
     a = ap.parse_args(argv)
     totals = bool(a.sum or a.by or a.where)
     try:
-        r = analyze(Path(a.file), a.sheet, LIMIT_TOTALS if totals else max(0, a.rows))
+        if a.first is not None and a.first < 1:
+            raise UserError("Номер строки в --from начинается с 1: --from 1 --rows 100, затем --from 101 --rows 100.")
+        skip = (a.first - 1) if a.first and not totals else 0
+        r = analyze(Path(a.file), a.sheet, LIMIT_TOTALS if totals else skip + max(0, a.rows))
+        if a.first is not None and not totals:
+            r["rows"], r["first_row"] = r["rows"][skip:], a.first
         if totals:
             t = group_totals(r, a.sum, a.by, a.where)
             print(json.dumps(t, ensure_ascii=False, indent=2) if a.json else format_totals(t, r))

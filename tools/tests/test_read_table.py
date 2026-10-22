@@ -88,6 +88,38 @@ class CsvTests(FixtureCase):
         self.assertEqual(len(r["rows"]), 3)
         self.assertEqual(r["data_rows"], 30)
 
+    def test_pages_from_and_rows(self):
+        """--from N с --rows: строки данных с N-й. Длинный файл читается по 100 строк за раз: страница
+        укладывается в вывод команды (около 30 тысяч знаков), а 300 строк сразу нет."""
+        p = self.dir / "страницы.csv"
+        text = "Колонка не принимает карту, кассир попросил оплатить наличными, а наличных не было. " * 2
+        lines = ["№;Текст"] + [f"{i};{text}{i}" for i in range(1, 301)]
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        r = run_json(p, "--from", 101, "--rows", 100)
+        self.assertEqual(r["data_rows"], 300)
+        self.assertEqual(r["first_row"], 101)
+        self.assertEqual([row[0] for row in r["rows"]], [str(i) for i in range(101, 201)])
+        out = run(p, "--from", 1, "--rows", 100)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Строки 1-100 из 300:", out.stdout)
+        self.assertIn(f"  100 | {text}100", out.stdout)
+        self.assertIn("Дальше: --from 101 --rows 100.", out.stdout)
+        self.assertLess(len(out.stdout), 30000)
+        self.assertGreater(len(run(p, "--rows", 300).stdout), 30000)
+        out = run(p, "--from", 201, "--rows", 100).stdout
+        self.assertIn("Строки 201-300 из 300:", out)
+        self.assertIn(f"  300 | {text}300", out)
+        self.assertIn("Это последние строки файла.", out)
+        self.assertNotIn("Дальше", out)
+        self.assertIn("Строк с 301 нет: строк данных 300.", run(p, "--from", 301, "--rows", 100).stdout)
+        # Без --from всё как раньше: первые строки, без строки «Дальше».
+        out = run(p).stdout
+        self.assertIn("Первые строки (10):", out)
+        self.assertNotIn("Дальше", out)
+        bad = run(p, "--from", 0)
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("--from", bad.stderr)
+
     def test_100k_rows_streamed(self):
         p = self.dir / "большой файл.csv"
         with p.open("w", encoding="cp1251", newline="") as f:

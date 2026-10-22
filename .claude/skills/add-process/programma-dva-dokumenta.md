@@ -373,7 +373,7 @@ def read_document(path, notes=()):
     bilingual = unclear = 0
     bilingual_doc = False  # в документе есть таблицы на двух языках
     for part in word_parts(document):
-        root = getattr(part, "element", None)
+        root = part.element if hasattr(part, "element") else None
         if root is None:
             continue
         in_body = str(part.partname).endswith("document.xml")

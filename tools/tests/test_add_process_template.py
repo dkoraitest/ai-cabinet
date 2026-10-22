@@ -1091,7 +1091,8 @@ class Word(unittest.TestCase):
         self.assertEqual(r["rows"][0][0], "ТОО «Василёк»")
         self.assertIn("Разобрать вручную: 1", r["summary"])
         self.assertEqual(r["sverka"]["документов"], 2)
-        self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Василёк»": "разобрать вручную", "ТОО «Ромашка»": "1 250 000,00"})
+        # Ключевое значение документа пишется всегда; «разобрать вручную» только на карточке и в списке Excel.
+        self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Василёк»": "[нет данных]", "ТОО «Ромашка»": "1 250 000,00"})
         self.assertTrue((self.c.out / "pismo-01.docx").is_file() and (self.c.out / "pismo-02.docx").is_file())
         texts, _ = self.texts(self.c.out / "pismo-01.docx")
         self.assertIn("Подпись: А. Иванов", texts)
@@ -1136,7 +1137,7 @@ class Word(unittest.TestCase):
         r = self.c.result()
         self.assertEqual(r["row_status"], ["info", "info"])
         self.assertIn("Разобрать вручную: 2", r["summary"])
-        self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Ромашка»": "разобрать вручную", "ТОО «Василёк»": "разобрать вручную"})
+        self.assertEqual(r["sverka"]["по строкам"], {"ТОО «Ромашка»": "1 250 000,00", "ТОО «Василёк»": "[уточнить]"})
         texts, _ = self.texts(self.c.out / "pismo-01.docx")
         self.assertIn("Подпись: [уточнить]", texts)
         texts, _ = self.texts(self.c.out / "pismo-02.docx")
@@ -1164,14 +1165,47 @@ class Word(unittest.TestCase):
         self.assertEqual(missing, ["[нет данных]", "[уточнить: срок оплаты]"])
 
     @unittest.skipUnless(NODE, "нет node")
+    def test_drafts_check_compares_key_values(self):
+        """Сверка черновиков сравнивает ключевые значения документов и тогда, когда у документов пометка
+        (подпись ещё не вписана): эталон из настоящих значений, одно неверное: сверка не пройдена. Все верные:
+        пройдена, а почему документы у человека, объясняют пометка на карточке и список Excel."""
+        self.write_rows()
+        self.make_template(with_table=False)
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        r = self.c.result()
+        self.assertEqual(r["row_status"], ["info", "info"])  # подпись не вписана: оба письма человеку
+        self.assertEqual(r["row_note"], ["разобрать вручную", "разобрать вручную"])
+        rows = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        self.assertEqual([x[-1] for x in rows[1:]], ["поля с пометкой: Фамилия И. О.", "поля с пометкой: Сумма, Фамилия И. О."])
+        etalon = self.c.out / "etalon-skilla.json"
+
+        def compare(values):
+            etalon.write_text(json.dumps({"документов": 2, "по строкам": values}, ensure_ascii=False), encoding="utf-8")
+            return self.c.node("compare", "proba")
+
+        code, out = compare({"ТОО «Ромашка»": "1 300 000,00", "ТОО «Василёк»": "[нет данных]"})
+        self.assertEqual(code, 1, out)
+        self.assertIn("По строкам: совпало 1 из 2.", out)
+        self.assertIn("ТОО «Ромашка»: у скилла «1 300 000,00», у программы «1 250 000,00»", out)
+        self.assertIn("Итог сверки: расхождений 1.", out)
+        code, out = compare({"ТОО «Ромашка»": 1250000, "ТОО «Василёк»": "[нет данных]"})
+        self.assertEqual(code, 0, out)
+        self.assertIn("По строкам: совпало 2 из 2.", out)
+        self.assertIn("Документов: 2, как у скилла.", out)
+        self.assertTrue(out.rstrip().endswith("Итог сверки: программа дала тот же результат, что скилл."), out)
+        self.assertNotIn("словарь", out)
+
+    @unittest.skipUnless(NODE, "нет node")
     def test_samples_pass_program_check(self):
-        """Образцы справки не содержат того, что сверка запрещает программе процесса."""
+        """Образцы справки и программа демо не содержат того, что сверка запрещает программе процесса."""
+        demo = (ROOT / "templates" / "processes" / "svetofor-dogovorov" / "run.py").read_text(encoding="utf-8")
         for parts in ((), ("slovar", "main_slovar"), ("word", "main_word"), ("slovar", "word", "main_word"),
-                      ("word", "dva", "main_dva")):
-            c = Cabinet(compose(*parts))
+                      ("word", "dva", "main_dva"), demo):
+            c = Cabinet(parts if isinstance(parts, str) else compose(*parts))
             self.addCleanup(c.close)
             code, out = c.node("compare", "proba")
-            self.assertNotIn("нельзя", out, parts)
+            self.assertNotIn("нельзя", out, "демо" if isinstance(parts, str) else parts)
 
 
 def sheet(path, name):
