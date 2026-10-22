@@ -1174,7 +1174,8 @@ class TwoDocuments(unittest.TestCase):
 
     def test_bilingual_language_unclear_goes_to_person(self):
         """Оба столбца на русском (или оба с казахскими буквами): язык не определить, не угадывать."""
-        for name, change in (("оба русские", bilingual(other=lambda text: text)), ("оба с казахскими", bilingual(mixed=True))):
+        for name, change in (("оба русские", bilingual(other=lambda text: text)), ("оба с казахскими", bilingual(mixed=True)),
+                             ("казахский русскими буквами", bilingual(other=lambda text: KZ[0].translate(KZ_RUS_LETTERS)))):
             with self.subTest(name):
                 r = self.run_variant(None, change)
                 self.assertEqual(r["status"], "yellow")
@@ -1239,17 +1240,36 @@ class TwoDocuments(unittest.TestCase):
                 tech = sheet(self.c.out / "sverka-dogovora.xlsx", "Техспецификация")
                 self.assertEqual(len(tech), 5)  # техспецификация в том же разделе читается как раньше
 
-    def test_requisites_table_skipped_silently(self):
-        """Таблица реквизитов сторон (БИН, ИИК, подпись) в два столбца: как раньше, не сверяется и без тревоги."""
-        def requisites(bin_no):
+    def test_requisites_rows_skipped_one_by_one(self):
+        """Строка реквизитов (БИН, ИИК, Адрес, Подпись, М.П. в названии условия) не сверяется; строка
+        «Срок подписания акта» читается: «подписания» не реквизит. Таблица из одних реквизитов пропускается."""
+        def mixed(prepay, bin_no):
             return two_column_table((
-                (f"Поставщик: ТОО «Нефтегаз-Сервис», БИН {bin_no}, г. Астана, ИИК KZ12345678901234567890",
-                 "Покупатель: ТОО «Дала Ойл», БИН 987654321098, г. Астана, ИИК KZ09876543210987654321"),
-                ("Директор _________ подпись, М.П.", "Директор по закупкам _________ подпись, М.П.")))
+                ("Условие оплаты", f"Предоплата {prepay} процентов стоимости партии"),
+                ("Срок подписания акта", "В течение трёх рабочих дней с даты поставки партии"),
+                ("БИН поставщика", bin_no)), after="4.3.")
+        r = self.run_variant(mixed(30, "111111111111"), mixed(100, "123456789012"))
+        self.assertEqual(r["sverka"]["по строкам"], dict(CASE9_DIFFS, **{"4, «Условие оплаты»": "изменён"}))
+        status = {row[0]: row[1] for row in r["rows"]}
+        self.assertEqual(status["4, «Срок подписания акта»"], "совпадает")
+        self.assertFalse([k for k in status if "БИН" in str(k)])
+        manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")[1:]
+        self.assertFalse([row for row in manual if "БИН" in str(row[0])])
+        self.assertFalse([k for k in r["sverka"]["по строкам"] if "БИН" in k])
+
+        def requisites(bin_no):
+            return two_column_table((("БИН", bin_no), ("ИИК", "KZ12345678901234567890"),
+                                     ("Банк", "АО «Народный банк Казахстана»"), ("Адрес", "г. Астана, ул. Кенесары, 40"),
+                                     ("Подпись", "_________ Иванов И. И."), ("М.П.", "")))
         r = self.run_variant(requisites("111111111111"), requisites("123456789012"))
         self.assertEqual(r["sverka"]["по строкам"], CASE9_DIFFS)
         self.assertNotIn("Сверка неполная", r["summary"])
         self.assertEqual(len(manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")), len(CASE9_DIFFS) + 2 + 1)
+        m = self.c.module()
+        for label in ("БИН", "Банк:", "E-mail", "М.П.", "Реквизиты сторон", "Наименование"):
+            self.assertTrue(m.REQUISITES_RE.match(label), label)
+        for label in ("Срок подписания акта", "Банковская гарантия", "Адресная доставка", "Условие оплаты"):
+            self.assertFalse(m.REQUISITES_RE.match(label), label)
 
     def test_paired_heading_text_change(self):
         """Одноуровневые пункты «4. Срок действия один год.» программа берёт за заголовок раздела.
