@@ -250,6 +250,72 @@ class XlsxTests(FixtureCase):
         self.assertIn("номера с 1", str(ctx.exception))
 
 
+class TotalsTests(FixtureCase):
+    """Итоги по всем строкам (--sum, --by, --where): ими Claude делает эталон расчёта независимо от программы."""
+
+    def write(self):
+        p = self.dir / "продажи итоги.csv"
+        text = (
+            "Отчёт\r\n\r\n"
+            "Дата;АЗС;Операция;Литры;Сумма, тг\r\n"
+            "07.09.2026;АЗС-01;Реализация;1 000,5;245 122,50\r\n"
+            "08.09.2026;АЗС-02;Реализация;500;122 500,00\r\n"
+            "14.09.2026;АЗС-01;Реализация;200;49 000,00\r\n"
+            "14.09.2026;АЗС-01;Возврат;-50;-12 250,00\r\n"
+            "15.09.2026;АЗС-02;Реализация;;0\r\n"
+            "16.09.2026;АЗС-02;Реализация;н/д;0\r\n"
+        )
+        p.write_bytes(text.replace("\u00a0", " ").encode("cp1251"))
+        return p
+
+    def test_sum_by_where(self):
+        p = self.write()
+        t = run_json(p, "--by", "азс", "--sum", "Литры", "--sum", "сумма", "--where", "Операция=реализация")
+        self.assertEqual(t["by"], ["АЗС"])
+        self.assertEqual(t["sums"], ["Литры", "Сумма, тг"])
+        self.assertEqual(t["total"]["rows"], 5)
+        groups = {g["key"][0]: g for g in t["groups"]}
+        self.assertEqual(list(groups), ["АЗС-01", "АЗС-02"])
+        self.assertAlmostEqual(groups["АЗС-01"]["sums"][0], 1200.5)
+        self.assertEqual(groups["АЗС-02"]["rows"], 3)
+        self.assertAlmostEqual(t["total"]["sums"][1], 416622.5)
+        self.assertEqual(t["total"]["empty"], [1, 0])
+        self.assertEqual(t["total"]["bad"], [[6], []])  # номер строки данных в файле
+
+    def test_date_range_and_or_of_same_column(self):
+        p = self.write()
+        t = run_json(p, "--sum", "Литры", "--where", "Дата=14.09.2026..20.09.2026")
+        self.assertEqual(t["total"]["rows"], 4)
+        self.assertAlmostEqual(t["total"]["sums"][0], 150)
+        t = run_json(p, "--sum", "4", "--where", "АЗС=АЗС-01", "--where", "АЗС=АЗС-02", "--where", "Операция=Возврат")
+        self.assertEqual(t["total"]["rows"], 1)
+        self.assertAlmostEqual(t["total"]["sums"][0], -50)
+
+    def test_human_output_and_errors(self):
+        p = self.write()
+        out = run(p, "--by", "АЗС", "--by", "Операция", "--sum", "Литры")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("АЗС | Операция | строк | Литры", out.stdout)
+        self.assertIn("АЗС-01 | Реализация | 2 | 1200.5", out.stdout)
+        self.assertIn("Всего |  | 6 | 1650.5", out.stdout)
+        self.assertIn("«Литры»: не числа в 1 строках данных (6), в сумму не вошли.", out.stdout)
+        bad = run(p, "--sum", "Цена")
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("Столбец «Цена» не найден", bad.stderr)
+        both = run(p, "--sum", "а")
+        self.assertEqual(both.returncode, 2)
+        self.assertIn("несколько столбцов, укажите номер", both.stderr)
+        rng = run(p, "--sum", "Литры", "--where", "Дата=вчера..сегодня")
+        self.assertEqual(rng.returncode, 2)
+        self.assertIn("две даты", rng.stderr)
+
+    def test_case_sales_week(self):
+        t = run_json(CASE_DATA / "sales_azs_1c.csv", "--sum", "Количество", "--where", "Дата=14.09.2026..20.09.2026",
+                     "--where", "Операция=Реализация")
+        self.assertEqual(t["total"]["rows"], 652)
+        self.assertAlmostEqual(t["total"]["sums"][0], 862935.8, places=3)
+
+
 class ErrorTests(FixtureCase):
     def test_missing_file(self):
         out = run(self.dir / "нет.csv")

@@ -2,9 +2,12 @@
 """Быстро заглянуть в таблицу (Excel или выгрузка 1С) перед любым расчётом.
 
     python tools/read_table.py <файл> [--sheet N|имя] [--rows 10] [--json]
+    python tools/read_table.py <файл> [--sum СТОЛБЕЦ] [--by СТОЛБЕЦ] [--where СТОЛБЕЦ=ЗНАЧЕНИЕ]
 
 Что печатает: кодировку и разделитель (для CSV/TXT), листы с числом строк (для XLSX),
 строку шапки, названия столбцов, число строк данных и первые строки.
+С --sum, --by или --where: итоги по всем строкам (число строк и суммы столбцов, всего и по группам
+до двух столбцов, с отбором строк). Ими Claude проверяет расчёт программы процесса независимо от неё.
 Объединённая многоуровневая шапка (до 4 строк) разворачивается в названия «Родитель / Дочерний».
 --sheet принимает номер листа (с 1) или его имя.
 
@@ -398,6 +401,174 @@ def analyze(path, sheet=None, n_rows=10):
     return res
 
 
+# ---------- итоги по группам: --sum, --by, --where ----------
+
+MAX_GROUPS = 300
+LIMIT_TOTALS = 10 ** 6  # строк для итогов: файл больше, вывод об этом скажет
+DATE_DMY = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$")
+DATE_ISO = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})")
+
+
+def norm_text(s):
+    return re.sub(r"\s+", " ", str(s)).strip().lower().replace("ё", "е")
+
+
+def to_number(text):
+    """Число из ячейки: «1 234,5» или «1234.5», пробелы любые (и неразрывный из 1С). Не число: None."""
+    t = "".join(str(text).split()).replace(",", ".")
+    try:
+        return float(t) if t else None
+    except ValueError:
+        return None
+
+
+def to_date(text):
+    t = str(text).strip()
+    m = DATE_DMY.match(t)
+    if m:
+        d, mo, y = (int(g) for g in m.groups())
+    else:
+        m = DATE_ISO.match(t)
+        if not m:
+            return None
+        y, mo, d = (int(g) for g in m.groups())
+    try:
+        return date(y, mo, d)
+    except ValueError:
+        return None
+
+
+def find_column(columns, wanted):
+    """Номер столбца (с 0) по номеру с 1, по точному названию или по части названия, без учёта регистра."""
+    w = norm_text(wanted)
+    listing = "; ".join(f"{i + 1}. {c}" for i, c in enumerate(columns))
+    if w.isdigit():
+        if 1 <= int(w) <= len(columns):
+            return int(w) - 1
+        raise UserError(f"Столбца с номером {w} нет. Столбцы: {listing}.")
+    exact = [i for i, c in enumerate(columns) if norm_text(c) == w]
+    found = exact or [i for i, c in enumerate(columns) if w and w in norm_text(c)]
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise UserError(f"Столбец «{wanted}» не найден. Столбцы: {listing}.")
+    raise UserError(f"Под «{wanted}» подходят несколько столбцов, укажите номер. Столбцы: {listing}.")
+
+
+def in_range(convert, low, high):
+    def test(text):
+        v = convert(text)
+        return v is not None and low <= v <= high
+    return test
+
+
+def equals(value):
+    wanted = norm_text(value)
+    return lambda text: norm_text(text) == wanted
+
+
+def parse_where(columns, items):
+    """--where «Столбец=значение» или «Столбец=от..до» (даты или числа). Один столбец несколько раз: любое из
+    значений; разные столбцы: все условия сразу."""
+    conds = {}
+    for item in items:
+        if "=" not in item:
+            raise UserError(f"Отбор «{item}» нужно писать так: Столбец=значение или Столбец=от..до.")
+        col, value = item.split("=", 1)
+        i = find_column(columns, col)
+        low, sep, high = value.partition("..")
+        if sep:
+            if to_date(low) and to_date(high):
+                test = in_range(to_date, to_date(low), to_date(high))
+            elif to_number(low) is not None and to_number(high) is not None:
+                test = in_range(to_number, to_number(low), to_number(high))
+            else:
+                raise UserError(f"Отбор «{item}»: от..до нужны две даты (ДД.ММ.ГГГГ) или два числа.")
+        else:
+            test = equals(value)
+        conds.setdefault(i, []).append((item, test))
+    return conds
+
+
+def group_totals(r, sums=(), by=(), where=()):
+    """Итоги по строкам таблицы: число строк и суммы столбцов, всего и по группам. Для проверки расчётов."""
+    cols, rows = r["columns"], r["rows"]
+    if not cols:
+        raise UserError("Данных в таблице нет.")
+    if len(by) > 2:
+        raise UserError("Группировать можно не больше чем по двум столбцам.")
+    by_i = [find_column(cols, b) for b in by]
+    sum_i = [find_column(cols, s) for s in sums]
+    conds = parse_where(cols, where)
+    groups, order = {}, []
+    total = {"rows": 0, "sums": [0.0] * len(sum_i), "empty": [0] * len(sum_i), "bad": [[] for _ in sum_i]}
+    for n, row in enumerate(rows, start=1):
+        if not all(any(test(row[i]) for _, test in tests) for i, tests in conds.items()):
+            continue
+        key = tuple(row[i] for i in by_i)
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"rows": 0, "sums": [0.0] * len(sum_i)}
+            order.append(key)
+        g["rows"] += 1
+        total["rows"] += 1
+        for j, i in enumerate(sum_i):
+            cell = row[i]
+            if cell.strip() == "":
+                total["empty"][j] += 1
+                continue
+            v = to_number(cell)
+            if v is None:
+                total["bad"][j].append(n)
+                continue
+            g["sums"][j] += v
+            total["sums"][j] += v
+    return {
+        "by": [cols[i] for i in by_i],
+        "sums": [cols[i] for i in sum_i],
+        "where": [item for tests in conds.values() for item, _ in tests],
+        "data_rows": len(rows),
+        "groups": [{"key": list(k), "rows": groups[k]["rows"], "sums": groups[k]["sums"]} for k in order],
+        "total": total,
+    }
+
+
+def fmt_number(x):
+    text = f"{round(x, 6):.6f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
+
+
+def format_totals(t, r):
+    out = [f"Файл: {r['file']}"]
+    if r.get("type") == "xlsx":
+        out.append(f"Лист: {r['sheet']['name']}")
+    if t["where"]:
+        out.append("Отбор: " + "; ".join(t["where"]))
+    out.append(f"Строк в отборе: {t['total']['rows']} из {t['data_rows']}.")
+    if t["data_rows"] < r["data_rows"]:
+        out.append(f"Внимание: в файле {r['data_rows']} строк, посчитаны первые {t['data_rows']}.")
+    head = t["by"] + ["строк"] + t["sums"]
+    if t["by"]:
+        out.append(" | ".join(head))
+        for g in t["groups"][:MAX_GROUPS]:
+            out.append(" | ".join([str(k) for k in g["key"]] + [str(g["rows"])] + [fmt_number(s) for s in g["sums"]]))
+        if len(t["groups"]) > MAX_GROUPS:
+            out.append(f"... и ещё групп: {len(t['groups']) - MAX_GROUPS}. Сузьте отбор (--where).")
+        out.append(" | ".join(["Всего"] + [""] * (len(t["by"]) - 1) + [str(t["total"]["rows"])]
+                              + [fmt_number(s) for s in t["total"]["sums"]]))
+    else:
+        out.append("Всего строк: " + str(t["total"]["rows"]))
+        for name, s in zip(t["sums"], t["total"]["sums"]):
+            out.append(f"Сумма «{name}»: {fmt_number(s)}")
+    for name, empty, bad in zip(t["sums"], t["total"]["empty"], t["total"]["bad"]):
+        if empty:
+            out.append(f"«{name}»: пустых ячеек {empty}, в сумму не вошли.")
+        if bad:
+            shown = ", ".join(str(n) for n in bad[:20]) + (" ..." if len(bad) > 20 else "")
+            out.append(f"«{name}»: не числа в {len(bad)} строках данных ({shown}), в сумму не вошли.")
+    return "\n".join(out)
+
+
 def format_human(r):
     out = [f"Файл: {r['file']}"]
     if r["type"] == "csv":
@@ -435,9 +606,20 @@ def main(argv=None):
     ap.add_argument("--sheet", help="номер листа (с 1) или имя; по умолчанию первый")
     ap.add_argument("--rows", type=int, default=10, help="сколько первых строк показать (10)")
     ap.add_argument("--json", action="store_true", help="вывод в JSON для скриптов")
+    ap.add_argument("--sum", action="append", default=[], metavar="СТОЛБЕЦ",
+                    help="итоги: сумма столбца (номер с 1, название или часть названия), можно несколько")
+    ap.add_argument("--by", action="append", default=[], metavar="СТОЛБЕЦ",
+                    help="итоги по группам этого столбца, до двух")
+    ap.add_argument("--where", action="append", default=[], metavar="СТОЛБЕЦ=ЗНАЧЕНИЕ",
+                    help="отбор строк: Столбец=значение или Столбец=от..до (даты, числа)")
     a = ap.parse_args(argv)
+    totals = bool(a.sum or a.by or a.where)
     try:
-        r = analyze(Path(a.file), a.sheet, max(0, a.rows))
+        r = analyze(Path(a.file), a.sheet, LIMIT_TOTALS if totals else max(0, a.rows))
+        if totals:
+            t = group_totals(r, a.sum, a.by, a.where)
+            print(json.dumps(t, ensure_ascii=False, indent=2) if a.json else format_totals(t, r))
+            return 0
     except UserError as e:
         print(str(e), file=sys.stderr)
         if a.json:
