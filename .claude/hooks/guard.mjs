@@ -1,5 +1,5 @@
-// Сторож Claude (хук PreToolUse для Bash, PowerShell и инструментов записи файлов). Без зависимостей,
-// запускается без оболочки.
+// Сторож Claude (хук PreToolUse для команд Bash, PowerShell, Monitor, для инструментов записи файлов
+// и для сохранения файлов артефакта). Без зависимостей, запускается без оболочки.
 //
 // Команды. Режим автоприёма правок пропускает без окна команды вроде `echo ... >> processes/x/run.py`
 // или `cp`, а запуск процесса фразой разрешён. Без сторожа текст из входного файла мог бы записать
@@ -8,19 +8,25 @@
 // разрешённых команд курса, которая упоминает папку processes или .claude (в любом написании) или идёт
 // изнутри них, спрашивает окно разрешения. Запись командой в tools/, templates/ и input/ закрывают
 // запреты Edit в .claude/settings.json: Claude Code применяет их и к командам, в любом режиме.
+// Monitor запускает команду оболочки так же, как Bash, поэтому проверяется так же.
 //
-// Файлы (Write, Edit, MultiEdit, NotebookEdit). Запись в input/, tools/, templates/ и .claude/hooks/
-// запрещена в любом режиме (вдобавок к запретам Edit в settings.json). Запись в processes/ и .claude/
-// в обычных режимах решают правило ask в settings.json и встроенная защита .claude/ в Claude Code.
+// Файлы (Write, Edit, MultiEdit, NotebookEdit; Artifact с out_dir сохраняет файлы на диск). Запись в
+// input/, tools/, templates/ и .claude/hooks/ запрещена в любом режиме (вдобавок к запретам Edit в
+// settings.json). Запись в processes/ и .claude/ в обычных режимах решают правило ask в settings.json и
+// встроенная защита .claude/ в Claude Code, если путь назван буквально (processes/..., .claude/...).
+// Путь в другом написании (8.3, точка в конце, поток, ссылка) или путь, про который нельзя точно сказать,
+// в кабинете он или нет (устройство Windows, сетевой путь), спрашивает сам сторож.
 //
 // Режимы (поле permission_mode во входе хука; D70: организация не отключает обход разрешений и Auto).
 // Проверено на Claude Code 2.1.231 и 2.1.307: окно по ответу хука "ask" появляется во всех режимах,
 // правило ask в settings.json спрашивает везде, кроме dontAsk, запреты deny действуют везде. Но в Auto
-// встроенную защиту .claude/ (settings.local.json, скиллы) решает классификатор без окна, поэтому в Auto
-// сторож сам спрашивает окно и для файлов в processes/ и .claude/. В режимах обхода разрешений
-// (bypassPermissions) и dontAsk человек окон не ждёт, а в dontAsk правила ask отклоняются сами, поэтому
-// там всё, что сторож спросил бы, запрещено с подсказкой вернуть обычный режим. Режим не передан или
-// незнаком: считаем, что спросить нельзя.
+// встроенную защиту .claude/ (settings.local.json, скиллы) решает классификатор без окна, а команды вне
+// курса классификатор пропускает сам. Поэтому в Auto сторож спрашивает окно на любую команду вне курса и
+// на запись файлов в processes/ и .claude/, как в обычном режиме кабинета. В режимах обхода разрешений
+// (bypassPermissions) и dontAsk окна не ждут, а команда, которая processes не называет (python
+// output/fix.py), всё равно может туда писать. Поэтому там запрещены любая команда вне курса и любая
+// запись в processes/ и .claude/, с подсказкой вернуть обычный режим. Режим не передан или незнаком:
+// считаем, что спросить нельзя.
 //
 // Вход: JSON в stdin (tool_name, tool_input, cwd, permission_mode). Выход: пусто (решения нет) или
 // {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"|"deny","permissionDecisionReason":"..."}}.
@@ -37,9 +43,12 @@ export const REASON_FILE =
 export const REASON_NO_PROMPT =
   'В этом режиме Claude не может спросить вас, поэтому изменения программ процессов и настроек кабинета закрыты. Переключите режим на обычный (Shift+Tab) и повторите.';
 export const REASON_DATA = 'Это файлы курса или ваши исходные данные, Claude их не меняет.';
+export const REASON_OTHER =
+  'Claude хочет выполнить команду, которая не входит в курс. Разрешите, только если вы сами это просили.';
 
-const TOOLS = new Set(['Bash', 'PowerShell']);
-export const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+// Инструменты, которые запускают команду оболочки из поля command.
+export const TOOLS = new Set(['Bash', 'PowerShell', 'Monitor']);
+export const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Artifact']);
 
 // Режимы, где человек видит окно на ответ сторожа "ask" (manual: другое имя default).
 const PROMPT_MODES = new Set(['default', 'manual', 'acceptEdits', 'plan', 'auto']);
@@ -173,7 +182,9 @@ export function classify(command, { tool = 'Bash', cwds = [], roots = [], platfo
   const rootBase = roots.filter(Boolean).map((r) => fold(r).toLowerCase().split('/').pop())[0] ?? '';
   if (looseForms(command).some((f) => mentionsProtected(f, rootBase))) return guarded(mode, REASON);
   if (cwdInside(cwds, roots, platform)) return guarded(mode, REASON);
-  return null;
+  // Команда вне курса: в обычных режимах окно спрашивает Claude Code, в Auto сторож, без окна запрет.
+  if (RULE_MODES.has(mode)) return null;
+  return guarded(mode, REASON_OTHER);
 }
 
 // Имя части пути без того, что Windows отбрасывает: поток после : (processes::$INDEX_ALLOCATION),
@@ -188,45 +199,93 @@ const isHooks = (raw) => bareName(raw) === 'hooks';
 const isClaude = (raw) => bareName(raw) === '.claude' || /^claude~\d/.test(String(raw).toLowerCase());
 const isProcesses = (raw) => bareName(raw) === 'processes' || /^proces~\d/.test(String(raw).toLowerCase());
 
-// Куда в кабинете попадает файл: 'data' (input/, tools/, templates/, .claude/hooks/), 'guarded'
-// (processes/, .claude/) или null. Относительный путь берётся от папки команды и от корня кабинета,
-// ~ от домашней папки. real(путь) даёт настоящий путь (ссылки, junction) или null.
-export function fileZone(file, { cwds = [], roots = [], platform = process.platform, home = homedir(), real = null } = {}) {
-  if (typeof file !== 'string' || !file.trim()) return null;
-  const P = platform === 'win32' ? win32 : posix;
-  const ci = platform === 'win32' || platform === 'darwin';
-  const norm = (p) => (ci ? fold(p).toLowerCase() : fold(p));
-  let raw = file.trim().replace(/^[\\/]{2}[?.][\\/](?!unc[\\/])/i, '');
+// Куда в кабинете попадает файл: { zone, literal }. zone: 'data' (input/, tools/, templates/,
+// .claude/hooks/), 'guarded' (processes/, .claude/, а также путь, про который нельзя точно сказать, в
+// кабинете он или нет) или null. literal: путь назван буквально (processes/... или .claude/... от корня,
+// без ссылок), так что правило ask из settings.json и защита Claude Code его точно узнают.
+// Относительный путь берётся от папки команды и от корня кабинета, ~ от домашней папки.
+// real(путь) даёт настоящий путь (ссылки, junction) или null.
+export function fileTarget(file, { cwds = [], roots = [], platform = process.platform, home = homedir(), real = null } = {}) {
+  const none = { zone: null, literal: false };
+  if (typeof file !== 'string' || !file.trim()) return none;
+  const win = platform === 'win32';
+  const P = win ? win32 : posix;
+  const ci = win || platform === 'darwin';
+  const segs = (p) => fold(p).split('/');
+  const low = (x) => (ci ? x.toLowerCase() : x);
+  let raw = file.trim();
+  // Пути устройств Windows: \\?\C:\... и \\.\C:\... это C:\..., \\?\UNC\сервер\... это \\сервер\...
+  // Другие (\\?\Volume{...}, \\.\pipe, \\?\GLOBALROOT) и сетевые пути не по корню кабинета точно не
+  // разобрать: они могут вести в кабинет (\\localhost\C$\...), поэтому считаются защищёнными.
+  let unsure = false;
+  if (win) {
+    if (/^[\\/]{2}[?.][\\/][a-z]:/i.test(raw)) raw = raw.slice(4);
+    else if (/^[\\/]{2}[?.][\\/]unc[\\/]/i.test(raw)) raw = `\\\\${raw.slice(8)}`;
+    if (/^[\\/]{2}/.test(raw)) unsure = true;
+  }
   if (/^~([\\/]|$)/.test(raw)) raw = P.join(home, raw.slice(1));
   const bases = [...cwds, ...roots].filter(Boolean);
-  const paths = P.isAbsolute(raw) ? [P.resolve(raw)] : bases.map((b) => P.resolve(b, raw));
-  if (real) for (const p of [...paths]) {
-    const r = real(p);
-    if (r) paths.push(r);
-  }
+  const direct = P.isAbsolute(raw) ? [P.resolve(raw)] : bases.map((b) => P.resolve(b, raw));
+  const viaReal = real ? direct.map((p) => real(p)).filter(Boolean) : [];
+  const rootSegs = roots.filter(Boolean).map((r) => segs(r).map(low));
   let zone = null;
-  for (const p of paths.map(norm)) {
-    for (const root of roots.filter(Boolean).map(norm)) {
-      if (!p.startsWith(`${root}/`)) continue;
-      const [first, second] = p.slice(root.length + 1).split('/');
-      if (isData(first) || (isClaude(first) && second !== undefined && isHooks(second))) return 'data';
-      if (isProcesses(first) || isClaude(first)) zone = 'guarded';
+  let inside = false;
+  let rawGuarded = false;
+  let allLiteral = true;
+  for (const [p, isReal] of [...direct.map((p) => [p, false]), ...viaReal.map((p) => [p, true])]) {
+    const ps = segs(p);
+    const pl = ps.map(low);
+    for (const rs of rootSegs) {
+      if (pl.length <= rs.length || rs.some((x, i) => x !== pl[i])) continue;
+      inside = true;
+      const first = ps[rs.length];
+      const second = ps[rs.length + 1];
+      if (isData(first) || (isClaude(first) && second !== undefined && isHooks(second))) return { zone: 'data', literal: false };
+      if (isProcesses(first) || isClaude(first)) {
+        zone = 'guarded';
+        if (!isReal) rawGuarded = true;
+        if (first !== 'processes' && first !== '.claude') allLiteral = false;
+      }
     }
   }
-  return zone;
+  if (zone === 'guarded') return { zone, literal: rawGuarded && allLiteral };
+  if (unsure && !inside) return { zone: 'guarded', literal: false };
+  return none;
 }
+
+export const fileZone = (file, ctx = {}) => fileTarget(file, ctx).zone;
 
 // Решение по записи файла: null или { decision, reason }.
+// Artifact пишет на диск только с out_dir: файлы ложатся в out_dir/<путь опубликованного файла>.
 export function classifyFile(file, ctx = {}) {
   if (!FILE_TOOLS.has(ctx.tool)) return null;
-  const zone = fileZone(file, ctx);
-  if (zone === 'data') return { decision: 'deny', reason: REASON_DATA };
-  if (zone === 'guarded' && !RULE_MODES.has(ctx.mode)) return guarded(ctx.mode, REASON_FILE);
-  return null;
+  const files = Array.isArray(file) ? file : [file];
+  let guardedHit = false;
+  let literal = true;
+  for (const f of files) {
+    const t = fileTarget(f, ctx);
+    if (t.zone === 'data') return { decision: 'deny', reason: REASON_DATA };
+    if (t.zone === 'guarded') {
+      guardedHit = true;
+      literal &&= t.literal && ctx.tool !== 'Artifact';
+    }
+  }
+  if (!guardedHit) return null;
+  // Обычный режим и путь назван буквально: окно спросят правило ask и защита .claude/ в Claude Code.
+  if (RULE_MODES.has(ctx.mode) && literal) return null;
+  return guarded(ctx.mode, REASON_FILE);
 }
 
-// Путь к файлу в вводе инструмента записи.
-export const filePathOf = (ti) => (typeof ti?.file_path === 'string' ? ti.file_path : typeof ti?.notebook_path === 'string' ? ti.notebook_path : '');
+// Пути, куда пишет инструмент записи. Artifact: out_dir и out_dir/<path или paths>; без out_dir не пишет.
+export function filePathsOf(tool, ti) {
+  if (tool === 'Artifact') {
+    if (typeof ti?.out_dir !== 'string' || !ti.out_dir.trim()) return [];
+    const dir = ti.out_dir.replace(/[\\/]+$/, '');
+    const names = [ti.path, ...(Array.isArray(ti.paths) ? ti.paths : [])].filter((x) => typeof x === 'string' && x);
+    return [`${dir}/_`, ...names.map((n) => `${dir}/${n}`)];
+  }
+  return [typeof ti?.file_path === 'string' ? ti.file_path : typeof ti?.notebook_path === 'string' ? ti.notebook_path : ''];
+}
 
 // Решение по входу хука целиком. ctx: roots, platform, cwds (если не заданы, папка из входа), real.
 export function decide(input, ctx = {}) {
@@ -236,7 +295,7 @@ export function decide(input, ctx = {}) {
   const cwds = ctx.cwds ?? [typeof input?.cwd === 'string' ? input.cwd : process.cwd()];
   const full = { ...ctx, tool, mode, cwds };
   try {
-    if (FILE_TOOLS.has(tool)) return classifyFile(filePathOf(ti), full);
+    if (FILE_TOOLS.has(tool)) return classifyFile(filePathsOf(tool, ti), full);
     if (!TOOLS.has(tool)) return null;
     // Команда в поле command; если поле названо иначе, проверяем все строки ввода.
     const command =

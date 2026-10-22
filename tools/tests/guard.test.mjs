@@ -14,9 +14,11 @@ import {
   REASON_DATA,
   REASON_FILE,
   REASON_NO_PROMPT,
+  REASON_OTHER,
   classify,
   classifyFile,
   decide,
+  fileTarget,
   fileZone,
   hookOutput,
   looseForms,
@@ -96,8 +98,8 @@ const ASK_POWERSHELL = [
   'Set-Content CLAUDE~1\\settings.local.json x',
 ];
 
-const NONE = [
-  // Команды курса целиком.
+// Команды курса целиком: без решения сторожа в любом режиме.
+const COURSE_CMDS = [
   'node tools/serve.mjs --open',
   'node tools/check.mjs',
   'node tools/check.mjs --json',
@@ -110,7 +112,11 @@ const NONE = [
   'python tools/read_table.py "input/case-azs/data/sales_azs_1c.csv" --rows 3',
   'py tools/read_table.py "input\\svodka\\Продажи сентябрь.xlsx" --sheet 2',
   'python tools/read_table.py "processes/svodka/data.csv"',
-  // Чтение input/ и другие обычные команды: без решения сторожа.
+];
+
+// Команды вне курса, которые не называют processes и .claude: в обычных режимах без решения сторожа
+// (окно спрашивает Claude Code), в Auto окно сторожа, без окна запрет.
+const OTHER = [
   "python -c \"import openpyxl; wb = openpyxl.load_workbook('input/case-azs/data/reestr_dogovorov.xlsx'); print(wb.sheetnames)\"",
   "python - <<'EOF'\nimport openpyxl\nwb = openpyxl.load_workbook('input/case-azs/data/reestr_dogovorov.xlsx')\nprint(wb.sheetnames)\nEOF",
   "awk -F';' '{print $1}' input/case-azs/data/sales_azs_1c.csv",
@@ -130,12 +136,14 @@ const NONE = [
   'mkdir -p input/svodka',
 ];
 
-const NONE_POWERSHELL = [
-  'node tools\\processes.mjs run svetofor-dogovorov',
-  'py tools\\read_table.py "input\\Отчёт сентябрь.xlsx"',
+const NONE = [...COURSE_CMDS, ...OTHER];
+
+const COURSE_POWERSHELL = ['node tools\\processes.mjs run svetofor-dogovorov', 'py tools\\read_table.py "input\\Отчёт сентябрь.xlsx"'];
+const OTHER_POWERSHELL = [
   "Get-Content input\\case-azs\\data\\sales_azs_1c.csv -TotalCount 5",
   "Copy-Item -LiteralPath 'input\\case-azs\\data\\reestr_dogovorov.xlsx' -Destination 'output\\reestr.xlsx'",
 ];
+const NONE_POWERSHELL = [...COURSE_POWERSHELL, ...OTHER_POWERSHELL];
 
 function check(table, ctx, want) {
   const wrong = [];
@@ -181,20 +189,30 @@ const CAB = '/home/aigul/ai-cabinet';
 const CASES = [
   ['Bash: запись в processes', 'Bash', { command: "echo '# x' >> processes/svetofor-dogovorov/run.py" }],
   ['Bash: запись в .claude', 'Bash', { command: 'echo {} > .claude/settings.local.json' }],
+  ['Monitor: запись в processes', 'Monitor', { command: 'echo x >> processes/x/run.py', description: 'x' }],
   ['Write processes/x/run.py', 'Write', { file_path: 'processes/x/run.py', content: 'x' }],
   ['Edit .claude/settings.json', 'Edit', { file_path: `${CAB}/.claude/settings.json`, old_string: 'a', new_string: 'b' }],
   ['Write input/x.csv', 'Write', { file_path: `${CAB}/input/x.csv`, content: 'x' }],
   ['Write tools/x.mjs', 'Write', { file_path: 'tools/x.mjs', content: 'x' }],
   ['Write output/x.csv', 'Write', { file_path: `${CAB}/output/x.csv`, content: 'x' }],
-  ['команда курса', 'Bash', { command: 'node tools/processes.mjs run svetofor-dogovorov' }],
+  ['команда вне курса: python output/fix.py', 'Bash', { command: 'python output/fix.py' }],
+  ['команда вне курса: node output/w.js', 'Bash', { command: 'node output/w.js' }],
+  ['команда вне курса: ls', 'Bash', { command: 'ls' }],
+  ['Monitor вне курса: tail -f output/log.txt', 'Monitor', { command: 'tail -f output/log.txt', description: 'x' }],
+  ['команда курса: processes.mjs run', 'Bash', { command: 'node tools/processes.mjs run svetofor-dogovorov' }],
+  ['команда курса: read_table.py', 'Bash', { command: 'python tools/read_table.py "input/x/a.csv" --rows 3' }],
 ];
 const A = { decision: 'ask', reason: REASON };
 const AF = { decision: 'ask', reason: REASON_FILE };
+const AO = { decision: 'ask', reason: REASON_OTHER };
 const N = { decision: 'deny', reason: REASON_NO_PROMPT };
 const D = { decision: 'deny', reason: REASON_DATA };
-const ROW_RULES = [A, A, null, null, D, D, null, null]; // окно спрашивают правила settings.json и Claude Code
-const ROW_AUTO = [A, A, AF, AF, D, D, null, null]; // окно спрашивает сторож: защиту .claude/ в Auto решает классификатор
-const ROW_CLOSED = [N, N, N, N, D, D, null, null]; // окна нет: запрет с подсказкой
+// Обычные режимы: окно спрашивают правила settings.json и Claude Code.
+const ROW_RULES = [A, A, A, null, null, D, D, null, null, null, null, null, null, null];
+// Auto: окно спрашивает сторож (защиту .claude/ и команды вне курса в Auto решает классификатор).
+const ROW_AUTO = [A, A, A, AF, AF, D, D, null, AO, AO, AO, AO, null, null];
+// Окна нет: запрет с подсказкой на всё, кроме команд курса и обычных файлов.
+const ROW_CLOSED = [N, N, N, N, N, D, D, null, N, N, N, N, null, null];
 const EXPECTED = {
   default: ROW_RULES,
   acceptEdits: ROW_RULES,
@@ -231,20 +249,41 @@ test('режимы: режим не передан или незнаком, зн
   assert.deepEqual(manual, ROW_RULES);
 });
 
-test('режимы: в обходе разрешений обходы из ревью и PowerShell запрещены, команды курса и чтение без решения', () => {
-  for (const mode of ['bypassPermissions', 'dontAsk']) {
+test('режимы: без окна любая команда вне курса запрещена (и обходы из ревью, и PowerShell, и Monitor), команды курса без решения', () => {
+  for (const mode of ['bypassPermissions', 'dontAsk', undefined, 'bubble']) {
     const wrong = [];
-    for (const [table, ctx] of [[ASK_BASH, NIX], [ASK_BASH, GITBASH], [ASK_POWERSHELL, WIN]]) {
+    const tables = [[ASK_BASH, NIX], [ASK_BASH, GITBASH], [ASK_POWERSHELL, WIN], [OTHER, NIX], [OTHER, { ...NIX, tool: 'Monitor' }], [OTHER_POWERSHELL, WIN]];
+    for (const [table, ctx] of tables) {
       for (const cmd of table) {
         const got = classify(cmd, { ...ctx, mode });
         if (got?.decision !== 'deny' || got.reason !== REASON_NO_PROMPT) wrong.push(`${mode}: ${JSON.stringify(cmd)}`);
       }
     }
-    for (const [table, ctx] of [[NONE, NIX], [NONE_POWERSHELL, WIN]]) {
+    for (const [table, ctx] of [[COURSE_CMDS, NIX], [COURSE_CMDS, { ...NIX, tool: 'Monitor' }], [COURSE_POWERSHELL, WIN]]) {
       for (const cmd of table) if (classify(cmd, { ...ctx, mode }) !== null) wrong.push(`${mode} (ждали null): ${JSON.stringify(cmd)}`);
     }
     assert.deepEqual(wrong, []);
   }
+});
+
+test('режимы: в Auto любая команда вне курса спрашивает окно, команды курса без решения', () => {
+  const wrong = [];
+  for (const [table, ctx] of [[OTHER, NIX], [OTHER, { ...NIX, tool: 'Monitor' }], [OTHER_POWERSHELL, WIN]]) {
+    for (const cmd of table) {
+      const got = classify(cmd, { ...ctx, mode: 'auto' });
+      if (got?.decision !== 'ask' || got.reason !== REASON_OTHER) wrong.push(JSON.stringify(cmd));
+    }
+  }
+  for (const [table, ctx] of [[ASK_BASH, NIX], [ASK_POWERSHELL, WIN]]) {
+    for (const cmd of table) {
+      const got = classify(cmd, { ...ctx, mode: 'auto' });
+      if (got?.decision !== 'ask' || got.reason !== REASON) wrong.push(`(processes/.claude) ${JSON.stringify(cmd)}`);
+    }
+  }
+  for (const [table, ctx] of [[COURSE_CMDS, NIX], [COURSE_POWERSHELL, WIN]]) {
+    for (const cmd of table) if (classify(cmd, { ...ctx, mode: 'auto' }) !== null) wrong.push(`(ждали null) ${JSON.stringify(cmd)}`);
+  }
+  assert.deepEqual(wrong, []);
 });
 
 const WROOT = 'C:\\Users\\Айгуль Н\\ai-cabinet';
@@ -260,6 +299,16 @@ test('файлы: любое написание пути в кабинет, ка
     [`${WROOT}\\processes \\x\\run.py`, 'guarded'],
     [`${WROOT}\\processes::$INDEX_ALLOCATION\\x\\run.py`, 'guarded'],
     [`\\\\?\\${WROOT}\\processes\\x\\run.py`, 'guarded'],
+    [`\\\\.\\${WROOT}\\input\\x.csv`, 'data'],
+    [`//?/${WROOT}/tools/x.mjs`, 'data'],
+    [`\\\\?\\${WROOT}\\output\\x.csv`, null],
+    // Сетевые пути и устройства без буквы диска: в кабинете они или нет, точно не сказать.
+    ['\\\\?\\UNC\\localhost\\C$\\Users\\Айгуль Н\\ai-cabinet\\processes\\x\\run.py', 'guarded'],
+    ['\\\\localhost\\C$\\Users\\Айгуль Н\\ai-cabinet\\processes\\x\\run.py', 'guarded'],
+    ['\\\\fileserver\\share\\x.csv', 'guarded'],
+    ['\\\\?\\Volume{12345678-1234-1234-1234-123456789abc}\\Users\\x.py', 'guarded'],
+    ['\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\x.py', 'guarded'],
+    ['\\\\.\\pipe\\x', 'guarded'],
     ['c:/users/айгуль н/AI-CABINET/Processes/x/run.py', 'guarded'],
     ['processes\\x\\run.py', 'guarded'],
     ['output\\..\\processes\\x\\run.py', 'guarded'],
@@ -294,6 +343,54 @@ test('файлы: любое написание пути в кабинет, ка
   const real = (p) => (p.startsWith(`${CAB}/output/link`) ? p.replace(`${CAB}/output/link`, `${CAB}/processes/x`) : null);
   if (fileZone(`${CAB}/output/link/run.py`, { ...XCTX, real }) !== 'guarded') wrong.push('ссылка output/link -> processes/x');
   assert.deepEqual(wrong, []);
+});
+
+test('файлы: в обычных режимах путь не буквально (8.3, точка, поток, регистр, ссылка, сетевой) спрашивает сам сторож', () => {
+  const W = (p, mode = 'acceptEdits') => classifyFile(p, { ...WCTX, tool: 'Write', mode });
+  const X = (p, ctx = {}) => classifyFile(p, { ...XCTX, tool: 'Edit', mode: 'default', ...ctx });
+  const wrong = [];
+  for (const p of [
+    `${WROOT}\\PROCES~1\\x\\run.py`,
+    `${WROOT}\\processes.\\x\\run.py`,
+    `${WROOT}\\processes \\x\\run.py`,
+    `${WROOT}\\processes::$INDEX_ALLOCATION\\x\\run.py`,
+    `${WROOT}\\Processes\\x\\run.py`,
+    `${WROOT}\\CLAUDE~1\\settings.local.json`,
+    '\\\\localhost\\C$\\Users\\Айгуль Н\\ai-cabinet\\processes\\x\\run.py',
+    '\\\\?\\Volume{12345678-1234-1234-1234-123456789abc}\\x.py',
+  ]) {
+    for (const mode of ['default', 'acceptEdits', 'plan']) {
+      const got = W(p, mode);
+      if (got?.decision !== 'ask' || got.reason !== REASON_FILE) wrong.push(`${mode} ${p}: ${got?.decision ?? 'null'}`);
+    }
+  }
+  // Буквально: решают правило ask и защита Claude Code, сторож молчит.
+  for (const p of [`${WROOT}\\processes\\x\\run.py`, 'processes\\x\\run.py', `\\\\?\\${WROOT}\\.claude\\settings.local.json`, `${WROOT}\\output\\x.csv`]) {
+    if (W(p) !== null) wrong.push(`(ждали null) ${p}`);
+  }
+  if (X(`${CAB}/processes/x/run.py`) !== null) wrong.push('(ждали null) linux processes');
+  if (X(`${CAB}/PROCESSES/x/run.py`)?.decision !== 'ask') wrong.push('linux PROCESSES');
+  // Ссылка output/link -> processes/x: правило по пути ссылки не сработает, спрашивает сторож.
+  const real = (p) => (p.startsWith(`${CAB}/output/link`) ? p.replace(`${CAB}/output/link`, `${CAB}/processes/x`) : p);
+  if (X(`${CAB}/output/link/run.py`, { real })?.decision !== 'ask') wrong.push('ссылка output/link');
+  if (X(`${CAB}/processes/x/run.py`, { real }) !== null) wrong.push('(ждали null) processes с настоящим путём');
+  assert.deepEqual(wrong, []);
+  assert.deepEqual(fileTarget(`${CAB}/processes/x/run.py`, XCTX), { zone: 'guarded', literal: true });
+  assert.deepEqual(fileTarget(`${CAB}/output/x`, XCTX), { zone: null, literal: false });
+});
+
+test('файлы: Artifact сохраняет на диск только с out_dir; папка и путь опубликованного файла проверяются', () => {
+  const ctx = { roots: [CAB], platform: 'linux' };
+  const art = (ti, mode) => decide({ tool_name: 'Artifact', tool_input: ti, cwd: CAB, permission_mode: mode }, ctx);
+  assert.equal(art({ action: 'read', url: 'https://claude.ai/artifact/x', path: 'run.py' }, 'bypassPermissions'), null);
+  assert.equal(art({ action: 'publish', file_path: 'processes/x/run.py' }, 'bypassPermissions'), null);
+  assert.equal(art({ action: 'read', path: 'a.csv', out_dir: `${CAB}/output/x` }, 'bypassPermissions'), null);
+  assert.deepEqual(art({ action: 'read', path: 'run.py', out_dir: 'processes/x' }, 'acceptEdits'), AF);
+  assert.deepEqual(art({ action: 'read', path: 'run.py', out_dir: 'processes/x' }, 'auto'), AF);
+  assert.deepEqual(art({ action: 'read', path: 'run.py', out_dir: 'processes/x' }, 'bypassPermissions'), N);
+  assert.deepEqual(art({ action: 'read', paths: ['a.css', 'processes/x/run.py'], out_dir: CAB }, 'default'), AF);
+  assert.deepEqual(art({ action: 'read', path: 'x.csv', out_dir: `${CAB}/input` }, 'auto'), D);
+  assert.deepEqual(art({ action: 'read', path: 'hooks/guard.mjs', out_dir: `${CAB}/.claude` }, 'default'), D);
 });
 
 test('файлы: Write, Edit, MultiEdit, NotebookEdit; путь из file_path или notebook_path; другие инструменты без решения', () => {
@@ -333,7 +430,8 @@ test('тексты: по-русски, без тире и без слов, ко�
   assert.equal(REASON_FILE, 'Claude хочет изменить программу процесса или настройки кабинета. Разрешите, только если вы сами это просили.');
   assert.equal(REASON_NO_PROMPT, 'В этом режиме Claude не может спросить вас, поэтому изменения программ процессов и настроек кабинета закрыты. Переключите режим на обычный (Shift+Tab) и повторите.');
   assert.equal(REASON_DATA, 'Это файлы курса или ваши исходные данные, Claude их не меняет.');
-  for (const r of [REASON, REASON_FILE, REASON_NO_PROMPT, REASON_DATA]) assert.doesNotMatch(r, /[\u2012-\u2015]|скрипт|порт|сервер|терминал|консол|в фоне/i);
+  assert.equal(REASON_OTHER, 'Claude хочет выполнить команду, которая не входит в курс. Разрешите, только если вы сами это просили.');
+  for (const r of [REASON, REASON_FILE, REASON_NO_PROMPT, REASON_DATA, REASON_OTHER]) assert.doesNotMatch(r, /[\u2012-\u2015]|скрипт|порт|сервер|терминал|консол|в фоне/i);
 });
 
 test('hookOutput: формат PreToolUse, не-ASCII экранирован, без решения пусто', () => {
@@ -364,10 +462,17 @@ test('хук как процесс: JSON из stdin, решение в stdout, �
   const ps = runHook({ tool_name: 'PowerShell', cwd: ROOT, permission_mode: 'default', tool_input: { command: 'Set-Content -Path:processes\\x\\run.py -Value:x' } });
   assert.equal(outOf(ps).permissionDecision, 'ask');
   for (const command of ['node tools/processes.mjs run x', 'echo x > tools/serve.mjs', "awk '{print $1}' input/a.csv"]) {
-    const r = runHook({ tool_name: 'Bash', cwd: ROOT, permission_mode: 'bypassPermissions', tool_input: { command } });
+    const r = runHook({ tool_name: 'Bash', cwd: ROOT, permission_mode: 'acceptEdits', tool_input: { command } });
     assert.equal(r.status, 0, command);
     assert.equal(r.stdout, '', command);
   }
+  // В обходе разрешений команда курса без решения, любая другая запрещена; Monitor так же, как Bash.
+  assert.equal(runHook({ tool_name: 'Bash', cwd: ROOT, permission_mode: 'bypassPermissions', tool_input: { command: 'node tools/processes.mjs run x' } }).stdout, '');
+  for (const tool_name of ['Bash', 'PowerShell', 'Monitor']) {
+    const r = runHook({ tool_name, cwd: ROOT, permission_mode: 'bypassPermissions', tool_input: { command: 'python output/fix.py', description: 'x' } });
+    assert.deepEqual(outOf(r), { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: REASON_NO_PROMPT }, tool_name);
+  }
+  assert.equal(outOf(runHook({ tool_name: 'Monitor', cwd: ROOT, permission_mode: 'auto', tool_input: { command: 'tail -f output/log.txt' } })).permissionDecisionReason, REASON_OTHER);
   // Без режима во входе: спросить нельзя.
   assert.deepEqual(outOf(runHook({ tool_name: 'Bash', cwd: ROOT, tool_input: { command: 'echo x > processes/x/run.py' } })), {
     hookEventName: 'PreToolUse',
@@ -431,11 +536,11 @@ test('хук как процесс: корень из CLAUDE_PROJECT_DIR и на
   }
 });
 
-test('settings.json: сторож без оболочки (exec) на Bash, PowerShell и записи файлов, правка хука под запретом, py для таблиц', () => {
+test('settings.json: сторож без оболочки (exec) на Bash, PowerShell, Monitor, записи файлов и Artifact, правка хука под запретом, py для таблиц', () => {
   const s = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf8'));
   const pre = s.hooks?.PreToolUse ?? [];
   const has = (m, tool) => new RegExp(`(^|\\|)${tool}(\\||$)`).test(m);
-  const tools = ['Bash', 'PowerShell', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
+  const tools = ['Bash', 'PowerShell', 'Monitor', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Artifact'];
   const entry = pre.find((h) => tools.every((tool) => has(h.matcher, tool)));
   assert.ok(entry, `нет PreToolUse с matcher ${tools.join('|')}`);
   const hook = entry.hooks.find((h) => h.type === 'command');
