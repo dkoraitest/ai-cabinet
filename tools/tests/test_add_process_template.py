@@ -1,5 +1,5 @@
-"""Образцы программы процесса из скилла add-process (programma.md): основа, словарь, шаблон Word,
-два документа Word (сверка договора с типовой формой).
+"""Образцы программы процесса из скилла add-process: основа, словарь, шаблон Word (programma.md),
+два документа Word, сверка договора с типовой формой (programma-dva-dokumenta.md).
 
 Каждый образец собирается в программу так, как велит справка: основа, блок, пример main. Программа
 запускается как программа процесса, её result.json проверяет node tools/processes.mjs list (та же схема,
@@ -8,6 +8,7 @@
 Запуск: python -m unittest discover -s tools/tests -p "test_*.py"
 """
 
+import copy
 import importlib.util
 import json
 import re
@@ -21,6 +22,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent.parent
 ROOT = TOOLS.parent
 GUIDE = ROOT / ".claude" / "skills" / "add-process" / "programma.md"
+GUIDE_DVA = ROOT / ".claude" / "skills" / "add-process" / "programma-dva-dokumenta.md"
 CASE = ROOT / "input" / "case-azs" / "data"
 NODE = shutil.which("node")
 
@@ -33,10 +35,12 @@ except ImportError:
 
 
 def blocks():
-    text = GUIDE.read_text(encoding="utf-8")
-    found = re.findall(r"```python\n(.*?)```", text, re.S)
+    found = re.findall(r"```python\n(.*?)```", GUIDE.read_text(encoding="utf-8"), re.S)
+    found_dva = re.findall(r"```python\n(.*?)```", GUIDE_DVA.read_text(encoding="utf-8"), re.S)
+    assert len(found) == 5, f"в programma.md нужны 5 образцов, найдено {len(found)}"
+    assert len(found_dva) == 2, f"в programma-dva-dokumenta.md нужны 2 образца, найдено {len(found_dva)}"
     named = {}
-    for b in found:
+    for b in found + found_dva:
         if b.startswith('"""<Название процесса>'):
             named["base"] = b
         elif b.startswith("# --- Словарь"):
@@ -51,7 +55,7 @@ def blocks():
             named["dva"] = b
         elif "two_documents(" in b and b.startswith("def main():"):
             named["main_dva"] = b
-    assert len(found) == 7 and len(named) == 7, f"в справке нужны 7 образцов, найдено {sorted(named)}"
+    assert len(named) == 7, f"в справке нужны 7 образцов, найдено {sorted(named)}"
     return named
 
 
@@ -453,6 +457,38 @@ CASE9_DIFFS = {
     "6.2": "изменён",
     "9/нет": "удалён",
 }
+FORM_FILE, DOC_FILE = "dogovor_tipovaya_forma.docx", "dogovor_postavshchika.docx"
+RISK = "оценить риск: решает юрист"
+
+
+def set_text(p, text):
+    """Текст абзаца одним куском, с оформлением первого куска."""
+    if p.runs:
+        p.runs[0].text = text
+        for r in p.runs[1:]:
+            r._r.getparent().remove(r._r)
+    else:
+        p.add_run(text)
+
+
+def case_variant(name, dst, change=None):
+    """Копия файла кейса 9, изменённая функцией change(документ)."""
+    import docx
+    d = docx.Document(str(CASE / name))
+    if change:
+        change(d)
+    d.save(str(dst))
+    return dst
+
+
+def headings(change):
+    """Правка заголовков разделов (стиль Heading 2): change(абзац, номер, название)."""
+    def fn(d):
+        for p in d.paragraphs:
+            m = re.match(r"(\d+)\.\s+(.*)", p.text)
+            if p.style.name == "Heading 2" and m:
+                change(p, int(m.group(1)), m.group(2))
+    return fn
 
 
 @unittest.skipUnless(HAVE_LIBS, "нет openpyxl или python-docx")
@@ -462,14 +498,30 @@ class TwoDocuments(unittest.TestCase):
         self.addCleanup(self.c.close)
 
     def put_case(self, *names):
-        for name in names or ("dogovor_tipovaya_forma.docx", "dogovor_postavshchika.docx"):
+        for name in names or (FORM_FILE, DOC_FILE):
             shutil.copy(CASE / name, self.c.input / name)
+
+    def run_variant(self, change_form=None, change_doc=None):
+        """Программа на копиях файлов кейса с правками; result.json."""
+        case_variant(FORM_FILE, self.c.input / FORM_FILE, change_form)
+        case_variant(DOC_FILE, self.c.input / DOC_FILE, change_doc)
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return self.c.result()
+
+    def spec_of(self, change_doc):
+        """Проверка спецификации договора кейса с правкой."""
+        m = self.c.module()
+        doc = m.read_document(case_variant(DOC_FILE, self.c.input / DOC_FILE, change_doc))
+        return m.check_spec(doc, dict(m.contract_card(doc)).get(m.SUM_CARD))
 
     def test_rule_blanks_numbers_minor_edit(self):
         m = self.c.module()
         self.assertTrue(m.same_text("г. Астана, [дата]", "г. Астана, 18.09.2026"))
         self.assertTrue(m.same_text("Исх. № ____ от «___» ________ 20__ г.", "Исх. № 41 от «18» сентября 2026 г."))
         self.assertTrue(m.same_text("Сумма «  » тенге", "Сумма «120 000» тенге"))
+        for blank in ("<срок>", "{срок}", "……", "......", "«...»"):
+            self.assertTrue(m.same_text(f"Срок поставки: {blank} дней.", "Срок поставки: 5 дней."), blank)
         self.assertTrue(m.same_text("Цена «ТОВАРА» фиксируется", "цена товара  фиксируется."))  # регистр, кавычки, пробелы
         self.assertFalse(m.same_text("г. Астана, [дата]", "г. Алматы, 18.09.2026"))
         self.assertEqual(m.numbers_in("составляет 46\u00a0400\u00a0000,00 тенге"), [46400000.0])
@@ -477,9 +529,47 @@ class TwoDocuments(unittest.TestCase):
         self.assertEqual(m.numbers_in("120 200 000 (сто двадцать миллионов двести тысяч) тенге"), [120200000.0])
         _, st = m.pair_status("уведомляет в течение 3 (трёх) рабочих дней.", "уведомляет в течение трёх рабочих дней.")
         self.assertEqual(st, "изменён (мелкая правка)")
-        _, st = m.pair_status("неустойку 0,1 % в день, но не более 10 % от стоимости партии.",
-                              "неустойку 0,1 % в день, но не более 5 % от стоимости партии.")
-        self.assertEqual(st, "изменён")
+        # Числа, отрицание, «более/менее», сторона: смысл другой, это не мелкая правка.
+        for before, after in (
+            ("неустойку 0,1 % в день, но не более 10 % от стоимости партии.",
+             "неустойку 0,1 % в день, но не более 5 % от стоимости партии."),
+            ("неустойку 0,1 % в день, но не более 10 % от стоимости непоставленного Товара по договору.",
+             "неустойку 0,1 % в день, но не менее 10 % от стоимости непоставленного Товара по договору."),
+            ("За просрочку поставки Поставщик уплачивает неустойку 0,1 % от стоимости непоставленного Товара за каждый день",
+             "За просрочку поставки Покупатель уплачивает неустойку 0,1 % от стоимости непоставленного Товара за каждый день"),
+            ("Поставщик вправе расторгнуть договор в одностороннем порядке, уведомив другую сторону за 30 дней.",
+             "Поставщик не вправе расторгнуть договор в одностороннем порядке, уведомив другую сторону за 30 дней."),
+        ):
+            score, st = m.pair_status(before, after)
+            self.assertGreaterEqual(score, m.MINOR, after)
+            self.assertEqual(st, "изменён", after)
+
+    def test_field_filled_with_clause_goes_to_person(self):
+        m = self.c.module()
+        suspicious = (
+            ("Поставщик: [наименование, БИН, адрес, банковские реквизиты].",
+             "Поставщик: ТОО «X». Стороны договорились, что раздел 6 не применяется."),
+            ("3.2. Срок поставки партии: [срок] с даты заявки.",
+             "3.2. Срок поставки партии: 5 календарных дней, при этом Поставщик вправе в одностороннем порядке "
+             "продлить срок поставки на 30 дней с даты заявки."),
+            ("4.1. Общая сумма договора составляет [сумма] тенге с учётом НДС и определяется Спецификацией.",
+             "4.1. Общая сумма договора составляет 120 200 000 тенге без учёта НДС; НДС уплачивается Покупателем "
+             "сверх суммы, сумма в тенге с учётом НДС и определяется Спецификацией."),
+        )
+        for form, doc in suspicious:
+            self.assertTrue(m.same_text(form, doc), doc)  # текст формы на месте, отличием не считается
+            problems = m.field_problems(form, doc)
+            self.assertEqual(len(problems), 1, doc)
+            self.assertIn("нет ли в нём новых условий", problems[0])
+        fine = (
+            ("г. Астана, [дата]", "г. Астана, 18.09.2026"),
+            ("в лице [должность], действующего", "в лице директора Иванова А. Б., действующего"),
+            ("Покупатель: ТОО «Дала Ойл», [адрес].", "Покупатель: ТОО «Дала Ойл», г. Астана, ул. Абая, 10."),
+            ("составляет [сумма] тенге", "составляет 120 200 000 (сто двадцать миллионов двести тысяч) тенге"),
+        )
+        for form, doc in fine:
+            self.assertEqual(m.field_problems(form, doc), [], doc)
+        self.assertEqual(m.field_problems("г. Астана, [дата]", "г. Астана, [дата]"), ["поле [дата] не заполнено"])
 
     def test_spec_numbers_not_read_go_to_person(self):
         m = self.c.module()
@@ -496,12 +586,151 @@ class TwoDocuments(unittest.TestCase):
         unread = dict(res["unread"])
         self.assertEqual(unread["спецификация, Бензин АИ-95"], "не число: количество «[количество]», сумма «н/д»")
         self.assertEqual(unread["Сумма договора, п. 4.1"], "в тексте пункта нет суммы числом")  # прописью не считается
+        self.assertIn("нет строки «Итого» или «Всего»", unread["спецификация"])
         self.assertEqual(res["rows"][0], ["Бензин АИ-92", 200000, 228, 45600000, 45600000, 0])
-        self.assertEqual(res["rows"][-2], ["Итого", None, None, None, None, None])  # итог не пересчитать: пропуск
+        self.assertEqual(res["rows"][-2], ["Итого по пересчёту", None, None, None, None, None])  # пропуск: не пересчитать
+        self.assertIsNone(res["diff"])
         self.assertEqual(res["tech"], [["Бензин АИ-92", 200000, 200000, 0], ["Бензин АИ-95", None, None, None]])
 
+    def test_spec_totals_vsego_merged_missing_vat(self):
+        def vsego(d):  # «Всего» в столбце №, ячейка товара пустая
+            row = d.tables[0].rows[-1]
+            set_text(row.cells[0].paragraphs[0], "Всего")
+            set_text(row.cells[1].paragraphs[0], "")
+        res = self.spec_of(vsego)
+        self.assertIn(["Всего", None, None, 120200000, 118200000, 2000000], res["rows"])
+        self.assertEqual(res["diff"], 2000000)
+
+        def merged(d):  # «Итого» в ячейке, объединённой на пять столбцов
+            row = d.tables[0].rows[-1]
+            cell = row.cells[0].merge(row.cells[4])
+            for p in cell.paragraphs[1:]:
+                p._p.getparent().remove(p._p)
+            set_text(cell.paragraphs[0], "Итого")
+        res = self.spec_of(merged)
+        self.assertIn(["Итого", None, None, 120200000, 118200000, 2000000], res["rows"])
+        self.assertEqual(res["unread"], [])
+
+        def no_total(d):
+            tr = d.tables[0].rows[-1]._tr
+            tr.getparent().remove(tr)
+        res = self.spec_of(no_total)
+        self.assertIsNone(res["diff"])
+        self.assertIn("нет строки «Итого» или «Всего»", dict(res["unread"])["спецификация"])
+        self.assertIn(["Сумма договора, п. 4.1", None, None, 120200000, 118200000, 2000000], res["rows"])
+
+        def vat(d):  # «Итого без НДС», «НДС 12 %», «Итого с НДС»
+            t = d.tables[0]
+            last = t.rows[-1]._tr
+            for _ in range(2):
+                last.addnext(copy.deepcopy(last))
+            for row, (name, value) in zip(t.rows[-3:], (("Итого без НДС", "107 321 428,57"), ("НДС 12 %", "12 878 571,43"),
+                                                        ("Итого с НДС", "120 200 000,00"))):
+                set_text(row.cells[1].paragraphs[0], name)
+                set_text(row.cells[5].paragraphs[0], value)
+        res = self.spec_of(vat)
+        self.assertIsNone(res["diff"])
+        note = dict(res["unread"])["спецификация"]
+        self.assertIn("несколько итоговых строк (Итого без НДС, НДС 12 %, Итого с НДС)", note)
+        self.assertIn("118 200 000,00", note)
+        self.assertEqual([p for p in res["problems"] if "НДС" in p], [])  # строки НДС товаром не считаются
+        self.assertIn("Дизельное топливо: 46 400 000,00 при пересчёте 44 400 000,00", res["problems"])
+
+    def test_headings_auto_numbered_roman_and_final_dot(self):
+        """Номер раздела списком Word, римский номер, «4. Название.» с точкой без стиля: тот же разбор."""
+        romans = "I II III IV V VI VII VIII IX X XI".split()
+
+        def dot(p, n, title):
+            p.style = p.part.document.styles["Normal"]
+            set_text(p, f"{n}. {title}.")
+        variants = {
+            "нумерация списком": (headings(lambda p, n, title: set_text(p, title)), "Конфиденциальность/нет"),
+            "римские номера": (headings(lambda p, n, title: set_text(p, f"{romans[n - 1]}. {title}")), "IX/нет"),
+            "точка в конце": (headings(dot), "9/нет"),
+        }
+        for name, (change, deleted) in variants.items():
+            with self.subTest(name):
+                r = self.run_variant(change, change)
+                expected = {k: v for k, v in CASE9_DIFFS.items() if k != "9/нет"} | {deleted: "удалён"}
+                self.assertEqual(r["sverka"]["по строкам"], expected)
+                self.assertEqual(r["sverka"]["итоги"]["удалено"], 1)
+                status = {row[0]: row[1] for row in r["rows"]}
+                self.assertEqual(status["10.1/9.1"], "совпадает")
+                self.assertFalse([row for row in r["rows"] if str(row[0]).startswith(("документ:", "карточка:"))])
+                self.assertIn("Сумма договора, п. 4.1: 120 200 000,00 при пересчёте 118 200 000,00", r["summary"])
+
+    def test_sections_not_found_go_to_person(self):
+        def plain_headings(p, n, title):  # заголовок обычным жирным текстом, без номера и стиля
+            p.style = p.part.document.styles["Normal"]
+            set_text(p, title.upper())
+            p.runs[0].bold = True
+        r = self.run_variant(headings(plain_headings), headings(plain_headings))
+        self.assertEqual(r["status"], "yellow")
+        self.assertIn("Сверка неполная", r["summary"])
+        why = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        self.assertTrue(any(row[0] == f"документ: {DOC_FILE}" and "разделы не распознаны" in row[-1] for row in why))
+
+    def test_contract_in_table_goes_to_person(self):
+        """Договор свёрстан таблицей в два столбца (казахский и русский текст): вне таблиц текста нет."""
+        def bilingual(d):
+            from docx.oxml.ns import qn
+            body = d.element.body
+            paras = [e for e in body if e.tag == qn("w:p")]
+            table = d.add_table(rows=1, cols=2)
+            left, right = table.rows[0].cells
+            for p in paras:
+                right._tc.append(p)
+            left.paragraphs[0].text = "Қазақ тіліндегі мәтін"
+            body.insert(0, table._tbl)
+        r = self.run_variant(bilingual, bilingual)
+        self.assertEqual(r["status"], "yellow")
+        self.assertIn("Сверка неполная", r["summary"])
+        self.assertEqual(r["sverka"]["по строкам"], {})
+        why = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
+        self.assertTrue(any(row[0] == f"документ: {DOC_FILE}" and "вне таблиц нет текста" in row[-1] for row in why))
+
+    def test_form_blank_styles_and_underlined_spaces(self):
+        """Поля формы в другом виде: [..] заменены на <..>, {..}, ……, точки, подчёркнутые пробелы. Отличия те же."""
+        def blanks(write):
+            def fn(d):
+                for p in d.paragraphs:
+                    if "[" in p.text:
+                        parts = re.split(r"\[[^\]]*\]", p.text)
+                        for r in list(p.runs):
+                            r._r.getparent().remove(r._r)
+                        for k, part in enumerate(parts):
+                            p.add_run(part)
+                            if k < len(parts) - 1:
+                                write(p)
+            return fn
+
+        def underline(p):
+            p.add_run("            ").underline = True
+        for name, write in (("<..>", lambda p: p.add_run("<указать>")), ("{..}", lambda p: p.add_run("{сумма}")),
+                            ("……", lambda p: p.add_run("…………")), ("точки", lambda p: p.add_run("...........")),
+                            ("подчёркнутые пробелы", underline)):
+            with self.subTest(name):
+                r = self.run_variant(blanks(write))
+                self.assertEqual(r["sverka"]["по строкам"], CASE9_DIFFS)
+
+    def test_pairs_do_not_cross(self):
+        """5.1 удалён, новый 5.3 о приёмке после 5.2: «удалён» и «добавлен», не «изменён» крест-накрест."""
+        def change(d):
+            p51 = next(p for p in d.paragraphs if p.text.startswith("5.1."))
+            p52 = next(p for p in d.paragraphs if p.text.startswith("5.2."))
+            p51._p.getparent().remove(p51._p)
+            new = copy.deepcopy(p52._p)
+            p52._p.addnext(new)
+            from docx.text.paragraph import Paragraph
+            set_text(Paragraph(new, p52._parent), "5.3. Приёмка производится представителем Покупателя на основании доверенности.")
+        r = self.run_variant(None, change)
+        rows = r["sverka"]["по строкам"]
+        self.assertEqual(rows["5.1/нет"], "удалён")
+        self.assertEqual(rows["нет/5.3"], "добавлен")
+        self.assertEqual(rows["5.2"], "изменён (мелкая правка)")
+
     def test_no_form_clear_stop(self):
-        self.put_case("dogovor_postavshchika.docx")
+        self.put_case(DOC_FILE)
         proc = self.c.run()
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
         self.assertIn("нет типовой формы", proc.stderr)
@@ -521,17 +750,20 @@ class TwoDocuments(unittest.TestCase):
         # Заполненные поля формы (номер, дата, поставщик, сумма, реквизиты) не отличие.
         for key in ("шапка, абз. 1", "шапка, абз. 2", "шапка, абз. 3", "4.1"):
             self.assertEqual(status[key], "совпадает", key)
-        n = len(CASE9_DIFFS)
+        # Человеку: шесть отличий (риск) и два поля реквизитов, заполненных несколькими фразами.
+        n = len(CASE9_DIFFS) + 2
         self.assertEqual(r["row_status"], ["info"] * n + [None] * (len(r["rows"]) - n))
         self.assertEqual(r["row_note"][:n], ["разобрать вручную"] * n)
-        manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")
-        self.assertEqual(len(manual), n + 1)
-        self.assertTrue(all(row[-1] == "оценить риск: решает юрист" for row in manual[1:]))
+        manual = manual_rows(self.c.out / "razobrat-vruchnuyu.xlsx")[1:]
+        self.assertEqual(sorted(row[0] for row in manual if row[-1] == RISK), sorted(CASE9_DIFFS))
+        self.assertEqual([row[0] for row in manual if row[-1] != RISK], ["11, абз. 1/10, абз. 1", "11, абз. 2/10, абз. 2"])
+        self.assertTrue(all("нет ли в нём новых условий" in row[-1] for row in manual if row[-1] != RISK))
         self.assertEqual(r["sverka"]["по строкам"], CASE9_DIFFS)
         self.assertEqual(r["sverka"]["итоги"], {"изменено": 3, "добавлено": 1, "удалено": 1, "мелких правок": 1,
                                                 "разница спецификации": 2000000})
         self.assertEqual(r["status"], "yellow")  # цифры не сходятся
-        self.assertIn("Разобрать вручную: 6 (файл razobrat-vruchnuyu.xlsx)", r["summary"])
+        self.assertNotIn("Сверка неполная", r["summary"])
+        self.assertIn(f"Разобрать вручную: {n} (файл razobrat-vruchnuyu.xlsx)", r["summary"])
 
         book = self.c.out / "sverka-dogovora.xlsx"
         self.assertIn("output/proba/sverka-dogovora.xlsx", r["files"])
