@@ -752,6 +752,7 @@ const TEXT_LIMIT = 200 * 1024;
 const SKILL_EXT = new Set(['.md', '.txt', '.zip', '.skill']);
 const READ_EXT = new Set([...SKILL_EXT, '.docx']);
 const TEXT_EXT = /\.(md|txt|markdown)$/i;
+const PROGRAM_EXT = /\.py$/i;
 
 // Встроенная команда скилла: восклицательный знак и сразу команда в обратных кавычках или блок кода,
 // открытый тремя обратными кавычками с восклицательным знаком. Claude Code выполняет её при запуске скилла
@@ -894,9 +895,15 @@ export function readInputFile(root, slug, name) {
         out.push('', `Текст ${e.name}:`, text);
         texts.push({ label: e.name, text });
       }
-      const other = entries.filter((e) => !textual.includes(e));
+      // Программа расчёта, которую чат положил в скилл (scripts/build.py): основа для программы процесса.
+      // Она пришла извне: только показываем текст, не запускаем.
+      const programs = entries.filter((e) => PROGRAM_EXT.test(e.name));
+      for (const e of programs) {
+        out.push('', `Программа ${e.name} из архива (только текст: программу из архива не запускают, это файл извне):`, decodeText(e.read()));
+      }
+      const other = entries.filter((e) => !textual.includes(e) && !programs.includes(e));
       if (other.length) {
-        out.push('', `Остальные файлы архива (${other.map((e) => e.name).join(', ')}) здесь не показаны: в кабинет переносится только текст скилла.`);
+        out.push('', `Остальные файлы архива (${other.map((e) => e.name).join(', ')}) здесь не показаны.`);
       }
     }
   } catch (e) {

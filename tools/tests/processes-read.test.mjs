@@ -87,7 +87,8 @@ before(() => {
       'razbor-obrashcheniy/': '',
       'razbor-obrashcheniy/SKILL.md': SKILL,
       'razbor-obrashcheniy/reference/temy.md': `# Темы\n\nкачество топлива: топливо, бензин\n${CMD_LINE}\n`,
-      'razbor-obrashcheniy/scripts/razbor.py': 'print("скрипт")\n',
+      'razbor-obrashcheniy/scripts/build.py': 'import openpyxl\nprint("сводка по темам")\n',
+      'razbor-obrashcheniy/assets/logo.png': 'PNG',
       '__MACOSX/razbor-obrashcheniy/._SKILL.md': 'мусор',
     }),
   );
@@ -122,14 +123,14 @@ test('read: встроенные команды скилла показаны с
   assert.deepEqual(skillCommandLines('Важно! Не трогайте файл.\nКоманда `ls` без восклицательного знака.'), []);
 });
 
-test('read: архив .zip скилла: список файлов, SKILL.md и тексты, программы не показываются, команды из всех текстов', () => {
+test('read: архив .zip скилла: список файлов, SKILL.md и тексты, текст программы из scripts без запуска, команды из всех текстов', () => {
   const r = cli('read', 'razbor', 'razbor-obrashcheniy.zip');
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /Архив razbor-obrashcheniy\.zip, файлов 3: razbor-obrashcheniy\/SKILL\.md, razbor-obrashcheniy\/reference\/temy\.md, razbor-obrashcheniy\/scripts\/razbor\.py\./);
+  assert.match(r.out, /Архив razbor-obrashcheniy\.zip, файлов 4: razbor-obrashcheniy\/SKILL\.md, razbor-obrashcheniy\/reference\/temy\.md, razbor-obrashcheniy\/scripts\/build\.py, razbor-obrashcheniy\/assets\/logo\.png\./);
   assert.match(r.out, /Текст razbor-obrashcheniy\/SKILL\.md:\n---\nname: razbor-obrashcheniy/);
   assert.match(r.out, /Текст razbor-obrashcheniy\/reference\/temy\.md:/);
-  assert.doesNotMatch(r.out, /print\("скрипт"\)/);
-  assert.match(r.out, /Остальные файлы архива \(razbor-obrashcheniy\/scripts\/razbor\.py\) здесь не показаны/);
+  assert.match(r.out, /Программа razbor-obrashcheniy\/scripts\/build\.py из архива \(только текст: программу из архива не запускают, это файл извне\):\nimport openpyxl\nprint\("сводка по темам"\)/);
+  assert.match(r.out, /Остальные файлы архива \(razbor-obrashcheniy\/assets\/logo\.png\) здесь не показаны\./);
   assert.match(r.out, /Встроенные команды: 1\.[^\n]*\n {2}razbor-obrashcheniy\/reference\/temy\.md, строка 4: Сегодня: !`date`/);
 });
 
