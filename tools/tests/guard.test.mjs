@@ -1,23 +1,38 @@
 // Сторож .claude/hooks/guard.mjs: любая команда, кроме команд курса, которая упоминает processes или .claude
 // в любом написании или идёт изнутри них, спрашивает окно. tools/, templates/, input/ закрывают запреты Edit.
+// Запись файлов в input/, tools/, templates/, .claude/hooks/ запрещена всегда. В режимах, где окна нет
+// (bypassPermissions, dontAsk, режим не передан или незнаком), вместо окна запрет (D70).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REASON, classify, hookOutput, looseForms } from '../../.claude/hooks/guard.mjs';
+import {
+  REASON,
+  REASON_DATA,
+  REASON_FILE,
+  REASON_NO_PROMPT,
+  classify,
+  classifyFile,
+  decide,
+  fileZone,
+  hookOutput,
+  looseForms,
+} from '../../.claude/hooks/guard.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = join(ROOT, '.claude', 'hooks', 'guard.mjs');
 
-const NIX = { tool: 'Bash', roots: ['/home/aigul/ai-cabinet'], cwds: ['/home/aigul/ai-cabinet'], platform: 'linux' };
+// Таблицы команд ниже проверяются в режиме автоприёма правок (режим кабинета по умолчанию).
+const NIX = { tool: 'Bash', roots: ['/home/aigul/ai-cabinet'], cwds: ['/home/aigul/ai-cabinet'], platform: 'linux', mode: 'acceptEdits' };
 const WIN = {
   tool: 'PowerShell',
   roots: ['C:\\Users\\Айгуль Н\\ai-cabinet'],
   cwds: ['C:\\Users\\Айгуль Н\\ai-cabinet'],
   platform: 'win32',
+  mode: 'acceptEdits',
 };
 const GITBASH = { ...WIN, tool: 'Bash' };
 
@@ -156,6 +171,141 @@ test('сторож: команда изнутри processes/ или .claude/ к�
   assert.equal(classify('echo x > run.py', ctx)?.decision, 'ask');
   assert.equal(classify('Set-Content run.py x', { ...WIN, cwds: ['C:\\Users\\Айгуль Н\\AI-CABINET\\Processes\\x'] })?.decision, 'ask');
   assert.equal(classify('cat processes/x/run.py', { ...NIX, tool: 'Read' }), null);
+  assert.equal(decide({ tool_name: 'Read', tool_input: { file_path: 'processes/x/run.py' }, cwd: NIX.cwds[0] }, NIX), null);
+  assert.equal(decide({ tool_name: 'Grep', tool_input: { pattern: 'x', path: 'input' }, cwd: NIX.cwds[0] }, NIX), null);
+});
+
+// D70: таблица режим × действие. Ожидаемое решение: 'ask', 'deny' или null (сторож молчит).
+const MODES = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
+const CAB = '/home/aigul/ai-cabinet';
+const CASES = [
+  ['Bash: запись в processes', 'Bash', { command: "echo '# x' >> processes/svetofor-dogovorov/run.py" }],
+  ['Bash: запись в .claude', 'Bash', { command: 'echo {} > .claude/settings.local.json' }],
+  ['Write processes/x/run.py', 'Write', { file_path: 'processes/x/run.py', content: 'x' }],
+  ['Edit .claude/settings.json', 'Edit', { file_path: `${CAB}/.claude/settings.json`, old_string: 'a', new_string: 'b' }],
+  ['Write input/x.csv', 'Write', { file_path: `${CAB}/input/x.csv`, content: 'x' }],
+  ['Write tools/x.mjs', 'Write', { file_path: 'tools/x.mjs', content: 'x' }],
+  ['Write output/x.csv', 'Write', { file_path: `${CAB}/output/x.csv`, content: 'x' }],
+  ['команда курса', 'Bash', { command: 'node tools/processes.mjs run svetofor-dogovorov' }],
+];
+const A = { decision: 'ask', reason: REASON };
+const AF = { decision: 'ask', reason: REASON_FILE };
+const N = { decision: 'deny', reason: REASON_NO_PROMPT };
+const D = { decision: 'deny', reason: REASON_DATA };
+const ROW_RULES = [A, A, null, null, D, D, null, null]; // окно спрашивают правила settings.json и Claude Code
+const ROW_AUTO = [A, A, AF, AF, D, D, null, null]; // окно спрашивает сторож: защиту .claude/ в Auto решает классификатор
+const ROW_CLOSED = [N, N, N, N, D, D, null, null]; // окна нет: запрет с подсказкой
+const EXPECTED = {
+  default: ROW_RULES,
+  acceptEdits: ROW_RULES,
+  plan: ROW_RULES,
+  auto: ROW_AUTO,
+  dontAsk: ROW_CLOSED,
+  bypassPermissions: ROW_CLOSED,
+};
+
+function table(run) {
+  const wrong = [];
+  for (const mode of MODES) {
+    CASES.forEach(([name, tool, ti], i) => {
+      const got = run(mode, tool, ti);
+      const want = EXPECTED[mode][i];
+      if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(`${mode} / ${name}: ждали ${want?.decision ?? 'null'}, получили ${got?.decision ?? 'null'}`);
+    });
+  }
+  return wrong;
+}
+
+test('режимы: таблица решений по режимам и действиям (D70)', () => {
+  const wrong = table((mode, tool, ti) => decide({ tool_name: tool, tool_input: ti, cwd: CAB, permission_mode: mode }, { roots: [CAB], platform: 'linux' }));
+  assert.deepEqual(wrong, []);
+});
+
+test('режимы: режим не передан или незнаком, значит спросить нельзя: processes/ и .claude/ закрыты', () => {
+  for (const mode of [undefined, null, '', 'bubble', 'yolo', 'Default', 42]) {
+    const got = CASES.map(([, tool, ti]) => decide({ tool_name: tool, tool_input: ti, cwd: CAB, permission_mode: mode }, { roots: [CAB], platform: 'linux' }));
+    assert.deepEqual(got, ROW_CLOSED, String(mode));
+  }
+  // manual: другое имя обычного режима.
+  const manual = CASES.map(([, tool, ti]) => decide({ tool_name: tool, tool_input: ti, cwd: CAB, permission_mode: 'manual' }, { roots: [CAB], platform: 'linux' }));
+  assert.deepEqual(manual, ROW_RULES);
+});
+
+test('режимы: в обходе разрешений обходы из ревью и PowerShell запрещены, команды курса и чтение без решения', () => {
+  for (const mode of ['bypassPermissions', 'dontAsk']) {
+    const wrong = [];
+    for (const [table, ctx] of [[ASK_BASH, NIX], [ASK_BASH, GITBASH], [ASK_POWERSHELL, WIN]]) {
+      for (const cmd of table) {
+        const got = classify(cmd, { ...ctx, mode });
+        if (got?.decision !== 'deny' || got.reason !== REASON_NO_PROMPT) wrong.push(`${mode}: ${JSON.stringify(cmd)}`);
+      }
+    }
+    for (const [table, ctx] of [[NONE, NIX], [NONE_POWERSHELL, WIN]]) {
+      for (const cmd of table) if (classify(cmd, { ...ctx, mode }) !== null) wrong.push(`${mode} (ждали null): ${JSON.stringify(cmd)}`);
+    }
+    assert.deepEqual(wrong, []);
+  }
+});
+
+const WROOT = 'C:\\Users\\Айгуль Н\\ai-cabinet';
+const WCTX = { roots: [WROOT], cwds: [WROOT], platform: 'win32', home: 'C:\\Users\\Айгуль Н' };
+const XCTX = { roots: [CAB], cwds: [CAB], platform: 'linux', home: '/home/aigul' };
+
+test('файлы: любое написание пути в кабинет, как у команд (8.3, точка и пробел в конце, поток, регистр, ~, ..)', () => {
+  const zones = [
+    // Windows
+    [`${WROOT}\\processes\\x\\run.py`, 'guarded'],
+    [`${WROOT}\\PROCES~1\\x\\run.py`, 'guarded'],
+    [`${WROOT}\\processes.\\x\\run.py`, 'guarded'],
+    [`${WROOT}\\processes \\x\\run.py`, 'guarded'],
+    [`${WROOT}\\processes::$INDEX_ALLOCATION\\x\\run.py`, 'guarded'],
+    [`\\\\?\\${WROOT}\\processes\\x\\run.py`, 'guarded'],
+    ['c:/users/айгуль н/AI-CABINET/Processes/x/run.py', 'guarded'],
+    ['processes\\x\\run.py', 'guarded'],
+    ['output\\..\\processes\\x\\run.py', 'guarded'],
+    ['~\\ai-cabinet\\.claude\\settings.local.json', 'guarded'],
+    [`${WROOT}\\CLAUDE~1\\skills\\moi\\SKILL.md`, 'guarded'],
+    [`${WROOT}\\.claude\\hooks\\guard.mjs`, 'data'],
+    [`${WROOT}\\.claude.\\hooks.\\guard.mjs`, 'data'],
+    [`${WROOT}\\CLAUDE~1\\hooks\\guard.mjs`, 'data'],
+    [`${WROOT}\\TEMPLA~1\\processes\\x\\run.py`, 'data'],
+    [`${WROOT}\\Input\\x.csv`, 'data'],
+    [`${WROOT}\\input.\\x.csv`, 'data'],
+    ['tools\\serve.mjs', 'data'],
+    [`${WROOT}\\output\\x.csv`, null],
+    [`${WROOT}\\me\\rules.md`, null],
+    ['C:\\Users\\Другой\\processes\\x.py', null],
+  ];
+  const wrong = zones.filter(([p, z]) => fileZone(p, WCTX) !== z).map(([p, z]) => `${p}: ждали ${z}, получили ${fileZone(p, WCTX)}`);
+  const nix = [
+    [`${CAB}/processes/x/run.py`, 'guarded'],
+    ['./processes/x/run.py', 'guarded'],
+    ['output/../processes/x/run.py', 'guarded'],
+    ['~/ai-cabinet/.claude/skills/moi/SKILL.md', 'guarded'],
+    [`${CAB}/.claude/hooks/guard.mjs`, 'data'],
+    [`${CAB}/templates/processes/x/run.py`, 'data'],
+    [`${CAB}/output/processes/x.csv`, null],
+    ['/home/aigul/processes/x.py', null],
+  ];
+  for (const [p, z] of nix) if (fileZone(p, XCTX) !== z) wrong.push(`${p}: ждали ${z}, получили ${fileZone(p, XCTX)}`);
+  // Относительный путь от папки команды внутри processes/.
+  if (fileZone('run.py', { ...XCTX, cwds: [`${CAB}/processes/x`] }) !== 'guarded') wrong.push('run.py изнутри processes/x');
+  // Настоящий путь: ссылка из output/ ведёт в processes/.
+  const real = (p) => (p.startsWith(`${CAB}/output/link`) ? p.replace(`${CAB}/output/link`, `${CAB}/processes/x`) : null);
+  if (fileZone(`${CAB}/output/link/run.py`, { ...XCTX, real }) !== 'guarded') wrong.push('ссылка output/link -> processes/x');
+  assert.deepEqual(wrong, []);
+});
+
+test('файлы: Write, Edit, MultiEdit, NotebookEdit; путь из file_path или notebook_path; другие инструменты без решения', () => {
+  const ctx = { roots: [CAB], platform: 'linux' };
+  for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+    assert.deepEqual(decide({ tool_name: tool, tool_input: { file_path: 'input/a.csv' }, cwd: CAB, permission_mode: 'acceptEdits' }, ctx), D, tool);
+    assert.deepEqual(decide({ tool_name: tool, tool_input: { file_path: 'processes/x/run.py' }, cwd: CAB, permission_mode: 'bypassPermissions' }, ctx), N, tool);
+  }
+  assert.deepEqual(decide({ tool_name: 'NotebookEdit', tool_input: { notebook_path: 'processes/x/a.ipynb', new_source: 'x' }, cwd: CAB, permission_mode: 'auto' }, ctx), AF);
+  assert.deepEqual(decide({ tool_name: 'NotebookEdit', tool_input: { notebook_path: 'templates/a.ipynb' }, cwd: CAB, permission_mode: 'default' }, ctx), D);
+  assert.equal(decide({ tool_name: 'Write', tool_input: {}, cwd: CAB, permission_mode: 'bypassPermissions' }, ctx), null);
+  assert.equal(classifyFile('processes/x/run.py', { ...ctx, tool: 'Read', mode: 'bypassPermissions' }), null);
 });
 
 test('looseForms: обратная косая черта и убрана, и как разделитель; кавычки и ` убраны', () => {
@@ -168,22 +318,33 @@ test('классификатор не падает на странных стр�
   for (const cmd of ['', '   ', '"', "'", '>', '<<', '2>&1', '|||', 'echo "незакрытая', '$(', '`', '((', '[', '[[[', 'cd', "$'\\U110000'", '{'.repeat(50) + ','.repeat(50), '\\\\']) {
     assert.doesNotThrow(() => classify(cmd, NIX), cmd);
     assert.doesNotThrow(() => classify(cmd, WIN), cmd);
+    assert.doesNotThrow(() => fileZone(cmd, XCTX), cmd);
+    assert.doesNotThrow(() => fileZone(cmd, WCTX), cmd);
   }
   assert.equal(classify(undefined, NIX), null);
+  assert.equal(fileZone(undefined, XCTX), null);
+  for (const bad of [null, 1, 'x', [], { tool_input: null }, { tool_name: 'Write', tool_input: { file_path: 5 } }]) {
+    assert.doesNotThrow(() => decide(bad, { roots: [CAB], platform: 'linux' }));
+  }
 });
 
-test('текст окна: по-русски, без тире и без слов, которых человеку не говорят', () => {
+test('тексты: по-русски, без тире и без слов, которых человеку не говорят', () => {
   assert.equal(REASON, 'Claude хочет выполнить команду, которая касается программ процессов или настроек кабинета. Разрешите, только если вы сами это просили.');
-  assert.doesNotMatch(REASON, /[\u2012-\u2015]|скрипт|порт|сервер|терминал|консол|в фоне/i);
+  assert.equal(REASON_FILE, 'Claude хочет изменить программу процесса или настройки кабинета. Разрешите, только если вы сами это просили.');
+  assert.equal(REASON_NO_PROMPT, 'В этом режиме Claude не может спросить вас, поэтому изменения программ процессов и настроек кабинета закрыты. Переключите режим на обычный (Shift+Tab) и повторите.');
+  assert.equal(REASON_DATA, 'Это файлы курса или ваши исходные данные, Claude их не меняет.');
+  for (const r of [REASON, REASON_FILE, REASON_NO_PROMPT, REASON_DATA]) assert.doesNotMatch(r, /[\u2012-\u2015]|скрипт|порт|сервер|терминал|консол|в фоне/i);
 });
 
 test('hookOutput: формат PreToolUse, не-ASCII экранирован, без решения пусто', () => {
   assert.equal(hookOutput(null), '');
-  const out = hookOutput({ decision: 'ask', reason: REASON });
-  assert.match(out, /^[\x20-\x7e]+$/);
-  assert.deepEqual(JSON.parse(out), {
-    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: REASON },
-  });
+  for (const r of [{ decision: 'ask', reason: REASON }, { decision: 'deny', reason: REASON_NO_PROMPT }]) {
+    const out = hookOutput(r);
+    assert.match(out, /^[\x20-\x7e]+$/);
+    assert.deepEqual(JSON.parse(out), {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: r.decision, permissionDecisionReason: r.reason },
+    });
+  }
 });
 
 function runHook(input, env = {}) {
@@ -194,60 +355,94 @@ function runHook(input, env = {}) {
   });
 }
 
+const outOf = (r) => (r.stdout === '' ? null : JSON.parse(r.stdout).hookSpecificOutput);
+
 test('хук как процесс: JSON из stdin, решение в stdout, код 0', () => {
-  const ask = runHook({ tool_name: 'Bash', cwd: ROOT, tool_input: { command: "echo '# e1' >> proc\\esses/x/run.py" } });
+  const ask = runHook({ tool_name: 'Bash', cwd: ROOT, permission_mode: 'acceptEdits', tool_input: { command: "echo '# e1' >> proc\\esses/x/run.py" } });
   assert.equal(ask.status, 0, ask.stderr);
-  assert.deepEqual(JSON.parse(ask.stdout).hookSpecificOutput, {
-    hookEventName: 'PreToolUse',
-    permissionDecision: 'ask',
-    permissionDecisionReason: REASON,
-  });
-  const ps = runHook({ tool_name: 'PowerShell', cwd: ROOT, tool_input: { command: 'Set-Content -Path:processes\\x\\run.py -Value:x' } });
-  assert.equal(JSON.parse(ps.stdout).hookSpecificOutput.permissionDecision, 'ask');
+  assert.deepEqual(outOf(ask), { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: REASON });
+  const ps = runHook({ tool_name: 'PowerShell', cwd: ROOT, permission_mode: 'default', tool_input: { command: 'Set-Content -Path:processes\\x\\run.py -Value:x' } });
+  assert.equal(outOf(ps).permissionDecision, 'ask');
   for (const command of ['node tools/processes.mjs run x', 'echo x > tools/serve.mjs', "awk '{print $1}' input/a.csv"]) {
-    const r = runHook({ tool_name: 'Bash', cwd: ROOT, tool_input: { command } });
+    const r = runHook({ tool_name: 'Bash', cwd: ROOT, permission_mode: 'bypassPermissions', tool_input: { command } });
     assert.equal(r.status, 0, command);
     assert.equal(r.stdout, '', command);
   }
-  assert.equal(runHook({ tool_name: 'Write', cwd: ROOT, tool_input: { file_path: 'processes/x/run.py', content: 'x' } }).stdout, '');
-  for (const bad of ['', 'не JSON', '{}', '{"tool_input":{}}']) {
+  // Без режима во входе: спросить нельзя.
+  assert.deepEqual(outOf(runHook({ tool_name: 'Bash', cwd: ROOT, tool_input: { command: 'echo x > processes/x/run.py' } })), {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'deny',
+    permissionDecisionReason: REASON_NO_PROMPT,
+  });
+  assert.equal(runHook({ tool_name: 'Read', cwd: ROOT, permission_mode: 'bypassPermissions', tool_input: { file_path: 'processes/x/run.py' } }).stdout, '');
+  for (const bad of ['', 'не JSON', '{}', '{"tool_input":{}}', 'null', '42']) {
     const r = runHook(bad);
     assert.equal(r.status, 0, bad);
     assert.equal(r.stdout, '', bad);
   }
 });
 
-test('хук как процесс: корень из CLAUDE_PROJECT_DIR и настоящий путь папки команды', (t) => {
+test('хук как процесс: таблица режим × действие в настоящем кабинете (D70)', () => {
+  // Пути из таблицы переносятся в настоящий кабинет: корень хук берёт из своего места.
+  const abs = (ti) =>
+    typeof ti.file_path === 'string' && ti.file_path.startsWith(CAB) ? { ...ti, file_path: join(ROOT, ti.file_path.slice(CAB.length + 1)) } : ti;
+  const wrong = table((mode, tool, ti) => {
+    const r = runHook({ tool_name: tool, cwd: ROOT, permission_mode: mode, tool_input: abs(ti) });
+    assert.equal(r.status, 0, r.stderr);
+    const out = outOf(r);
+    return out && { decision: out.permissionDecision, reason: out.permissionDecisionReason };
+  });
+  assert.deepEqual(wrong, []);
+});
+
+test('хук как процесс: корень из CLAUDE_PROJECT_DIR и настоящий путь папки команды и файла', (t) => {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'guard-')));
   try {
     const cab = join(base, 'Айгуль Н', 'ai-cabinet');
     mkdirSync(join(cab, 'processes', 'x'), { recursive: true });
-    const inside = runHook({ tool_name: 'Bash', cwd: join(cab, 'processes', 'x'), tool_input: { command: 'echo x > run.py' } }, { CLAUDE_PROJECT_DIR: cab });
-    assert.equal(JSON.parse(inside.stdout).hookSpecificOutput.permissionDecision, 'ask');
-    const outside = runHook({ tool_name: 'Bash', cwd: join(cab), tool_input: { command: 'echo x > run.py' } }, { CLAUDE_PROJECT_DIR: cab });
+    mkdirSync(join(cab, 'output'), { recursive: true });
+    const env = { CLAUDE_PROJECT_DIR: cab };
+    const inside = runHook({ tool_name: 'Bash', cwd: join(cab, 'processes', 'x'), permission_mode: 'acceptEdits', tool_input: { command: 'echo x > run.py' } }, env);
+    assert.equal(outOf(inside).permissionDecision, 'ask');
+    const outside = runHook({ tool_name: 'Bash', cwd: join(cab), permission_mode: 'acceptEdits', tool_input: { command: 'echo x > run.py' } }, env);
     assert.equal(outside.stdout, '');
+    const file = runHook({ tool_name: 'Write', cwd: cab, permission_mode: 'bypassPermissions', tool_input: { file_path: join(cab, 'processes', 'x', 'run.py') } }, env);
+    assert.equal(outOf(file).permissionDecision, 'deny');
+    const rel = runHook({ tool_name: 'Edit', cwd: join(cab, 'processes', 'x'), permission_mode: 'dontAsk', tool_input: { file_path: 'run.py' } }, env);
+    assert.equal(outOf(rel).permissionDecision, 'deny');
     const link = join(base, 'ssylka');
+    const fileLink = join(cab, 'output', 'link');
     try {
       symlinkSync(join(cab, 'processes', 'x'), link, 'junction');
+      symlinkSync(join(cab, 'processes', 'x'), fileLink, 'junction');
     } catch (e) {
       return t.skip(`ссылки на папки недоступны (${e.code})`);
     }
-    const viaLink = runHook({ tool_name: 'Bash', cwd: link, tool_input: { command: 'echo x > run.py' } }, { CLAUDE_PROJECT_DIR: cab });
-    assert.equal(JSON.parse(viaLink.stdout).hookSpecificOutput.permissionDecision, 'ask');
+    const viaLink = runHook({ tool_name: 'Bash', cwd: link, permission_mode: 'acceptEdits', tool_input: { command: 'echo x > run.py' } }, env);
+    assert.equal(outOf(viaLink).permissionDecision, 'ask');
+    // Файл через ссылку output/link -> processes/x: настоящий путь в processes/.
+    writeFileSync(join(cab, 'processes', 'x', 'run.py'), 'x');
+    for (const name of ['run.py', 'new.py']) {
+      const viaFileLink = runHook({ tool_name: 'Write', cwd: cab, permission_mode: 'bypassPermissions', tool_input: { file_path: join(fileLink, name) } }, env);
+      assert.equal(outOf(viaFileLink)?.permissionDecision, 'deny', name);
+    }
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });
 
-test('settings.json: сторож без оболочки (exec) на Bash и PowerShell, правка хука под запретом, py для таблиц', () => {
+test('settings.json: сторож без оболочки (exec) на Bash, PowerShell и записи файлов, правка хука под запретом, py для таблиц', () => {
   const s = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf8'));
   const pre = s.hooks?.PreToolUse ?? [];
-  const entry = pre.find((h) => /(^|\|)Bash(\||$)/.test(h.matcher) && /(^|\|)PowerShell(\||$)/.test(h.matcher));
-  assert.ok(entry, 'нет PreToolUse с matcher Bash|PowerShell');
+  const has = (m, tool) => new RegExp(`(^|\\|)${tool}(\\||$)`).test(m);
+  const tools = ['Bash', 'PowerShell', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
+  const entry = pre.find((h) => tools.every((tool) => has(h.matcher, tool)));
+  assert.ok(entry, `нет PreToolUse с matcher ${tools.join('|')}`);
   const hook = entry.hooks.find((h) => h.type === 'command');
   assert.equal(hook.command, 'node');
   assert.deepEqual(hook.args, ['${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.mjs']);
   assert.ok(s.permissions.deny.includes('Edit(./.claude/hooks/**)'), 'нужен запрет Edit(./.claude/hooks/**)');
   for (const d of ['Edit(./input/**)', 'Edit(./tools/**)', 'Edit(./templates/**)']) assert.ok(s.permissions.deny.includes(d), d);
+  assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
   assert.ok(s.permissions.allow.includes('Bash(py tools/read_table.py*)'), 'нужно разрешение Bash(py tools/read_table.py*)');
 });

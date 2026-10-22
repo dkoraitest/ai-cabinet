@@ -1,24 +1,57 @@
-// Сторож команд Claude (хук PreToolUse для Bash и PowerShell). Без зависимостей, запускается без оболочки.
+// Сторож Claude (хук PreToolUse для Bash, PowerShell и инструментов записи файлов). Без зависимостей,
+// запускается без оболочки.
 //
-// Режим автоприёма правок пропускает без окна команды вроде `echo ... >> processes/x/run.py` или `cp`,
-// а запуск процесса фразой разрешён. Без сторожа текст из входного файла мог бы записать программу
-// процесса и запустить её без единого окна. Разобрать, что команда пишет, надёжно нельзя (экранирование,
-// кавычки, короткие имена Windows), поэтому правило простое: любая команда, кроме разрешённых команд
-// курса, которая упоминает папку processes или .claude (в любом написании) или идёт изнутри них,
-// спрашивает окно разрешения. Запись в tools/, templates/ и input/ закрывают запреты Edit в
-// .claude/settings.json: Claude Code применяет их и к командам.
+// Команды. Режим автоприёма правок пропускает без окна команды вроде `echo ... >> processes/x/run.py`
+// или `cp`, а запуск процесса фразой разрешён. Без сторожа текст из входного файла мог бы записать
+// программу процесса и запустить её без единого окна. Разобрать, что команда пишет, надёжно нельзя
+// (экранирование, кавычки, короткие имена Windows), поэтому правило простое: любая команда, кроме
+// разрешённых команд курса, которая упоминает папку processes или .claude (в любом написании) или идёт
+// изнутри них, спрашивает окно разрешения. Запись командой в tools/, templates/ и input/ закрывают
+// запреты Edit в .claude/settings.json: Claude Code применяет их и к командам, в любом режиме.
 //
-// Вход: JSON в stdin (tool_name, tool_input.command, cwd). Выход: пусто (решения нет) или
-// {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"..."}}.
+// Файлы (Write, Edit, MultiEdit, NotebookEdit). Запись в input/, tools/, templates/ и .claude/hooks/
+// запрещена в любом режиме (вдобавок к запретам Edit в settings.json). Запись в processes/ и .claude/
+// в обычных режимах решают правило ask в settings.json и встроенная защита .claude/ в Claude Code.
+//
+// Режимы (поле permission_mode во входе хука; D70: организация не отключает обход разрешений и Auto).
+// Проверено на Claude Code 2.1.231 и 2.1.307: окно по ответу хука "ask" появляется во всех режимах,
+// правило ask в settings.json спрашивает везде, кроме dontAsk, запреты deny действуют везде. Но в Auto
+// встроенную защиту .claude/ (settings.local.json, скиллы) решает классификатор без окна, поэтому в Auto
+// сторож сам спрашивает окно и для файлов в processes/ и .claude/. В режимах обхода разрешений
+// (bypassPermissions) и dontAsk человек окон не ждёт, а в dontAsk правила ask отклоняются сами, поэтому
+// там всё, что сторож спросил бы, запрещено с подсказкой вернуть обычный режим. Режим не передан или
+// незнаком: считаем, что спросить нельзя.
+//
+// Вход: JSON в stdin (tool_name, tool_input, cwd, permission_mode). Выход: пусто (решения нет) или
+// {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"|"deny","permissionDecisionReason":"..."}}.
 // Код выхода всегда 0.
-import { realpathSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REASON =
   'Claude хочет выполнить команду, которая касается программ процессов или настроек кабинета. Разрешите, только если вы сами это просили.';
+export const REASON_FILE =
+  'Claude хочет изменить программу процесса или настройки кабинета. Разрешите, только если вы сами это просили.';
+export const REASON_NO_PROMPT =
+  'В этом режиме Claude не может спросить вас, поэтому изменения программ процессов и настроек кабинета закрыты. Переключите режим на обычный (Shift+Tab) и повторите.';
+export const REASON_DATA = 'Это файлы курса или ваши исходные данные, Claude их не меняет.';
 
 const TOOLS = new Set(['Bash', 'PowerShell']);
+export const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+// Режимы, где человек видит окно на ответ сторожа "ask" (manual: другое имя default).
+const PROMPT_MODES = new Set(['default', 'manual', 'acceptEdits', 'plan', 'auto']);
+// Режимы, где запись файлов в processes/ и .claude/ спрашивают правила settings.json и Claude Code сами.
+const RULE_MODES = new Set(['default', 'manual', 'acceptEdits', 'plan']);
+
+export const canPrompt = (mode) => PROMPT_MODES.has(mode);
+
+// Решение для записи в processes/ или .claude/: окно, где оно будет, иначе запрет с подсказкой.
+function guarded(mode, reason) {
+  return canPrompt(mode) ? { decision: 'ask', reason } : { decision: 'deny', reason: REASON_NO_PROMPT };
+}
 
 // Разрешённые команды курса, только целиком: одна команда, без ; & | < > $ ( ) ` и переводов строки.
 const COURSE =
@@ -131,16 +164,88 @@ export function cwdInside(cwds, roots, platform = process.platform) {
   return false;
 }
 
-// Решение по команде: null (без решения) или { decision: 'ask', reason }.
-// cwds: папка команды (и её настоящий путь); roots: возможные корни кабинета.
-export function classify(command, { tool = 'Bash', cwds = [], roots = [], platform = process.platform } = {}) {
+// Решение по команде: null (без решения) или { decision: 'ask' | 'deny', reason }.
+// cwds: папка команды (и её настоящий путь); roots: возможные корни кабинета; mode: permission_mode.
+export function classify(command, { tool = 'Bash', cwds = [], roots = [], platform = process.platform, mode } = {}) {
   if (!TOOLS.has(tool)) return null;
   if (typeof command !== 'string' || !command.trim()) return null;
   if (COURSE.test(command)) return null;
   const rootBase = roots.filter(Boolean).map((r) => fold(r).toLowerCase().split('/').pop())[0] ?? '';
-  if (looseForms(command).some((f) => mentionsProtected(f, rootBase))) return { decision: 'ask', reason: REASON };
-  if (cwdInside(cwds, roots, platform)) return { decision: 'ask', reason: REASON };
+  if (looseForms(command).some((f) => mentionsProtected(f, rootBase))) return guarded(mode, REASON);
+  if (cwdInside(cwds, roots, platform)) return guarded(mode, REASON);
   return null;
+}
+
+// Имя части пути без того, что Windows отбрасывает: поток после : (processes::$INDEX_ALLOCATION),
+// точки и пробелы в конце. Строчными.
+function bareName(part) {
+  return String(part).toLowerCase().split(':')[0].replace(/[. ]+$/, '');
+}
+
+const DATA = ['input', 'tools', 'templates'];
+const isData = (raw) => DATA.includes(bareName(raw)) || /^templa~\d/.test(String(raw).toLowerCase());
+const isHooks = (raw) => bareName(raw) === 'hooks';
+const isClaude = (raw) => bareName(raw) === '.claude' || /^claude~\d/.test(String(raw).toLowerCase());
+const isProcesses = (raw) => bareName(raw) === 'processes' || /^proces~\d/.test(String(raw).toLowerCase());
+
+// Куда в кабинете попадает файл: 'data' (input/, tools/, templates/, .claude/hooks/), 'guarded'
+// (processes/, .claude/) или null. Относительный путь берётся от папки команды и от корня кабинета,
+// ~ от домашней папки. real(путь) даёт настоящий путь (ссылки, junction) или null.
+export function fileZone(file, { cwds = [], roots = [], platform = process.platform, home = homedir(), real = null } = {}) {
+  if (typeof file !== 'string' || !file.trim()) return null;
+  const P = platform === 'win32' ? win32 : posix;
+  const ci = platform === 'win32' || platform === 'darwin';
+  const norm = (p) => (ci ? fold(p).toLowerCase() : fold(p));
+  let raw = file.trim().replace(/^[\\/]{2}[?.][\\/](?!unc[\\/])/i, '');
+  if (/^~([\\/]|$)/.test(raw)) raw = P.join(home, raw.slice(1));
+  const bases = [...cwds, ...roots].filter(Boolean);
+  const paths = P.isAbsolute(raw) ? [P.resolve(raw)] : bases.map((b) => P.resolve(b, raw));
+  if (real) for (const p of [...paths]) {
+    const r = real(p);
+    if (r) paths.push(r);
+  }
+  let zone = null;
+  for (const p of paths.map(norm)) {
+    for (const root of roots.filter(Boolean).map(norm)) {
+      if (!p.startsWith(`${root}/`)) continue;
+      const [first, second] = p.slice(root.length + 1).split('/');
+      if (isData(first) || (isClaude(first) && second !== undefined && isHooks(second))) return 'data';
+      if (isProcesses(first) || isClaude(first)) zone = 'guarded';
+    }
+  }
+  return zone;
+}
+
+// Решение по записи файла: null или { decision, reason }.
+export function classifyFile(file, ctx = {}) {
+  if (!FILE_TOOLS.has(ctx.tool)) return null;
+  const zone = fileZone(file, ctx);
+  if (zone === 'data') return { decision: 'deny', reason: REASON_DATA };
+  if (zone === 'guarded' && !RULE_MODES.has(ctx.mode)) return guarded(ctx.mode, REASON_FILE);
+  return null;
+}
+
+// Путь к файлу в вводе инструмента записи.
+export const filePathOf = (ti) => (typeof ti?.file_path === 'string' ? ti.file_path : typeof ti?.notebook_path === 'string' ? ti.notebook_path : '');
+
+// Решение по входу хука целиком. ctx: roots, platform, cwds (если не заданы, папка из входа), real.
+export function decide(input, ctx = {}) {
+  const tool = input?.tool_name ?? 'Bash';
+  const ti = input?.tool_input ?? {};
+  const mode = typeof input?.permission_mode === 'string' ? input.permission_mode : undefined;
+  const cwds = ctx.cwds ?? [typeof input?.cwd === 'string' ? input.cwd : process.cwd()];
+  const full = { ...ctx, tool, mode, cwds };
+  try {
+    if (FILE_TOOLS.has(tool)) return classifyFile(filePathOf(ti), full);
+    if (!TOOLS.has(tool)) return null;
+    // Команда в поле command; если поле названо иначе, проверяем все строки ввода.
+    const command =
+      typeof ti.command === 'string' ? ti.command : Object.values(ti).filter((v) => typeof v === 'string').join('\n');
+    return classify(command, full);
+  } catch {
+    // Разбор упал: решает человек, а где спросить нельзя, запрет.
+    return guarded(mode, FILE_TOOLS.has(tool) ? REASON_FILE : REASON);
+  }
 }
 
 // Ответ хуку: не-ASCII как \uXXXX, чтобы кодовая страница Windows не испортила текст.
@@ -166,6 +271,23 @@ function real(p) {
   }
 }
 
+// Настоящий путь файла, которого ещё нет: настоящий путь ближайшей существующей папки и остаток.
+function nearestReal(p) {
+  let dir = p;
+  const rest = [];
+  for (let i = 0; i < 64; i++) {
+    if (existsSync(dir)) {
+      const r = real(dir);
+      return r ? resolve(r, ...rest) : null;
+    }
+    const up = dirname(dir);
+    if (up === dir) return null;
+    rest.unshift(dir.slice(up.length).replace(/^[\\/]+/, ''));
+    dir = up;
+  }
+  return null;
+}
+
 async function main() {
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
@@ -175,22 +297,11 @@ async function main() {
   } catch {
     return;
   }
-  const tool = input?.tool_name ?? 'Bash';
-  const ti = input?.tool_input ?? {};
-  // Команда в поле command; если поле названо иначе, проверяем все строки ввода.
-  const command =
-    typeof ti.command === 'string' ? ti.command : Object.values(ti).filter((v) => typeof v === 'string').join('\n');
+  if (!input || typeof input !== 'object') return;
   const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
   const envRoot = process.env.CLAUDE_PROJECT_DIR;
   const roots = [ROOT, real(ROOT), envRoot, envRoot && real(envRoot)];
-  let result;
-  try {
-    result = classify(command, { tool, cwds: [cwd, real(cwd)], roots });
-  } catch {
-    // Разбор упал: решает человек.
-    result = TOOLS.has(tool) ? { decision: 'ask', reason: REASON } : null;
-  }
-  process.stdout.write(hookOutput(result));
+  process.stdout.write(hookOutput(decide(input, { cwds: [cwd, real(cwd)], roots, real: nearestReal })));
 }
 
 function isMain() {
