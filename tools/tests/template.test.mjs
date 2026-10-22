@@ -251,6 +251,13 @@ test('добавить процесс: всегда программа (kind scr
   // Правка процесса: остановка видимым текстом перед записью, как в add-process.
   assert.ok(run.includes('«Так? Поправляю?»') && run.includes('«Так? Добавляю?»'));
   assert.ok(skill.includes('«Так? Записываю программу?»'));
+  // Срочность: раздел словаря «срочно (не тема)» один и тот же в справке, остановке, run-process и сверке.
+  const guide = read('.claude/skills/add-process/programma.md');
+  assert.ok(guide.includes('URGENT = "срочно (не тема)"') && guide.includes('"срочно (не тема)": ['));
+  assert.ok(skill.includes('| срочно (не тема) | <слова срочности через запятую> |'));
+  assert.ok(skill.includes('"срочно": ['), 'в примере эталона нет раздела «срочно»');
+  assert.ok(run.includes('→ срочно') && run.includes('«срочно (не тема)»'));
+  assert.ok(read('tools/processes.mjs').includes('Добавьте в раздел «срочно (не тема)»'));
   const rules = read('CLAUDE.md');
   assert.match(rules, /\| «доработай» и название процесса/);
   assert.match(rules, /\| «добавь в словарь процесса <название>: <слово> → <тема>»/);

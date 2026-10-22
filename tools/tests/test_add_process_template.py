@@ -181,12 +181,35 @@ SLOVAR = {
 }
 
 
+def guide_slovar_example():
+    """Пример slovar.json из раздела «Словарь» справки: в нём слова срочности по умолчанию."""
+    text = GUIDE.read_text(encoding="utf-8")
+    part = text[text.index("## Словарь"):]
+    return json.loads(re.search(r"```json\n(.*?)```", part, re.S).group(1))
+
+
 @unittest.skipUnless(HAVE_LIBS, "нет openpyxl или python-docx")
 class Slovar(unittest.TestCase):
     def setUp(self):
         self.c = Cabinet(compose("slovar", "main_slovar"))
         self.addCleanup(self.c.close)
         (self.c.proc / "slovar.json").write_text(json.dumps(SLOVAR, ensure_ascii=False), encoding="utf-8")
+
+    def with_urgent(self, extra=None):
+        """Словарь теста и слова срочности по умолчанию из справки, как их берёт Claude."""
+        m = self.c.module()
+        urgent = guide_slovar_example()[m.URGENT]
+        (self.c.proc / "slovar.json").write_text(json.dumps(dict(SLOVAR, **{m.URGENT: urgent}, **(extra or {})),
+                                                            ensure_ascii=False), encoding="utf-8")
+        return m
+
+    def run_case(self, name):
+        for old in self.c.input.glob("*"):
+            old.unlink()
+        shutil.copy(CASE / name, self.c.input / name)
+        proc = self.c.run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return self.c.result()
 
     def test_word_rule(self):
         m = self.c.module()
@@ -204,28 +227,36 @@ class Slovar(unittest.TestCase):
         self.assertEqual(cls("ЖАНАРМАЙ сапасы нашар"), "качество топлива")  # регистр, казахский
         self.assertEqual(cls("Дәретханада қағаз жоқ"), "чистота и санузлы")
         self.assertEqual(cls("Ещё раз про бонусы"), "программа лояльности")
+        # Найденные слова словаря: по ним человек видит, почему строка в теме.
+        self.assertEqual(m.classify("Почему бонусов мало и акция не работает?", s),
+                         ("программа лояльности", "", ["бонус", "акция"]))
 
     def test_manual_reasons(self):
         m = self.c.module()
         s = m.load_slovar()
-        self.assertEqual(m.classify("", s), (m.MANUAL, "пустой текст"))
-        self.assertEqual(m.classify("Можно ли оставить машину на ночь?", s), (m.MANUAL, "нет слов из словаря"))
-        cat, why = m.classify("Кофе холодный, а оператор нагрубил", s)  # кафе 1, персонал 2
-        self.assertEqual(cat, "обслуживание и персонал")
+        self.assertEqual(m.classify("", s), (m.MANUAL, "пустой текст", []))
+        self.assertEqual(m.classify("Можно ли оставить машину на ночь?", s), (m.MANUAL, "нет слов из словаря", []))
+        cat, why, found = m.classify("Кофе холодный, а оператор нагрубил", s)  # кафе 1, персонал 2
+        self.assertEqual((cat, why, found), ("обслуживание и персонал", "", ["оператор", "нагрубил"]))
 
     def test_tie_goes_to_topic_written_first(self):
         """Поровну у двух тем: тема слова, которое в тексте раньше, с пометкой «две темы», не «разобрать вручную»."""
         m = self.c.module()
         s = m.load_slovar()
         self.assertEqual(m.classify("Кофе холодный, а оператор молчал", s),
-                         ("минимаркет и кафе", "две темы: минимаркет и кафе, обслуживание и персонал"))
-        self.assertEqual(m.classify("Оператор молчал, а кофе холодный", s),
+                         ("минимаркет и кафе", "две темы: минимаркет и кафе, обслуживание и персонал", ["кофе"]))
+        self.assertEqual(m.classify("Оператор молчал, а кофе холодный", s)[:2],
                          ("обслуживание и персонал", "две темы: обслуживание и персонал, минимаркет и кафе"))
-        cat, why = m.classify("Туалет грязный, кофе холодный, оператор молчал", s)
+        cat, why, _ = m.classify("Туалет грязный, кофе холодный, оператор молчал", s)
         self.assertEqual(cat, "чистота и санузлы")  # чистота 2 слова: не ничья
         self.assertFalse(why.startswith(m.TIES))
-        cat, why = m.classify("Колонка сломана, кофе холодный, кассир молчал", s)
+        cat, why, _ = m.classify("Колонка сломана, кофе холодный, кассир молчал", s)
         self.assertEqual((cat, why.split(":")[0]), ("оборудование", "несколько тем"))
+        # Одно слово в двух темах (одно место в тексте): темы по алфавиту, тоже с пометкой «две темы».
+        both = dict(s, **{"оборудование": s["оборудование"] + [("экран", m.roots("экран"))],
+                          "оплата и касса": s["оплата и касса"] + [("экран", m.roots("экран"))]})
+        self.assertEqual(m.classify("Экран погас", both)[:2],
+                         ("оборудование", "две темы: оборудование, оплата и касса"))
 
     def test_stem_word_families(self):
         """Основа у слова словаря и у слова текста одна: слово в обычной форме находит другие формы."""
@@ -236,10 +267,14 @@ class Slovar(unittest.TestCase):
             "топливо топлива топливом топливная топливной", "наличные наличными наличных наличка",
             "благодарность благодарю благодарим", "очередь очереди очередью очередей",
             "оплата оплату оплатой оплатить", "сотрудник сотрудника сотрудники сотрудникам", "мыло мыла мылом",
+            "кассир кассира кассиру кассиры", "балл баллы баллов балла",
         ]
-        # Слово словаря в обычной форме (первое) находит остальные: казахские окончания, другой суффикс, короткая основа.
+        # Слово словаря в обычной форме (первое) находит остальные: казахские окончания, суффикс, короткое слово.
         from_base = ["командировка командировки командировочные", "дәретхана дәретханада дәретханасы",
-                     "жанармай жанармайдың", "ұпай ұпайлар", "газ газом газовой", "запах запаха запахом"]
+                     "жанармай жанармайдың жанармайды", "ұпай ұпайлар ұпайлары", "газ газом газовой газа",
+                     "запах запаха запахом", "пол пола полу полы", "сок сока соки",
+                     "қызмет қызметі қызметке қызметтің", "кезек кезекте кезекке", "утечка утечку утечки",
+                     "иіс иісі", "бензин бензина бензиновый"]
         for fam in families + from_base:
             words = fam.split()
             pairs = [(a, b) for a in words for b in words] if fam in families else [(words[0], b) for b in words]
@@ -252,9 +287,14 @@ class Slovar(unittest.TestCase):
         for short in ("газ", "чек", "сок", "дт"):  # до трёх букв слово не укорачивается
             self.assertEqual(m.stem(short), short)
         self.assertEqual(m.stem("машина"), "машин")  # корень на -н не режется до гласной
-        for entry, text in (("кофе", "Купил сок и печенье"), ("запах", "Заправляюсь только у вас"),
-                            ("дт", "После ДТП")):
-            with self.subTest(entry=entry, text=text):  # другое слово с похожим началом не находится
+        # Другое слово с тем же началом не находится: после слова словаря должно идти окончание.
+        others = [("кофе", "Купил сок и печенье"), ("запах", "Заправляюсь только у вас"), ("дт", "После ДТП"),
+                  ("балл", "баллон"), ("газ", "газету"), ("газ", "газон"), ("газ", "газель"),
+                  ("газ", "газированная"), ("колонка", "колонну"), ("колонка", "колонна"), ("пол", "полицию"),
+                  ("пол", "полный"), ("пол", "полка"), ("пол", "получил"), ("сок", "сокол"), ("сок", "сокращение"),
+                  ("қызмет", "қызметкер"), ("касса", "кассир"), ("балл", "баллада"), ("бонус", "бонусник")]
+        for entry, text in others:
+            with self.subTest(entry=entry, text=text):
                 self.assertEqual(m.classify(text, {"тема": [(entry, m.roots(entry))]})[0], m.MANUAL)
 
     def test_broken_slovar_clear_stop(self):
@@ -270,11 +310,10 @@ class Slovar(unittest.TestCase):
         self.assertIn("Нет словаря processes/proba/slovar.json", proc.stderr)
 
     def test_case_file_card_manual_list_and_check(self):
-        shutil.copy(CASE / "obrashcheniya.xlsx", self.c.input / "obrashcheniya.xlsx")
-        proc = self.c.run()
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        r = self.c.result()
+        r = self.run_case("obrashcheniya.xlsx")
         self.assertEqual(len(r["rows"]), 80)
+        self.assertEqual(r["status"], "green")  # в словаре нет раздела срочности: строк «срочно» нет
+        self.assertFalse(r["summary"].startswith("Срочно"))
         manual = [i for i, n in enumerate(r["row_note"]) if n == "разобрать вручную"]
         self.assertTrue(manual, "на файле кейса есть строки без слов из словаря")
         self.assertEqual(manual, list(range(len(manual))), "строки «разобрать вручную» идут первыми")
@@ -293,7 +332,16 @@ class Slovar(unittest.TestCase):
         self.assertEqual(rows["38"], "повтор")  # повтор обращения 22 той же АЗС
         self.assertEqual(rows["79"], "повтор")
         self.assertEqual(r["sverka"]["итоги"], {"обращений": 80, "повторов": 2})
+        self.assertEqual(r["sverka"]["срочно"], [])
         self.assertEqual(sum(r["sverka"]["по категориям"].values()), 80 - 2 - len(manual))
+        # В Excel результата у каждой строки слова словаря, по которым она попала в тему.
+        table = sheet(self.c.out / "obrashcheniya-po-temam.xlsx", "Обращения")
+        self.assertEqual(table[0], ["№", "АЗС", "Тема", "Текст", "Найдено по слову", "Пометка"])
+        by_num = {row[0]: row for row in table[1:]}
+        self.assertEqual(by_num["5"][2:5], ["программа лояльности", "Почему бонусы сгорают так быстро? Не успел потратить.",
+                                            "бонус"])
+        self.assertEqual(by_num["38"][4:], [None, "повтор, посчитан один раз"])
+        self.assertEqual(by_num[r["rows"][0][0]][5], "нет слов из словаря")
         if not NODE:
             return
         code, out = self.c.node("list")
@@ -309,6 +357,75 @@ class Slovar(unittest.TestCase):
         code, out = self.c.node("compare", "proba")
         self.assertEqual(code, 0, out)
         self.assertIn("кроме", out)
+
+    def test_urgent_words_default_in_guide(self):
+        """Раздел срочности в примере словаря справки: имя раздела как в программе, опасность по-русски и по-казахски."""
+        m = self.c.module()
+        example = guide_slovar_example()
+        self.assertIn(m.URGENT, example)
+        urgent = example[m.URGENT]
+        for word in ("запах", "пахнет", "утечка", "разлив", "дым", "искры", "пожар", "огонь", "взрыв", "травма",
+                     "отравление", "драка", "угроза", "иіс", "өрт", "түтін", "жарылыс", "жарақат"):
+            self.assertIn(word, urgent)
+        # Срочность не тема: строка только со словом срочности уходит в «разобрать вручную», но срочная.
+        s = dict(m.load_slovar(), **{m.URGENT: [(w, m.roots(w)) for w in urgent]})
+        self.assertEqual(m.classify("Пахнет газом у входа", s)[0], m.MANUAL)
+        self.assertEqual(m.urgent_words("Пахнет газом у входа", s), ["пахнет"])
+        self.assertEqual(m.urgent_words("Колонка сломана", s), [])
+        self.assertEqual(m.urgent_words("Колонка жанында бензин иісі шығады", s), ["иіс"])
+        self.assertEqual(m.urgent_words("Пахнет бензином, похоже на утечку", s), ["пахнет", "утечка"])
+
+    def test_urgent_rows_case_week1(self):
+        """Неделя 1 кейса: строка 48 (запах бензина и утечка на АЗС-05) срочная, красная, первая на карточке.
+        Лишняя срочная одна: 13 «запах на всю площадку» от мусорных баков (слово «запах» без топлива).
+        Срочное лучше проверить лишний раз, чем пропустить утечку."""
+        self.with_urgent()
+        r = self.run_case("obrashcheniya.xlsx")
+        hot = r["sverka"]["срочно"]
+        self.assertEqual(hot[0], "48")
+        self.assertLessEqual(len(hot) - 1, 2, hot)
+        self.assertEqual(set(hot), {"48", "13"})
+        self.assertEqual(r["status"], "red")
+        self.assertTrue(r["summary"].startswith("Срочно: 2 (№ 48, 13). Обращений 80"), r["summary"])
+        self.assertEqual(r["rows"][0][0], "48")
+        self.assertEqual(r["rows"][0][2], "оборудование")  # тема своя: «колонка», срочность не тема
+        self.assertEqual(r["row_status"][:2], ["red", "red"])
+        self.assertEqual(r["row_note"][0], "срочно: пахнет, утечка")
+        self.assertEqual(r["row_note"][1], "срочно: запах; разобрать вручную")  # мусор: слов темы нет
+        self.assertNotIn("red", r["row_status"][2:])
+        self.assertEqual(r["sverka"]["по строкам"]["48"], "оборудование")
+        urgent_sheet = sheet(self.c.out / "obrashcheniya-po-temam.xlsx", "Срочно")
+        self.assertEqual(urgent_sheet[0], ["№", "АЗС", "Тема", "Текст", "Слово срочности"])
+        self.assertEqual([row[0] for row in urgent_sheet[1:]], ["48", "13"])
+        self.assertEqual(urgent_sheet[1][4], "пахнет, утечка")
+        table = {row[0]: row for row in sheet(self.c.out / "obrashcheniya-po-temam.xlsx", "Обращения")[1:]}
+        self.assertEqual(table["48"][4:], ["колонка, колонок", "срочно: пахнет, утечка"])
+        self.assertEqual(table["13"][4:], [None, "срочно: запах; нет слов из словаря"])
+
+    def test_urgent_rows_case_week2(self):
+        """Неделя 2 кейса, словарь недели 1: строка 34 (шипит и пахнет газом на АЗС-09) срочная и первая.
+        Лишняя срочная одна: 17 «машина дымит» после дизеля (слово «дым»: это качество топлива, не пожар)."""
+        self.with_urgent()
+        r = self.run_case("obrashcheniya_nedelya2.xlsx")
+        hot = r["sverka"]["срочно"]
+        self.assertEqual(hot[0], "34")
+        self.assertLessEqual(len(hot) - 1, 2, hot)
+        self.assertEqual(set(hot), {"34", "17"})
+        self.assertEqual(r["rows"][0][0], "34")
+        self.assertEqual(r["row_status"][0], "red")
+        self.assertTrue(r["row_note"][0].startswith("срочно: пахнет"), r["row_note"][0])
+        self.assertTrue(r["summary"].startswith("Срочно: 2 (№ 34, 17)."), r["summary"])
+
+    def test_urgent_word_from_skill_and_key_spelling(self):
+        """Слово срочности из скилла человека дописывается в тот же раздел; имя раздела без учёта регистра."""
+        m = self.c.module()
+        data = dict(SLOVAR, **{"Срочно (не тема)": ["курил"]})
+        (self.c.proc / "slovar.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        s = m.load_slovar()
+        self.assertIn(m.URGENT, s)
+        self.assertNotIn("Срочно (не тема)", s)
+        self.assertEqual(m.urgent_words("Охранник курил прямо у колонок", s), ["курил"])
+        self.assertEqual(m.classify("Охранник курил прямо у колонок", s)[0], "оборудование")
 
 
 @unittest.skipUnless(HAVE_LIBS, "нет openpyxl или python-docx")

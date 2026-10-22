@@ -304,6 +304,83 @@ test('compareWithEtalon: сводная больше 300 групп: первы�
   assert.equal(wrongGroup.code, 1);
 });
 
+test('compareWithEtalon: эталон по части файла без итогов → предупреждение, что сверены только строки', () => {
+  const r = compareWithEtalon({ 'строк в эталоне': 2, 'по строкам': { 1: 'а', 2: 'б' } }, { 'по строкам': { 1: 'а', 2: 'б', 3: 'а' } });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.ok(r.lines.includes('В эталоне нет итогов: сверены только строки.'), r.lines.join('\n'));
+  const withTotals = compareWithEtalon({ 'строк в эталоне': 2, 'итоги': { 'строк': 3 }, 'по строкам': { 1: 'а', 2: 'б' } }, { 'итоги': { 'строк': 3 }, 'по строкам': { 1: 'а', 2: 'б', 3: 'а' } });
+  assert.ok(!withTotals.lines.some((l) => l.startsWith('В эталоне нет итогов')));
+  const whole = compareWithEtalon({ 'по строкам': { 1: 'а' } }, { 'по строкам': { 1: 'а' } });
+  assert.ok(!whole.lines.some((l) => l.startsWith('В эталоне нет итогов')));
+});
+
+test('compareWithEtalon: две темы у скилла «X / Y»: программа взяла любую из двух → совпало, третью → расхождение', () => {
+  const etalon = {
+    'по категориям': { 'оплата и касса': 2, 'минимаркет и кафе': 1 },
+    'по строкам': { 1: 'оплата и касса', 2: 'Оплата и касса / Минимаркет и кафе', 3: 'минимаркет и кафе' },
+  };
+  // Программа взяла вторую тему: строка совпала, счёт по темам сдвинут на эту строку и тоже совпал.
+  const second = compareWithEtalon(etalon, {
+    'по категориям': { 'оплата и касса': 1, 'минимаркет и кафе': 2 },
+    'по строкам': { 1: 'оплата и касса', 2: 'минимаркет и кафе', 3: 'минимаркет и кафе' },
+  });
+  assert.equal(second.code, 0, second.lines.join('\n'));
+  assert.ok(second.lines.includes('По строкам: совпало 3 из 3.'));
+  assert.ok(second.lines.includes('По категориям: совпали все (2).'), second.lines.join('\n'));
+  assert.ok(second.lines.includes('Две темы у скилла: 1, программа взяла одну из них.'), second.lines.join('\n'));
+  const first = compareWithEtalon(etalon, {
+    'по категориям': { 'оплата и касса': 2, 'минимаркет и кафе': 1 },
+    'по строкам': { 1: 'оплата и касса', 2: 'оплата и касса', 3: 'минимаркет и кафе' },
+  });
+  assert.equal(first.code, 0, first.lines.join('\n'));
+  const other = compareWithEtalon(etalon, {
+    'по категориям': { 'оплата и касса': 1, 'минимаркет и кафе': 1, 'оборудование': 1 },
+    'по строкам': { 1: 'оплата и касса', 2: 'оборудование', 3: 'минимаркет и кафе' },
+  });
+  assert.equal(other.code, 1);
+  assert.match(other.lines.join('\n'), /2: у скилла «Оплата и касса \/ Минимаркет и кафе», у программы «оборудование»/);
+  // Строка с двумя темами в «разобрать вручную»: разница в категории первой темы объясняется ею.
+  const manual = compareWithEtalon(etalon, {
+    'по категориям': { 'оплата и касса': 1, 'минимаркет и кафе': 1 },
+    'по строкам': { 1: 'оплата и касса', 2: 'разобрать вручную', 3: 'минимаркет и кафе' },
+  });
+  assert.equal(manual.code, 0, manual.lines.join('\n'));
+  assert.equal(manual.manual, 1);
+});
+
+test('compareWithEtalon: срочные строки: пропуск срочной строки эталона → расхождение, лишняя срочная → не расхождение', () => {
+  const etalon = { 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'оплата и касса' }, 'срочно': ['1'] };
+  const rows = { 1: 'оборудование', 2: 'другое', 3: 'оплата и касса' };
+  const ok = compareWithEtalon(etalon, { 'по строкам': rows, 'срочно': ['1'] });
+  assert.equal(ok.code, 0, ok.lines.join('\n'));
+  assert.ok(ok.lines.includes('Срочные строки: совпали все (1).'), ok.lines.join('\n'));
+  // Программа не отметила срочной строку, которую скилл назвал срочной: сверка не пройдена, даже если тема верна.
+  const missed = compareWithEtalon(etalon, { 'по строкам': rows, 'срочно': [] });
+  assert.equal(missed.code, 1, missed.lines.join('\n'));
+  assert.ok(missed.lines.includes('Срочные строки: программа не отметила срочной 1 из 1: 1. Добавьте в раздел «срочно (не тема)» слово об опасности из этой строки.'), missed.lines.join('\n'));
+  assert.match(missed.lines.at(-1), /^Итог сверки: расхождений 1\./);
+  const noSection = compareWithEtalon(etalon, { 'по строкам': rows });
+  assert.equal(noSection.code, 1);
+  // Срочная строка в «разобрать вручную» по теме: срочность всё равно сверяется, это не расхождение.
+  const manualHot = compareWithEtalon(etalon, { 'по строкам': { ...rows, 1: 'разобрать вручную' }, 'срочно': [1] });
+  assert.equal(manualHot.code, 0, manualHot.lines.join('\n'));
+  // Лишняя срочная строка: строкой в выводе, не расхождение.
+  const extra = compareWithEtalon(etalon, { 'по строкам': rows, 'срочно': ['1', '3'] });
+  assert.equal(extra.code, 0, extra.lines.join('\n'));
+  assert.ok(extra.lines.includes('Программа отметила срочными ещё 1: 3. Это не расхождение: срочное лучше проверить лишний раз.'), extra.lines.join('\n'));
+  // Эталон по части файла: срочные строки вне эталона не сравниваются.
+  const part = compareWithEtalon(
+    { 'строк в эталоне': 2, 'итоги': { 'строк': 3 }, 'по строкам': { 1: 'оборудование', 2: 'другое' }, 'срочно': [] },
+    { 'итоги': { 'строк': 3 }, 'по строкам': rows, 'срочно': ['3'] },
+  );
+  assert.equal(part.code, 0, part.lines.join('\n'));
+  assert.ok(part.lines.includes('Срочные строки: совпали все (0).'), part.lines.join('\n'));
+  assert.ok(!part.lines.some((l) => l.startsWith('Программа отметила срочными')));
+  // Только раздел «срочно» в эталоне: сравнивать есть что.
+  const only = compareWithEtalon({ 'срочно': ['5'] }, { 'срочно': ['5'] });
+  assert.equal(only.code, 0, only.lines.join('\n'));
+});
+
 test('compareWithEtalon: больше 20% строк в «разобрать вручную» → предупреждение, не расхождение', () => {
   const e = { 'по строкам': { 1: 'а', 2: 'б', 3: 'а', 4: 'б', 5: 'а' } };
   const r = compareWithEtalon(e, { 'по строкам': { 1: 'а', 2: 'разобрать вручную', 3: 'а', 4: 'разобрать вручную', 5: 'а' } });

@@ -929,10 +929,14 @@ export function readInputFile(root, slug, name) {
 // Эталон output/<slug>/etalon-skilla.json записывает Claude, выполнив скилл сам на файле человека.
 // Программа пишет те же разделы в result.json, в поле sverka. Разделы (все необязательные):
 //   «итоги»: { название: число или текст }, «по категориям»: { категория: число },
-//   «документов»: число, «по строкам»: { номер или ключ строки: категория или ключевое значение }.
+//   «документов»: число, «по строкам»: { номер или ключ строки: категория или ключевое значение },
+//   «срочно»: [ номера или ключи срочных строк ].
+// Строка с двумя темами у скилла: «X / Y» в «по строкам» (в «по категориям» она посчитана по первой теме X);
+// программа взяла X или Y, это совпадение.
 export const MANUAL = 'разобрать вручную';
 export const ETALON_FILE = 'etalon-skilla.json';
-const SECTIONS = ['итоги', 'по категориям', 'документов', 'по строкам'];
+export const URGENT_SECTION = 'срочно';
+const SECTIONS = ['итоги', 'по категориям', 'документов', 'по строкам', URGENT_SECTION];
 
 const normText = (v) =>
   String(v ?? '')
@@ -973,6 +977,12 @@ const asMap = (obj) =>
     ? new Map(Object.entries(obj).map(([k, v]) => [normKey(k), { key: k, value: v }]))
     : null;
 
+// Темы строки у скилла: «X / Y» значит две темы, первая главная. Иначе одна.
+const topicsOf = (v) => (typeof v === 'string' && v.includes(' / ') ? v.split(' / ').map((t) => t.trim()).filter(Boolean) : [v]);
+
+// Номера строк раздела «срочно»: список (или объект: его ключи).
+const keysOf = (v) => (Array.isArray(v) ? v : v && typeof v === 'object' ? Object.keys(v) : null);
+
 const SHOW_ROWS = 40;
 const listOf = (items) => (items.length > SHOW_ROWS ? [...items.slice(0, SHOW_ROWS), `  ... и ещё ${items.length - SHOW_ROWS}`] : items);
 
@@ -992,27 +1002,37 @@ export function compareWithEtalon(etalon, program) {
   let differences = 0;
   let manual = 0;
   const manualByCategory = new Map();
+  // Строки с двумя темами у скилла, где программа взяла не первую: [первая тема, тема программы].
+  const shifted = [];
   const partial = typeof etalon[COVERAGE] === 'number' && Number.isFinite(etalon[COVERAGE]);
   const eRows = asMap(etalon['по строкам']);
   const pRowsAll = asMap(program['по строкам']);
   if (eRows) {
     const pRows = pRowsAll ?? new Map();
     let same = 0;
+    let twoTopics = 0;
     const wrong = [];
     const toManual = [];
     const missing = [];
     for (const [k, { key, value }] of eRows) {
       const got = pRows.get(k);
+      const topics = topicsOf(value);
       if (!got) missing.push(key);
       else if (normText(got.value) === MANUAL && normText(value) !== MANUAL) {
         toManual.push(`  ${key}: у скилла ${show(value)}`);
-        manualByCategory.set(normText(value), (manualByCategory.get(normText(value)) ?? 0) + 1);
+        const main = normText(topics[0]);
+        manualByCategory.set(main, (manualByCategory.get(main) ?? 0) + 1);
       } else if (sameValue(value, got.value)) same++;
-      else wrong.push(`  ${key}: у скилла ${show(value)}, у программы ${show(got.value)}`);
+      else if (topics.length > 1 && topics.some((t) => sameValue(t, got.value))) {
+        same++;
+        twoTopics++;
+        if (!sameValue(topics[0], got.value)) shifted.push([topics[0], got.value]);
+      } else wrong.push(`  ${key}: у скилла ${show(value)}, у программы ${show(got.value)}`);
     }
     const extra = [...pRows.values()].filter((v) => !eRows.has(normKey(v.key))).map((v) => v.key);
     manual = toManual.length;
     lines.push(`По строкам: совпало ${same} из ${eRows.size}.`);
+    if (twoTopics) lines.push(`Две темы у скилла: ${twoTopics}, программа взяла одну из них.`);
     if (toManual.length) lines.push(`Программа отправила в «${MANUAL}»: ${toManual.length}.`, ...listOf(toManual));
     if (wrong.length) lines.push(`Другой результат у программы: ${wrong.length}.`, ...listOf(wrong));
     if (missing.length) lines.push(`Нет у программы: ${missing.length}: ${missing.slice(0, SHOW_ROWS).join(', ')}.`);
@@ -1023,11 +1043,27 @@ export function compareWithEtalon(etalon, program) {
     }
     differences += wrong.length + missing.length + (partial ? 0 : extra.length);
   }
+  // Срочные строки: пропуск срочной строки скилла это расхождение, лишняя срочная строка программы нет:
+  // срочное лучше проверить лишний раз. Эталон по части файла: только строки эталона.
+  const eHot = keysOf(etalon[URGENT_SECTION]);
+  if (eHot) {
+    const pHot = new Set((keysOf(program[URGENT_SECTION]) ?? []).map(normKey));
+    const eHotKeys = new Set(eHot.map(normKey));
+    const missed = eHot.filter((k) => !pHot.has(normKey(k)));
+    const inEtalon = (k) => !partial || !eRows || eRows.has(k);
+    const extraHot = [...(keysOf(program[URGENT_SECTION]) ?? [])].filter((k) => !eHotKeys.has(normKey(k)) && inEtalon(normKey(k)));
+    if (missed.length) {
+      lines.push(`Срочные строки: программа не отметила срочной ${missed.length} из ${eHot.length}: ${missed.slice(0, SHOW_ROWS).join(', ')}. Добавьте в раздел «срочно (не тема)» слово об опасности из этой строки.`);
+    } else lines.push(`Срочные строки: совпали все (${eHot.length}).`);
+    if (extraHot.length) lines.push(`Программа отметила срочными ещё ${extraHot.length}: ${extraHot.slice(0, SHOW_ROWS).join(', ')}. Это не расхождение: срочное лучше проверить лишний раз.`);
+    differences += missed.length;
+  }
   const whole = ['по категориям', 'документов'].filter((sec) => etalon[sec] !== undefined);
   if (partial && whole.length) {
     lines.push(`Эталон по части файла: ${whole.map((sec) => `«${sec}»`).join(', ')} по всему файлу с ним не сравнить, не сравниваем.`);
   }
   const eTotals = asMap(etalon['итоги']);
+  if (partial && !eTotals) lines.push('В эталоне нет итогов: сверены только строки.');
   if (eTotals) {
     const pTotals = asMap(program['итоги']) ?? new Map();
     const bad = [];
@@ -1039,6 +1075,17 @@ export function compareWithEtalon(etalon, program) {
     differences += bad.length;
   }
   const eCats = partial ? null : asMap(etalon['по категориям']);
+  // Строка с двумя темами посчитана у скилла по первой теме; программа взяла вторую: сдвигаем её счёт.
+  if (eCats) {
+    for (const [from, to] of shifted) {
+      const a = eCats.get(normKey(from));
+      if (!a || asNumber(a.value) === null) continue;
+      a.value = asNumber(a.value) - 1;
+      const b = eCats.get(normKey(to));
+      if (b && asNumber(b.value) !== null) b.value = asNumber(b.value) + 1;
+      else if (!b) eCats.set(normKey(to), { key: String(to), value: 1 });
+    }
+  }
   if (eCats) {
     const pCats = asMap(program['по категориям']) ?? new Map();
     const bad = [];
