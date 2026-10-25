@@ -13,7 +13,8 @@
 //   node tools/processes.mjs input <slug>       папка input/<slug> для файлов человека, открывается в Проводнике
 //   node tools/processes.mjs read <slug> <файл> текст файла скилла (.md, .zip, .skill) или документа Word из input/<slug>
 //   node tools/processes.mjs compare <slug>     проверка программы и сверка её результата с эталоном скилла
-//   node tools/processes.mjs skills             свои скиллы человека в .claude/skills
+//   node tools/processes.mjs versions <slug>    прошлые версии программы и словаря (их сохраняет сторож кабинета)
+//   node tools/processes.mjs skills            свои скиллы человека в .claude/skills
 //   node tools/processes.mjs demo <slug>        демо курса из templates/processes с файлом учебного кейса
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -23,6 +24,7 @@ import {
   copyFileSync,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -1378,6 +1380,144 @@ export function compareProcess(root, slug) {
   return { text: [...head, ...r.lines, ...tail].join('\n'), code: banned.length ? 1 : r.code };
 }
 
+// ---------- прежние версии программы и словаря ----------
+// Сторож кабинета (.claude/hooks/guard.mjs) перед записью processes/<slug>/run.py, slovar.json или process.json
+// кладёт прежний файл в output/<slug>/versions/<ГГГГ-ММ-ДД-ЧЧММСС>/. Здесь только чтение: вернуть версию Claude
+// может только записью в processes/<slug>/ инструментом записи, с окном разрешения. Команды, которая сама
+// пишет из versions/ в processes/, нет: иначе файл, подложенный в output/, попал бы в программу без окна.
+const VERSIONS = 'versions';
+const VERSION_RE = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$/;
+const VERSION_LIMIT_BYTES = 2 * 1024 * 1024;
+const SHOW_VERSIONS = 5;
+const VERSION_FILES = [
+  ['slovar.json', 'словарь'],
+  ['run.py', 'программа'],
+  ['process.json', 'описание процесса'],
+];
+
+const versionTime = (stamp) => {
+  const [, y, mo, d, h, mi] = VERSION_RE.exec(stamp);
+  return `${d}.${mo}.${y} ${h}:${mi}`;
+};
+
+// Текст файла версии: только обычный файл (не ссылка) до 2 МБ, иначе null.
+function readVersionFile(path) {
+  try {
+    const st = lstatSync(path);
+    return st.isFile() && st.size <= VERSION_LIMIT_BYTES ? readFileSync(path, 'utf8') : null;
+  } catch {
+    return null;
+  }
+}
+
+function readCurrent(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+const plainText = (s) => s.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trimEnd();
+const sameText = (a, b) => a !== null && b !== null && plainText(a) === plainText(b);
+const lineCount = (s) => (plainText(s) ? plainText(s).split('\n').length : 0);
+
+// Словарь: [[тема, [слова]]] или null, если не читается.
+function slovarTopics(text) {
+  if (text === null) return null;
+  try {
+    const data = JSON.parse(plainText(text));
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    return Object.entries(data).map(([topic, words]) => [topic, (Array.isArray(words) ? words : []).map((w) => String(w).trim()).filter(Boolean)]);
+  } catch {
+    return null;
+  }
+}
+
+// Слова из a, которых нет в b (по теме): «слово» (тема).
+function wordsMissing(a, b) {
+  const inB = new Set(b.flatMap(([topic, words]) => words.map((w) => `${topic}\n${w}`)));
+  return a.flatMap(([topic, words]) => words.filter((w) => !inB.has(`${topic}\n${w}`)).map((w) => `«${w}» (${topic})`));
+}
+
+const shortList = (items) => (items.length > SHOW_ROWS ? `${items.slice(0, SHOW_ROWS).join(', ')} и ещё ${items.length - SHOW_ROWS}` : items.join(', '));
+
+// Строки о файле версии и отличается ли он от текущего.
+function describeVersionFile(name, text, current) {
+  if (name === 'slovar.json') {
+    const mine = slovarTopics(text);
+    if (!mine) return { lines: ['Словарь в этой версии не читается (файл испорчен).'], differs: !sameText(text, current) };
+    const now = slovarTopics(current) ?? [];
+    const total = mine.reduce((n, [, w]) => n + w.length, 0);
+    const lines = [`Словарь, слов по темам: ${mine.map(([t, w]) => `${t} ${w.length}`).join(', ')} (всего ${total}).`];
+    const gone = wordsMissing(now, mine);
+    const back = wordsMissing(mine, now);
+    const changes = [gone.length ? `уйдут слова ${shortList(gone)}` : '', back.length ? `вернутся слова ${shortList(back)}` : ''].filter(Boolean);
+    const differs = changes.length > 0 || mine.map(([t]) => t).join('\n') !== now.map(([t]) => t).join('\n');
+    lines.push(changes.length ? `Если вернуть словарь: ${changes.join('; ')}.` : differs ? 'Если вернуть словарь: слова те же, меняются только темы без слов.' : 'Словарь совпадает с текущим.');
+    return { lines, differs };
+  }
+  if (name === 'run.py') {
+    const head = `Программа, строк: ${lineCount(text)}`;
+    if (sameText(text, current)) return { lines: [`${head}, совпадает с текущей.`], differs: false };
+    const now = current === null ? 'сейчас программы нет' : `в текущей строк: ${lineCount(current)}`;
+    return { lines: [`${head}, отличается от текущей (${now}).`], differs: true };
+  }
+  let same = sameText(text, current);
+  try {
+    same ||= JSON.stringify(JSON.parse(plainText(text))) === JSON.stringify(JSON.parse(plainText(current)));
+  } catch {
+    // не JSON: сравнили текстом
+  }
+  return { lines: [`Описание процесса: ${same ? 'совпадает с текущим' : 'отличается от текущего'}.`], differs: !same };
+}
+
+export function listVersions(root, slug) {
+  if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
+    return { text: 'Имя папки процесса: строчные латинские буквы, цифры и дефис, до 40 знаков, например svodka-prodazh.', code: 2 };
+  }
+  if (!hasProcess(root, slug)) return { text: `Такого процесса нет: ${slug}. Процессы кабинета: ${known(root)}.`, code: 2 };
+  const title = readProcessInfo(root, slug).title;
+  const rel = `output/${slug}/${VERSIONS}`;
+  let stamps = [];
+  try {
+    stamps = readdirSync(join(root, 'output', slug, VERSIONS), { withFileTypes: true })
+      .filter((e) => e.isDirectory() && VERSION_RE.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+  } catch {
+    // папки нет: версий нет
+  }
+  const versions = stamps
+    .map((stamp) => {
+      const files = VERSION_FILES.map(([name, label]) => {
+        const text = readVersionFile(join(root, 'output', slug, VERSIONS, stamp, name));
+        if (text === null) return null;
+        return { name, label, ...describeVersionFile(name, text, readCurrent(join(root, 'processes', slug, name))) };
+      }).filter(Boolean);
+      return { stamp, files, differs: files.some((f) => f.differs) };
+    })
+    .filter((v) => v.files.length);
+  if (!versions.length) return { text: `Прошлых версий у процесса ${title} нет: они появляются, когда программу или словарь меняют.`, code: 0 };
+  const more = versions.length > SHOW_VERSIONS ? `, показаны ${SHOW_VERSIONS} последних` : '';
+  const lines = [`Прошлые версии процесса «${title}» (папка ${rel}): ${versions.length}, от новой к старой${more}.`];
+  const target = versions.findIndex((v) => v.differs);
+  versions.forEach((v, i) => {
+    if (i >= SHOW_VERSIONS && i !== target) return;
+    lines.push(`${i + 1}. ${versionTime(v.stamp)}, папка ${rel}/${v.stamp}: ${v.files.map((f) => f.label).join(', ')}.`);
+    for (const f of v.files) lines.push(...f.lines.map((l) => `   ${l}`));
+  });
+  if (target === -1) {
+    lines.push('Все сохранённые версии совпадают с текущими файлами процесса: возвращать нечего.');
+  } else {
+    const v = versions[target];
+    const pairs = v.files.filter((f) => f.differs).map((f) => `${rel}/${v.stamp}/${f.name} → processes/${slug}/${f.name}`);
+    lines.push(`Последняя версия, которая отличается от текущей: ${target + 1} (${versionTime(v.stamp)}). Вернуть: ${pairs.join(', ')}.`);
+  }
+  return { text: lines.join('\n'), code: 0 };
+}
+
 // ---------- свои скиллы человека ----------
 
 // Скиллы курса: их кабинет привозит сам, «своими» они не считаются.
@@ -1418,7 +1558,8 @@ const USAGE = `Процессы кабинета:
   node tools/processes.mjs input <имя>        создать папку input/<имя> и открыть её в Проводнике (--no-open: не открывать)
   node tools/processes.mjs read <имя> <файл>  показать текст скилла (.md, .zip, .skill) или документа Word из input/<имя>
   node tools/processes.mjs compare <имя>      проверить программу и сверить её результат с эталоном скилла output/<имя>/etalon-skilla.json
-  node tools/processes.mjs skills             свои скиллы человека в .claude/skills (без скиллов курса)
+  node tools/processes.mjs versions <имя>     прошлые версии программы и словаря из output/<имя>/versions и чем они отличаются от текущих
+  node tools/processes.mjs skills            свои скиллы человека в .claude/skills (без скиллов курса)
   node tools/processes.mjs demo <имя>         поставить демо курса из templates/processes и запустить
 <имя>: имя папки процесса латиницей, например svodka-prodazh.`;
 
@@ -1644,6 +1785,7 @@ async function dispatch(root, argv) {
   if (cmd === 'input') return cliInput(root, slug, !argv.includes('--no-open'));
   if (cmd === 'read') return readInputFile(root, slug, argv.slice(2).filter((a) => !a.startsWith('--')).join(' '));
   if (cmd === 'compare') return compareProcess(root, slug);
+  if (cmd === 'versions') return listVersions(root, slug);
   if (cmd === 'skills') return listSkills(root);
   if (cmd === 'demo') return cliDemo(root, slug);
   return { text: USAGE, code: cmd ? 2 : 0 };

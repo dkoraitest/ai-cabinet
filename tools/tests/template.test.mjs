@@ -272,6 +272,25 @@ test('добавить процесс: всегда программа (kind scr
   assert.match(rules, /\| «пополни словарь процесса <название>»/);
 });
 
+test('откат версий: фраза в правилах кабинета, раздел run-process с остановкой «Так? Возвращаю?», одна подсказка в add-process и в пополнении', () => {
+  const run = read('.claude/skills/run-process/SKILL.md');
+  assert.match(run, /## Вернуть прошлую версию/);
+  for (const must of [
+    '«Так? Возвращаю?»',
+    '«Возвращаю прошлую версию, нажмите «Allow» (разрешить).»',
+    '«Прошлых версий у процесса <название> нет: они появляются, когда программу или словарь меняют.»',
+    'node tools/processes.mjs versions <имя>',
+    'node tools/processes.mjs compare <имя>',
+  ]) assert.ok(run.includes(must), must);
+  const tip = 'Если правка не понравилась, скажите «верни прошлую версию <название>».';
+  const pop = run.slice(run.indexOf('## Пополнить словарь'), run.indexOf('## Вернуть прошлую версию'));
+  assert.equal(pop.split(tip).length - 1, 1, 'одна подсказка в итоге пополнения');
+  assert.equal(read('.claude/skills/add-process/SKILL.md').split('верни прошлую версию').length - 1, 1, 'одна подсказка в add-process');
+  const rules = read('CLAUDE.md');
+  assert.match(rules, /\| «верни прошлую версию <процесса>», «откати <процесс>» \| .*раздел «Вернуть прошлую версию» \|/);
+  assert.ok(read('tools/processes.mjs').includes('нет: они появляются, когда программу или словарь меняют.'));
+});
+
 test('запуск двойным щелчком: start-cabinet.cmd и .command', () => {
   const cmd = readFileSync(join(ROOT, 'start-cabinet.cmd'));
   const t = cmd.toString('utf8');

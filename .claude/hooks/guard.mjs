@@ -28,10 +28,27 @@
 // запись в processes/ и .claude/, с подсказкой вернуть обычный режим. Режим не передан или незнаком:
 // считаем, что спросить нельзя.
 //
-// Вход: JSON в stdin (tool_name, tool_input, cwd, permission_mode). Выход: пусто (решения нет) или
+// Прежние версии (V13a). Перед записью processes/<имя>/run.py, slovar.json или process.json сторож кладёт
+// прежний файл в output/<имя>/versions/<ГГГГ-ММ-ДД-ЧЧММСС>/ (saveVersion ниже), чтобы правку можно было вернуть
+// фразой «верни прошлую версию». Это только побочное действие до решения: ошибка копирования пропускается молча,
+// решение сторожа от него не зависит.
+//
+// Вход: JSON в stdin (tool_name, tool_input, cwd, permission_mode, session_id). Выход: пусто (решения нет) или
 // {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"|"deny","permissionDecisionReason":"..."}}.
 // Код выхода всегда 0.
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -392,6 +409,183 @@ export function decide(input, ctx = {}) {
   }
 }
 
+// ---------- Прежние версии файлов процесса ----------
+// Write, Edit, MultiEdit по processes/<имя>/run.py, slovar.json, process.json: если файл уже есть, его копия
+// ложится в output/<имя>/versions/<ГГГГ-ММ-ДД-ЧЧММСС>/<файл>. Одна папка на заход правок: в последнюю папку,
+// если она моложе 10 минут и из того же разговора (session_id), файл ложится, только если его там ещё нет
+// (сохраняется состояние до правок, промежуточные нет). Исключение: Write возвращает файл к состоянию из этой
+// папки (возврат версии), а сейчас файл другой; тогда текущее состояние идёт в новую папку, иначе вернуть его
+// обратно («откат отката») было бы нельзя. Иначе новая папка. Не больше 20 папок на процесс: старшие по имени
+// удаляются, только папки с именем-временем внутри versions/. Имя процесса только из пути
+// processes/<имя>/<файл> от корня кабинета, без .., латиница, цифры, дефис. output/, output/<имя>/ и versions/
+// должны быть настоящими папками, не ссылками. Файл больше 2 МБ не копируется. Любая ошибка: копии нет, и всё.
+export const VERSION_FILES = ['run.py', 'slovar.json', 'process.json'];
+export const VERSION_WINDOW_MS = 10 * 60 * 1000;
+export const VERSION_MAX_BYTES = 2 * 1024 * 1024;
+export const VERSION_KEEP = 20;
+const VERSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+const VERSION_SLUG = /^[a-z0-9-]{1,40}$/;
+const STAMP = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$/;
+const SESSION_FILE = '.razgovor';
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// Имя папки версии по часам компьютера: 2026-10-26-140512.
+export function versionStamp(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+}
+
+function stampTime(name) {
+  const m = STAMP.exec(name);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : NaN;
+}
+
+// Файл процесса, копию которого можно сохранить: { root, slug, name, file } или null.
+function versionTarget(raw, { cwds = [], roots = [], platform = process.platform }) {
+  if (typeof raw !== 'string' || !raw.trim() || raw.split(/[\\/]/).includes('..')) return null;
+  const P = platform === 'win32' ? win32 : posix;
+  const cands = P.isAbsolute(raw) ? [P.resolve(raw)] : [...cwds, ...roots].filter(Boolean).map((b) => P.resolve(b, raw));
+  for (const r of roots.filter(Boolean)) {
+    const root = P.resolve(r);
+    for (const file of cands) {
+      const parts = P.relative(root, file).split(P.sep);
+      if (parts.length === 3 && parts[0] === 'processes' && VERSION_SLUG.test(parts[1]) && VERSION_FILES.includes(parts[2])) {
+        return { root, slug: parts[1], name: parts[2], file, P };
+      }
+    }
+  }
+  return null;
+}
+
+const present = (p) => {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Настоящая папка (не ссылка, не файл).
+const realDir = (p) => {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// Папка есть и настоящая, или её не было и она создана.
+function ensureDir(dir) {
+  if (realDir(dir)) return true;
+  if (present(dir)) return false;
+  mkdirSync(dir);
+  return true;
+}
+
+function readSmall(p, limit = VERSION_MAX_BYTES) {
+  const st = statSync(p);
+  return st.isFile() && st.size <= limit ? readFileSync(p, 'utf8') : null;
+}
+
+const plainText = (s) => s.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trimEnd();
+
+// Тот же текст: без учёта BOM, переводов строк Windows и пустого конца; JSON с тем же содержимым тоже тот же.
+function sameContent(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (plainText(a) === plainText(b)) return true;
+  try {
+    return JSON.stringify(JSON.parse(plainText(a))) === JSON.stringify(JSON.parse(plainText(b)));
+  } catch {
+    return false;
+  }
+}
+
+// Отметка разговора в папке версии; нет отметки: пустая строка.
+function sessionOf(dir, P) {
+  try {
+    return readSmall(P.join(dir, SESSION_FILE), 1024);
+  } catch {
+    return '';
+  }
+}
+
+function pruneVersions(vers, P) {
+  const all = readdirSync(vers, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && STAMP.test(e.name))
+    .map((e) => e.name)
+    .sort();
+  for (const name of all.slice(0, Math.max(0, all.length - VERSION_KEEP))) {
+    try {
+      rmSync(P.join(vers, name), { recursive: true, force: true });
+    } catch {
+      // не удалилась: останется до следующего раза
+    }
+  }
+}
+
+// Сохранить прежний файл процесса перед записью. Путь копии или null. Никогда не бросает.
+export function saveVersion(input, { roots = [], cwds = [], platform = process.platform, now = Date.now() } = {}) {
+  try {
+    const tool = input?.tool_name;
+    const ti = input?.tool_input;
+    if (!VERSION_TOOLS.has(tool) || !ti || typeof ti !== 'object') return null;
+    const t = versionTarget(ti.file_path, { cwds, roots, platform });
+    if (!t) return null;
+    const { P } = t;
+    const st = statSync(t.file);
+    if (!st.isFile() || st.size > VERSION_MAX_BYTES) return null;
+    const vers = P.join(t.root, 'output', t.slug, 'versions');
+    for (const d of [P.join(t.root, 'output'), P.join(t.root, 'output', t.slug), vers]) if (!ensureDir(d)) return null;
+    const session = typeof input.session_id === 'string' ? input.session_id.slice(0, 200) : '';
+    const last = readdirSync(vers, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && STAMP.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .at(-1);
+    let dir = null;
+    if (last) {
+      const age = now - stampTime(last);
+      if (age >= 0 && age < VERSION_WINDOW_MS && realDir(P.join(vers, last)) && sessionOf(P.join(vers, last), P) === session) dir = last;
+    }
+    if (dir && present(P.join(vers, dir, t.name))) {
+      const saved = P.join(vers, dir, t.name);
+      const restoring = tool === 'Write' && sameContent(ti.content, readSmall(saved)) && !sameContent(readSmall(t.file), readSmall(saved));
+      if (!restoring) return null;
+      dir = null;
+    }
+    let created = false;
+    if (!dir) {
+      dir = versionStamp(now);
+      try {
+        mkdirSync(P.join(vers, dir));
+        created = true;
+      } catch (e) {
+        if (e?.code !== 'EEXIST' || !realDir(P.join(vers, dir))) return null;
+      }
+    }
+    const dest = P.join(vers, dir, t.name);
+    try {
+      copyFileSync(t.file, dest, constants.COPYFILE_EXCL);
+    } catch {
+      if (created) rmSync(P.join(vers, dir), { recursive: true, force: true });
+      return null;
+    }
+    if (created) {
+      try {
+        writeFileSync(P.join(vers, dir, SESSION_FILE), session, { flag: 'wx' });
+      } catch {
+        // без отметки разговора папка просто не продолжится
+      }
+      pruneVersions(vers, P);
+    }
+    return dest;
+  } catch {
+    return null;
+  }
+}
+
 // Ответ хуку: не-ASCII как \uXXXX, чтобы кодовая страница Windows не испортила текст.
 export function hookOutput(result) {
   if (!result) return '';
@@ -445,7 +639,14 @@ async function main() {
   const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
   const envRoot = process.env.CLAUDE_PROJECT_DIR;
   const roots = [ROOT, real(ROOT), envRoot, envRoot && real(envRoot)];
-  process.stdout.write(hookOutput(decide(input, { cwds: [cwd, real(cwd)], roots, real: nearestReal })));
+  const ctx = { cwds: [cwd, real(cwd)], roots, real: nearestReal };
+  // До решения: прежняя версия файла процесса. Ошибка здесь решение не меняет.
+  try {
+    saveVersion(input, ctx);
+  } catch {
+    // копии нет
+  }
+  process.stdout.write(hookOutput(decide(input, ctx)));
 }
 
 function isMain() {

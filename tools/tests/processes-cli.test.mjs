@@ -573,3 +573,82 @@ test('без команды: подсказка по командам', () => {
   assert.equal(r.code, 0, r.out);
   for (const c of ['list', 'run', 'input', 'demo']) assert.match(r.out, new RegExp(`processes\\.mjs ${c}`));
 });
+
+// V13a. versions <имя>: прежние версии программы и словаря из output/<имя>/versions/, только чтение.
+test('versions: без версий, три версии от новой к старой с разницей слов словаря, неверное имя и чужой процесс отказ', () => {
+  addProcess('razbor', script('razbor', 'Разбор обращений'), 'print(1)\nprint(2)\n');
+  const slovar = (o) => JSON.stringify(o, null, 2);
+  writeFileSync(join(cab, 'processes', 'razbor', 'slovar.json'), slovar({ оплата: ['касса?', 'терминал', 'kaspi'], лояльность: ['бонус', 'баллы', 'карта лояльности'] }));
+  const none = cli(['versions', 'razbor']);
+  assert.equal(none.code, 0, none.out);
+  assert.equal(none.out.trim(), 'Прошлых версий у процесса Разбор обращений нет: они появляются, когда программу или словарь меняют.');
+
+  const V = join(cab, 'output', 'razbor', 'versions');
+  const put = (stamp, files) => {
+    mkdirSync(join(V, stamp), { recursive: true });
+    for (const [n, t] of Object.entries(files)) writeFileSync(join(V, stamp, n), t);
+  };
+  put('2026-10-20-090000', { 'slovar.json': slovar({ оплата: ['касса?', 'наличные'] }), 'run.py': 'print(1)\n' });
+  put('2026-10-26-140512', { 'slovar.json': slovar({ оплата: ['касса?', 'терминал'], лояльность: ['бонус'] }), '.razgovor': 'x' });
+  put('2026-10-22-101500', { 'run.py': 'print(1)\r\nprint(2)\r\n' });
+  mkdirSync(join(V, 'zametki'));
+  writeFileSync(join(V, 'readme.txt'), 'x');
+
+  const r = cli(['versions', 'razbor']);
+  assert.equal(r.code, 0, r.out);
+  const lines = r.out.trim().split('\n');
+  assert.equal(lines[0], 'Прошлые версии процесса «Разбор обращений» (папка output/razbor/versions): 3, от новой к старой.');
+  const order = ['26.10.2026 14:05', '22.10.2026 10:15', '20.10.2026 09:00'].map((t) => r.out.indexOf(t));
+  assert.ok(order.every((i, k) => i > 0 && (k === 0 || i > order[k - 1])), r.out);
+  assert.ok(lines.includes('1. 26.10.2026 14:05, папка output/razbor/versions/2026-10-26-140512: словарь.'), r.out);
+  assert.ok(lines.includes('   Словарь, слов по темам: оплата 2, лояльность 1 (всего 3).'), r.out);
+  assert.ok(lines.includes('   Если вернуть словарь: уйдут слова «kaspi» (оплата), «баллы» (лояльность), «карта лояльности» (лояльность).'), r.out);
+  assert.ok(lines.includes('2. 22.10.2026 10:15, папка output/razbor/versions/2026-10-22-101500: программа.'), r.out);
+  assert.ok(lines.includes('   Программа, строк: 2, совпадает с текущей.'), r.out);
+  assert.ok(lines.includes('3. 20.10.2026 09:00, папка output/razbor/versions/2026-10-20-090000: словарь, программа.'), r.out);
+  assert.ok(
+    lines.includes('   Если вернуть словарь: уйдут слова «терминал» (оплата), «kaspi» (оплата), «бонус» (лояльность), «баллы» (лояльность), «карта лояльности» (лояльность); вернутся слова «наличные» (оплата).'),
+    r.out,
+  );
+  assert.ok(lines.includes('   Программа, строк: 1, отличается от текущей (в текущей строк: 2).'), r.out);
+  assert.equal(lines.at(-1), 'Последняя версия, которая отличается от текущей: 1 (26.10.2026 14:05). Вернуть: output/razbor/versions/2026-10-26-140512/slovar.json → processes/razbor/slovar.json.');
+  assert.doesNotMatch(r.out, /zametki|readme|razgovor/);
+
+  // Словарь уже вернули к версии 1: она совпадает с текущим, вернуть можно только версию 3 (версия 2 тоже совпадает).
+  writeFileSync(join(cab, 'processes', 'razbor', 'slovar.json'), JSON.stringify({ оплата: ['касса?', 'терминал'], лояльность: ['бонус'] }));
+  const back = cli(['versions', 'razbor']);
+  assert.equal(back.code, 0, back.out);
+  assert.ok(back.out.includes('   Словарь совпадает с текущим.'), back.out);
+  assert.equal(
+    back.out.trim().split('\n').at(-1),
+    'Последняя версия, которая отличается от текущей: 3 (20.10.2026 09:00). Вернуть: output/razbor/versions/2026-10-20-090000/slovar.json → processes/razbor/slovar.json, output/razbor/versions/2026-10-20-090000/run.py → processes/razbor/run.py.',
+  );
+
+  for (const bad of ['..', '../me', 'Razbor', 'a/b', '']) {
+    const x = cli(['versions', bad]);
+    assert.equal(x.code, 2, `${bad}: ${x.out}`);
+    assert.doesNotMatch(x.out, /\n\s+at /);
+  }
+  assert.match(cli(['versions', 'net-takogo']).out, /Такого процесса нет: net-takogo/);
+});
+
+test('versions: показывает не больше 5 версий; все совпадают с текущими: возвращать нечего; программа из версии проходит проверку', () => {
+  addProcess('pyat', script('pyat', 'Пять'), 'print(1)\n');
+  const V = join(cab, 'output', 'pyat', 'versions');
+  for (let d = 1; d <= 7; d++) {
+    mkdirSync(join(V, `2026-10-0${d}-120000`), { recursive: true });
+    writeFileSync(join(V, `2026-10-0${d}-120000`, 'run.py'), 'print(1)\n');
+  }
+  const r = cli(['versions', 'pyat']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /: 7, от новой к старой, показаны 5 последних\./);
+  assert.equal(r.out.split('\n').filter((l) => /^\d+\. /.test(l)).length, 5);
+  assert.ok(r.out.includes('07.10.2026 12:00') && !r.out.includes('02.10.2026 12:00'), r.out);
+  assert.equal(r.out.trim().split('\n').at(-1), 'Все сохранённые версии совпадают с текущими файлами процесса: возвращать нечего.');
+  // Программа из версии, возвращённая записью в processes/, проходит ту же проверку сверки.
+  writeFileSync(join(V, '2026-10-01-120000', 'run.py'), 'import subprocess\nprint(1)\n');
+  writeFileSync(join(cab, 'processes', 'pyat', 'run.py'), readFileSync(join(V, '2026-10-01-120000', 'run.py')));
+  const c = cli(['compare', 'pyat']);
+  assert.match(c.out, /строка 1: запуск программ или выход в сеть: import subprocess/);
+  assert.match(c.out, /Итог проверки программы: уберите это из программы, «готово» нельзя\./);
+});

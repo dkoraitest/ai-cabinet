@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,7 @@ import {
   fileZone,
   hookOutput,
   looseForms,
+  saveVersion,
 } from '../../.claude/hooks/guard.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -690,6 +691,249 @@ test('скиллы: команду нельзя собрать из двух п�
     expectAll('Write', { file_path: cmd, content: 'Дата: !`date`' });
     writeFileSync(cmd, 'Дата: !\n');
     expectAll('Edit', { file_path: cmd, old_string: '!', new_string: '!`date`' });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// V13a. Прежняя версия программы, словаря и описания процесса: перед записью сторож кладёт прежний файл в
+// output/<имя>/versions/<ГГГГ-ММ-ДД-ЧЧММСС>/. Это только побочное действие: решение сторожа от него не меняется.
+const T0 = new Date(2026, 9, 26, 14, 5, 12).getTime();
+const MIN = 60 * 1000;
+const STAMP0 = '2026-10-26-140512';
+
+function verCab() {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'guard-ver-')));
+  const cab = join(base, 'Айгуль Н', 'ai-cabinet');
+  mkdirSync(join(cab, 'processes', 'p'), { recursive: true });
+  mkdirSync(join(cab, 'output'), { recursive: true });
+  return { base, cab, file: (n) => join(cab, 'processes', 'p', n), vers: join(cab, 'output', 'p', 'versions') };
+}
+const save = (cab, tool, ti, now, session = 's1') =>
+  saveVersion({ tool_name: tool, tool_input: ti, cwd: cab, session_id: session, permission_mode: 'acceptEdits' }, { roots: [cab], cwds: [cab], now });
+const stampsIn = (vers) => (existsSync(vers) ? readdirSync(vers).filter((n) => /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(n)).sort() : []);
+const textOf = (...p) => readFileSync(join(...p), 'utf8');
+
+test('версии: Write, Edit, MultiEdit по существующему файлу процесса кладут прежний файл в output/<имя>/versions/<время>/', () => {
+  for (const [tool, ti] of [
+    ['Write', { content: '{"оплата": ["касса?", "терминал"]}' }],
+    ['Edit', { old_string: 'касса?', new_string: 'касса' }],
+    ['MultiEdit', { edits: [{ old_string: 'касса?', new_string: 'касса' }] }],
+  ]) {
+    const { base, cab, file, vers } = verCab();
+    try {
+      writeFileSync(file('slovar.json'), '{"оплата": ["касса?"]}');
+      writeFileSync(file('run.py'), 'print(1)\n');
+      writeFileSync(file('process.json'), '{"title": "П"}');
+      for (const n of ['slovar.json', 'run.py', 'process.json']) save(cab, tool, { file_path: file(n), ...ti }, T0);
+      assert.deepEqual(stampsIn(vers), [STAMP0], tool);
+      assert.equal(textOf(vers, STAMP0, 'slovar.json'), '{"оплата": ["касса?"]}', tool);
+      assert.equal(textOf(vers, STAMP0, 'run.py'), 'print(1)\n', tool);
+      assert.equal(textOf(vers, STAMP0, 'process.json'), '{"title": "П"}', tool);
+      // Сам файл процесса сторож не трогает.
+      assert.equal(textOf(file('slovar.json')), '{"оплата": ["касса?"]}', tool);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+});
+
+test('версии: правка через минуту в ту же папку без перезаписи, через 11 минут новая папка', () => {
+  const { base, cab, file, vers } = verCab();
+  try {
+    writeFileSync(file('slovar.json'), 'v1');
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'v2' }, T0);
+    writeFileSync(file('slovar.json'), 'v2');
+    save(cab, 'Edit', { file_path: file('slovar.json'), old_string: 'v2', new_string: 'v3' }, T0 + MIN);
+    assert.deepEqual(stampsIn(vers), [STAMP0]);
+    assert.equal(textOf(vers, STAMP0, 'slovar.json'), 'v1');
+    // Другой файл того же захода правок ложится в ту же папку.
+    writeFileSync(file('run.py'), 'print(1)\n');
+    save(cab, 'Edit', { file_path: file('run.py'), old_string: '1', new_string: '2' }, T0 + 2 * MIN);
+    assert.deepEqual(stampsIn(vers), [STAMP0]);
+    assert.equal(textOf(vers, STAMP0, 'run.py'), 'print(1)\n');
+    writeFileSync(file('slovar.json'), 'v3');
+    save(cab, 'Edit', { file_path: file('slovar.json'), old_string: 'v3', new_string: 'v4' }, T0 + 11 * MIN);
+    assert.deepEqual(stampsIn(vers), [STAMP0, '2026-10-26-141612']);
+    assert.equal(textOf(vers, '2026-10-26-141612', 'slovar.json'), 'v3');
+    assert.equal(textOf(vers, STAMP0, 'slovar.json'), 'v1');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: другой разговор в те же 10 минут даёт новую папку; возврат к сохранённому сохраняет текущее (откат отката)', () => {
+  const { base, cab, file, vers } = verCab();
+  try {
+    // Разговор 1 правит словарь, разговор 2 через 2 минуты пополняет: состояние до пополнения своё.
+    writeFileSync(file('slovar.json'), 'A');
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'B' }, T0, 'r1');
+    writeFileSync(file('slovar.json'), 'B');
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'C' }, T0 + 2 * MIN, 'r2');
+    assert.deepEqual(stampsIn(vers), [STAMP0, '2026-10-26-140712']);
+    assert.equal(textOf(vers, '2026-10-26-140712', 'slovar.json'), 'B');
+    writeFileSync(file('slovar.json'), 'C');
+    // В том же разговоре: возврат версии B (запись с содержимым из папки) кладёт текущее C в новую папку.
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'B\n' }, T0 + 3 * MIN, 'r2');
+    assert.deepEqual(stampsIn(vers), [STAMP0, '2026-10-26-140712', '2026-10-26-140812']);
+    assert.equal(textOf(vers, '2026-10-26-140812', 'slovar.json'), 'C');
+    writeFileSync(file('slovar.json'), 'B\n');
+    // Откат отката: снова C из последней папки, текущее B снова сохраняется.
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'C' }, T0 + 4 * MIN, 'r2');
+    assert.deepEqual(stampsIn(vers).at(-1), '2026-10-26-140912');
+    assert.equal(textOf(vers, '2026-10-26-140912', 'slovar.json'), 'B\n');
+    // Обычная правка в том же заходе по-прежнему без новой папки.
+    writeFileSync(file('slovar.json'), 'C');
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'D' }, T0 + 5 * MIN, 'r2');
+    assert.equal(stampsIn(vers).length, 4);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: файла ещё нет, чужой файл, имя процесса с .. или кириллицей, вложенная папка: ничего не копируется', () => {
+  const { base, cab, file } = verCab();
+  try {
+    assert.equal(save(cab, 'Write', { file_path: file('run.py'), content: 'x' }, T0), null);
+    assert.equal(existsSync(join(cab, 'output', 'p')), false);
+    writeFileSync(file('slovar.json'), 'x');
+    writeFileSync(file('other.py'), 'x');
+    mkdirSync(join(cab, 'processes', 'p', 'sub'));
+    writeFileSync(join(cab, 'processes', 'p', 'sub', 'slovar.json'), 'x');
+    mkdirSync(join(cab, 'processes', 'процесс'));
+    writeFileSync(join(cab, 'processes', 'процесс', 'slovar.json'), 'x');
+    // processes/P: на Mac и Windows это та же папка p, имя процесса всё равно только строчными.
+    for (const p of [
+      `${cab}/processes/p/../p/slovar.json`,
+      `${cab}/processes/../processes/p/slovar.json`,
+      'processes/p/../p/slovar.json',
+      'processes\\p\\..\\p\\slovar.json',
+      join(cab, 'processes', 'процесс', 'slovar.json'),
+      join(cab, 'processes', 'P', 'slovar.json'),
+      file('other.py'),
+      join(cab, 'processes', 'p', 'sub', 'slovar.json'),
+      join(cab, 'output', 'slovar.json'),
+      '',
+    ]) {
+      assert.equal(save(cab, 'Write', { file_path: p, content: 'y' }, T0), null, p);
+    }
+    for (const tool of ['NotebookEdit', 'Read', 'Bash', 'Artifact']) {
+      assert.equal(save(cab, tool, { file_path: file('slovar.json'), notebook_path: file('slovar.json'), command: 'x' }, T0), null, tool);
+    }
+    assert.deepEqual(readdirSync(join(cab, 'output')), []);
+    // Тот же файл буквально и относительным путём копируется.
+    assert.ok(save(cab, 'Write', { file_path: 'processes/p/slovar.json', content: 'y' }, T0));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: 21 папка: старшая удалена, посторонние папки и файлы в versions/ не тронуты', () => {
+  const { base, cab, file, vers } = verCab();
+  try {
+    const old = Array.from({ length: 20 }, (_, i) => `2026-10-${String(i + 1).padStart(2, '0')}-090000`);
+    for (const s of old) {
+      mkdirSync(join(vers, s), { recursive: true });
+      writeFileSync(join(vers, s, 'slovar.json'), s);
+    }
+    mkdirSync(join(vers, 'zametki'));
+    writeFileSync(join(vers, 'zametki', 'a.txt'), 'x');
+    writeFileSync(join(vers, 'readme.txt'), 'x');
+    mkdirSync(join(vers, '2026-10-00'));
+    writeFileSync(join(vers, '2026-09-01-090000'), 'файл, не папка');
+    writeFileSync(file('slovar.json'), 'новое');
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'z' }, T0);
+    const now = stampsIn(vers).filter((n) => existsSync(join(vers, n, 'slovar.json')));
+    assert.equal(now.length, 20);
+    assert.ok(!now.includes(old[0]), 'старшая папка удалена');
+    assert.deepEqual(now, [...old.slice(1), STAMP0]);
+    assert.equal(textOf(vers, 'zametki', 'a.txt'), 'x');
+    assert.equal(textOf(vers, 'readme.txt'), 'x');
+    assert.ok(existsSync(join(vers, '2026-10-00')));
+    assert.equal(textOf(vers, '2026-09-01-090000'), 'файл, не папка');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: файл больше 2 МБ и ошибка записи в output/ не копируются, решение сторожа то же, без исключения', () => {
+  const { base, cab, file, vers } = verCab();
+  const env = { CLAUDE_PROJECT_DIR: cab };
+  const hook = (mode, name, content = 'x') => {
+    const r = runHook({ tool_name: 'Write', cwd: cab, session_id: 's1', permission_mode: mode, tool_input: { file_path: file(name), content } }, env);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '');
+    return outOf(r);
+  };
+  const decisions = (name) => ['acceptEdits', 'auto', 'bypassPermissions'].map((m) => hook(m, name)?.permissionDecision ?? null);
+  const WANT = [null, 'ask', 'deny'];
+  try {
+    writeFileSync(file('run.py'), Buffer.alloc(3 * 1024 * 1024, 0x61));
+    assert.equal(save(cab, 'Write', { file_path: file('run.py'), content: 'x' }, T0), null);
+    assert.deepEqual(decisions('run.py'), WANT);
+    assert.equal(existsSync(vers), false);
+    // Папка процесса в output/ занята файлом.
+    writeFileSync(file('slovar.json'), 'x');
+    writeFileSync(join(cab, 'output', 'p'), 'занято');
+    assert.doesNotThrow(() => assert.equal(save(cab, 'Write', { file_path: file('slovar.json'), content: 'y' }, T0), null));
+    assert.deepEqual(decisions('slovar.json'), WANT);
+    assert.equal(textOf(cab, 'output', 'p'), 'занято');
+    rmSync(join(cab, 'output', 'p'));
+    // output/ только для чтения (на Windows и под root так не сделать).
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      chmodSync(join(cab, 'output'), 0o555);
+      try {
+        assert.doesNotThrow(() => assert.equal(save(cab, 'Write', { file_path: file('slovar.json'), content: 'y' }, T0), null));
+        assert.deepEqual(decisions('slovar.json'), WANT);
+        assert.equal(existsSync(join(cab, 'output', 'p')), false);
+      } finally {
+        chmodSync(join(cab, 'output'), 0o755);
+      }
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: папка versions ссылкой в другое место не используется', (t) => {
+  const { base, cab, file } = verCab();
+  try {
+    const away = join(base, 'away');
+    mkdirSync(away);
+    mkdirSync(join(cab, 'output', 'p'));
+    try {
+      symlinkSync(away, join(cab, 'output', 'p', 'versions'), 'junction');
+    } catch (e) {
+      return t.skip(`ссылки на папки недоступны (${e.code})`);
+    }
+    writeFileSync(file('slovar.json'), 'x');
+    assert.equal(save(cab, 'Write', { file_path: file('slovar.json'), content: 'y' }, T0), null);
+    assert.deepEqual(readdirSync(away), []);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: хук как процесс, кириллица и пробел в пути кабинета: прежний словарь сохранён, решение как раньше', () => {
+  const { base, cab, file, vers } = verCab();
+  try {
+    writeFileSync(file('slovar.json'), '{"оплата": ["касса?"]}');
+    const r = runHook(
+      { tool_name: 'Write', cwd: cab, session_id: 's1', permission_mode: 'acceptEdits', tool_input: { file_path: file('slovar.json'), content: '{}' } },
+      { CLAUDE_PROJECT_DIR: cab },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    const s = stampsIn(vers);
+    assert.equal(s.length, 1);
+    assert.equal(textOf(vers, s[0], 'slovar.json'), '{"оплата": ["касса?"]}');
+    // Правка в режиме без окна запрещена как раньше; версия при этом не мешает.
+    const deny = runHook(
+      { tool_name: 'Edit', cwd: cab, session_id: 's1', permission_mode: 'bypassPermissions', tool_input: { file_path: file('slovar.json'), old_string: 'касса?', new_string: 'касса' } },
+      { CLAUDE_PROJECT_DIR: cab },
+    );
+    assert.deepEqual(outOf(deny), { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: REASON_NO_PROMPT });
+    assert.equal(stampsIn(vers).length, 1);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
