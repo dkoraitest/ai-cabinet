@@ -280,7 +280,9 @@ test('откат версий: фраза в правилах кабинета, 
     '«Возвращаю прошлую версию, нажмите «Allow» (разрешить).»',
     '«Прошлых версий у процесса <название> нет: они появляются, когда программу или словарь меняют.»',
     'node tools/processes.mjs versions <имя>',
+    'node tools/processes.mjs versions <имя> --show <папка> <файл>',
     'node tools/processes.mjs compare <имя>',
+    'Вернётся описание процесса',
   ]) assert.ok(run.includes(must), must);
   const tip = 'Если правка не понравилась, скажите «верни прошлую версию <название>».';
   const pop = run.slice(run.indexOf('## Пополнить словарь'), run.indexOf('## Вернуть прошлую версию'));

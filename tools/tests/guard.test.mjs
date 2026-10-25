@@ -938,3 +938,71 @@ test('версии: хук как процесс, кириллица и проб
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('версии: ссылки не читаются: processes/p ссылкой наружу и файл-ссылка не копируются', (t) => {
+  const { base, cab, file, vers } = verCab();
+  try {
+    const away = join(base, 'away');
+    mkdirSync(away);
+    writeFileSync(join(away, 'slovar.json'), 'чужой файл');
+    writeFileSync(join(away, 'run.py'), 'print(0)\n');
+    rmSync(join(cab, 'processes', 'p'), { recursive: true });
+    try {
+      symlinkSync(away, join(cab, 'processes', 'p'), 'junction');
+    } catch (e) {
+      return t.skip(`ссылки на папки недоступны (${e.code})`);
+    }
+    assert.equal(save(cab, 'Write', { file_path: file('slovar.json'), content: 'y' }, T0), null);
+    assert.equal(existsSync(join(cab, 'output', 'p')), false);
+    // Настоящая папка процесса, но сам файл ссылка на чужой файл.
+    rmSync(join(cab, 'processes', 'p'));
+    mkdirSync(join(cab, 'processes', 'p'));
+    try {
+      symlinkSync(join(away, 'run.py'), file('run.py'));
+    } catch (e) {
+      return t.skip(`ссылки на файлы недоступны (${e.code})`);
+    }
+    assert.equal(save(cab, 'Write', { file_path: file('run.py'), content: 'y' }, T0), null);
+    assert.equal(stampsIn(vers).length, 0);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('версии: папка с временем позже текущего (часы переводили назад) не продолжается, новая папка не удаляется при чистке', () => {
+  const { base, cab, file, vers } = verCab();
+  try {
+    // Будущая папка того же разговора: не «последняя», файл ложится в новую папку.
+    mkdirSync(join(vers, '2026-10-26-150000'), { recursive: true });
+    writeFileSync(join(vers, '2026-10-26-150000', '.razgovor'), 's1');
+    writeFileSync(file('slovar.json'), 'v1');
+    save(cab, 'Write', { file_path: file('slovar.json'), content: 'v2' }, T0);
+    assert.deepEqual(stampsIn(vers), [STAMP0, '2026-10-26-150000']);
+    assert.equal(textOf(vers, STAMP0, 'slovar.json'), 'v1');
+    // В пределах минуты вперёд папка ещё своя.
+    writeFileSync(file('run.py'), 'print(1)\n');
+    save(cab, 'Edit', { file_path: file('run.py'), old_string: '1', new_string: '2' }, new Date(2026, 9, 26, 14, 4, 30).getTime());
+    assert.deepEqual(stampsIn(vers), [STAMP0, '2026-10-26-150000']);
+    assert.equal(textOf(vers, STAMP0, 'run.py'), 'print(1)\n');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+  const second = verCab();
+  try {
+    // 20 папок «из будущего»: новая папка по имени самая старая, но чистка её не трогает.
+    const future = Array.from({ length: 20 }, (_, i) => `2026-11-${String(i + 1).padStart(2, '0')}-090000`);
+    for (const s of future) {
+      mkdirSync(join(second.vers, s), { recursive: true });
+      writeFileSync(join(second.vers, s, 'slovar.json'), s);
+    }
+    writeFileSync(second.file('slovar.json'), 'сейчас');
+    assert.ok(save(second.cab, 'Write', { file_path: second.file('slovar.json'), content: 'z' }, T0));
+    const now = stampsIn(second.vers);
+    assert.equal(now.length, 20);
+    assert.ok(now.includes(STAMP0), 'только что записанная папка на месте');
+    assert.equal(textOf(second.vers, STAMP0, 'slovar.json'), 'сейчас');
+    assert.ok(!now.includes(future[0]));
+  } finally {
+    rmSync(second.base, { recursive: true, force: true });
+  }
+});

@@ -13,8 +13,9 @@
 //   node tools/processes.mjs input <slug>       папка input/<slug> для файлов человека, открывается в Проводнике
 //   node tools/processes.mjs read <slug> <файл> текст файла скилла (.md, .zip, .skill) или документа Word из input/<slug>
 //   node tools/processes.mjs compare <slug>     проверка программы и сверка её результата с эталоном скилла
-//   node tools/processes.mjs versions <slug>    прошлые версии программы и словаря (их сохраняет сторож кабинета)
-//   node tools/processes.mjs skills            свои скиллы человека в .claude/skills
+//   node tools/processes.mjs versions <slug>    прошлые версии программы и словаря (их сохраняет сторож кабинета);
+//                                               --show <папка> <файл>: текст файла версии, JSON по строкам
+//   node tools/processes.mjs skills             свои скиллы человека в .claude/skills
 //   node tools/processes.mjs demo <slug>        демо курса из templates/processes с файлом учебного кейса
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -1385,15 +1386,24 @@ export function compareProcess(root, slug) {
 // кладёт прежний файл в output/<slug>/versions/<ГГГГ-ММ-ДД-ЧЧММСС>/. Здесь только чтение: вернуть версию Claude
 // может только записью в processes/<slug>/ инструментом записи, с окном разрешения. Команды, которая сама
 // пишет из versions/ в processes/, нет: иначе файл, подложенный в output/, попал бы в программу без окна.
+// --show печатает файл версии для такой записи: JSON заново с отступом 2, по строке на слово, чтобы длинная строка
+// словаря не обрезалась при чтении. Папка с временем позже текущего (часы переводили назад) идёт в конец списка.
 const VERSIONS = 'versions';
 const VERSION_RE = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$/;
 const VERSION_LIMIT_BYTES = 2 * 1024 * 1024;
 const SHOW_VERSIONS = 5;
+const SHOW_FILE_LIMIT = 20000; // знаков: длиннее вывод команды для Claude обрезается
+const FUTURE_MS = 60 * 1000;
 const VERSION_FILES = [
   ['slovar.json', 'словарь'],
   ['run.py', 'программа'],
   ['process.json', 'описание процесса'],
 ];
+
+const stampTime = (stamp) => {
+  const [, y, mo, d, h, mi, s] = VERSION_RE.exec(stamp).map(Number);
+  return new Date(y, mo - 1, d, h, mi, s).getTime();
+};
 
 const versionTime = (stamp) => {
   const [, y, mo, d, h, mi] = VERSION_RE.exec(stamp);
@@ -1464,15 +1474,24 @@ function describeVersionFile(name, text, current) {
     return { lines: [`${head}, отличается от текущей (${now}).`], differs: true };
   }
   let same = sameText(text, current);
+  let mine = null;
+  let now = null;
   try {
-    same ||= JSON.stringify(JSON.parse(plainText(text))) === JSON.stringify(JSON.parse(plainText(current)));
+    mine = JSON.parse(plainText(text));
+    now = current === null ? {} : JSON.parse(plainText(current));
+    same ||= JSON.stringify(mine) === JSON.stringify(now);
   } catch {
     // не JSON: сравнили текстом
   }
-  return { lines: [`Описание процесса: ${same ? 'совпадает с текущим' : 'отличается от текущего'}.`], differs: !same };
+  if (same) return { lines: ['Описание процесса: совпадает с текущим.'], differs: false };
+  // Что вернётся: название и фраза запуска, если они другие.
+  const back = [['title', 'название'], ['phrase', 'фраза запуска']]
+    .filter(([k]) => typeof mine?.[k] === 'string' && mine[k] !== now?.[k])
+    .map(([k, label]) => `${label} «${mine[k]}» (сейчас ${typeof now?.[k] === 'string' ? `«${now[k]}»` : 'нет'})`);
+  return { lines: [`Описание процесса: отличается от текущего${back.length ? `: вернётся ${back.join(', ')}` : ' (название и фраза запуска те же)'}.`], differs: true };
 }
 
-export function listVersions(root, slug) {
+export function listVersions(root, slug, { now = Date.now() } = {}) {
   if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
     return { text: 'Имя папки процесса: строчные латинские буквы, цифры и дефис, до 40 знаков, например svodka-prodazh.', code: 2 };
   }
@@ -1489,6 +1508,8 @@ export function listVersions(root, slug) {
   } catch {
     // папки нет: версий нет
   }
+  const future = (s) => stampTime(s) > now + FUTURE_MS;
+  stamps = [...stamps.filter((s) => !future(s)), ...stamps.filter(future)];
   const versions = stamps
     .map((stamp) => {
       const files = VERSION_FILES.map(([name, label]) => {
@@ -1512,10 +1533,41 @@ export function listVersions(root, slug) {
     lines.push('Все сохранённые версии совпадают с текущими файлами процесса: возвращать нечего.');
   } else {
     const v = versions[target];
-    const pairs = v.files.filter((f) => f.differs).map((f) => `${rel}/${v.stamp}/${f.name} → processes/${slug}/${f.name}`);
+    const show = (f) => (f.name.endsWith('.json') ? ` (текст: node tools/processes.mjs versions ${slug} --show ${v.stamp} ${f.name})` : '');
+    const pairs = v.files.filter((f) => f.differs).map((f) => `${rel}/${v.stamp}/${f.name} → processes/${slug}/${f.name}${show(f)}`);
     lines.push(`Последняя версия, которая отличается от текущей: ${target + 1} (${versionTime(v.stamp)}). Вернуть: ${pairs.join(', ')}.`);
   }
   return { text: lines.join('\n'), code: 0 };
+}
+
+// Текст файла версии для возврата записью: JSON заново с отступом 2, программа как есть.
+export function showVersionFile(root, slug, stamp, name) {
+  if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
+    return { text: 'Имя папки процесса: строчные латинские буквы, цифры и дефис, до 40 знаков, например svodka-prodazh.', code: 2 };
+  }
+  if (typeof stamp !== 'string' || !VERSION_RE.test(stamp) || !VERSION_FILES.some(([n]) => n === name)) {
+    return { text: 'Укажите версию и файл: node tools/processes.mjs versions <имя> --show <папка версии> <файл> (slovar.json, run.py или process.json).', code: 2 };
+  }
+  if (!hasProcess(root, slug)) return { text: `Такого процесса нет: ${slug}. Процессы кабинета: ${known(root)}.`, code: 2 };
+  const rel = `output/${slug}/${VERSIONS}/${stamp}/${name}`;
+  let dirOk = false;
+  try {
+    dirOk = lstatSync(join(root, 'output', slug, VERSIONS, stamp)).isDirectory();
+  } catch {
+    // нет папки
+  }
+  const raw = dirOk ? readVersionFile(join(root, 'output', slug, VERSIONS, stamp, name)) : null;
+  if (raw === null) return { text: `Такого файла версии нет: ${rel}. Список версий: node tools/processes.mjs versions ${slug}.`, code: 2 };
+  let text = plainText(raw);
+  if (name.endsWith('.json')) {
+    try {
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      return { text: `Файл ${rel} в этой версии испорчен (не JSON): вернуть его нельзя.`, code: 2 };
+    }
+  }
+  if (text.length > SHOW_FILE_LIMIT) return { text: `Файл ${rel} слишком большой, чтобы вернуть его здесь. Покажите это сообщение тренеру.`, code: 2 };
+  return { text, code: 0 };
 }
 
 // ---------- свои скиллы человека ----------
@@ -1559,7 +1611,8 @@ const USAGE = `Процессы кабинета:
   node tools/processes.mjs read <имя> <файл>  показать текст скилла (.md, .zip, .skill) или документа Word из input/<имя>
   node tools/processes.mjs compare <имя>      проверить программу и сверить её результат с эталоном скилла output/<имя>/etalon-skilla.json
   node tools/processes.mjs versions <имя>     прошлые версии программы и словаря из output/<имя>/versions и чем они отличаются от текущих
-  node tools/processes.mjs skills            свои скиллы человека в .claude/skills (без скиллов курса)
+                                              (--show <папка> <файл>: текст файла версии, чтобы вернуть его)
+  node tools/processes.mjs skills             свои скиллы человека в .claude/skills (без скиллов курса)
   node tools/processes.mjs demo <имя>         поставить демо курса из templates/processes и запустить
 <имя>: имя папки процесса латиницей, например svodka-prodazh.`;
 
@@ -1785,7 +1838,10 @@ async function dispatch(root, argv) {
   if (cmd === 'input') return cliInput(root, slug, !argv.includes('--no-open'));
   if (cmd === 'read') return readInputFile(root, slug, argv.slice(2).filter((a) => !a.startsWith('--')).join(' '));
   if (cmd === 'compare') return compareProcess(root, slug);
-  if (cmd === 'versions') return listVersions(root, slug);
+  if (cmd === 'versions') {
+    const i = argv.indexOf('--show');
+    return i === -1 ? listVersions(root, slug) : showVersionFile(root, slug, argv[i + 1], argv[i + 2]);
+  }
   if (cmd === 'skills') return listSkills(root);
   if (cmd === 'demo') return cliDemo(root, slug);
   return { text: USAGE, code: cmd ? 2 : 0 };

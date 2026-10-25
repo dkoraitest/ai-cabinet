@@ -589,7 +589,7 @@ test('versions: без версий, три версии от новой к ст
     for (const [n, t] of Object.entries(files)) writeFileSync(join(V, stamp, n), t);
   };
   put('2026-10-20-090000', { 'slovar.json': slovar({ оплата: ['касса?', 'наличные'] }), 'run.py': 'print(1)\n' });
-  put('2026-10-26-140512', { 'slovar.json': slovar({ оплата: ['касса?', 'терминал'], лояльность: ['бонус'] }), '.razgovor': 'x' });
+  put('2026-10-23-140512', { 'slovar.json': slovar({ оплата: ['касса?', 'терминал'], лояльность: ['бонус'] }), '.razgovor': 'x' });
   put('2026-10-22-101500', { 'run.py': 'print(1)\r\nprint(2)\r\n' });
   mkdirSync(join(V, 'zametki'));
   writeFileSync(join(V, 'readme.txt'), 'x');
@@ -598,9 +598,9 @@ test('versions: без версий, три версии от новой к ст
   assert.equal(r.code, 0, r.out);
   const lines = r.out.trim().split('\n');
   assert.equal(lines[0], 'Прошлые версии процесса «Разбор обращений» (папка output/razbor/versions): 3, от новой к старой.');
-  const order = ['26.10.2026 14:05', '22.10.2026 10:15', '20.10.2026 09:00'].map((t) => r.out.indexOf(t));
+  const order = ['23.10.2026 14:05', '22.10.2026 10:15', '20.10.2026 09:00'].map((t) => r.out.indexOf(t));
   assert.ok(order.every((i, k) => i > 0 && (k === 0 || i > order[k - 1])), r.out);
-  assert.ok(lines.includes('1. 26.10.2026 14:05, папка output/razbor/versions/2026-10-26-140512: словарь.'), r.out);
+  assert.ok(lines.includes('1. 23.10.2026 14:05, папка output/razbor/versions/2026-10-23-140512: словарь.'), r.out);
   assert.ok(lines.includes('   Словарь, слов по темам: оплата 2, лояльность 1 (всего 3).'), r.out);
   assert.ok(lines.includes('   Если вернуть словарь: уйдут слова «kaspi» (оплата), «баллы» (лояльность), «карта лояльности» (лояльность).'), r.out);
   assert.ok(lines.includes('2. 22.10.2026 10:15, папка output/razbor/versions/2026-10-22-101500: программа.'), r.out);
@@ -611,7 +611,10 @@ test('versions: без версий, три версии от новой к ст
     r.out,
   );
   assert.ok(lines.includes('   Программа, строк: 1, отличается от текущей (в текущей строк: 2).'), r.out);
-  assert.equal(lines.at(-1), 'Последняя версия, которая отличается от текущей: 1 (26.10.2026 14:05). Вернуть: output/razbor/versions/2026-10-26-140512/slovar.json → processes/razbor/slovar.json.');
+  assert.equal(
+    lines.at(-1),
+    'Последняя версия, которая отличается от текущей: 1 (23.10.2026 14:05). Вернуть: output/razbor/versions/2026-10-23-140512/slovar.json → processes/razbor/slovar.json (текст: node tools/processes.mjs versions razbor --show 2026-10-23-140512 slovar.json).',
+  );
   assert.doesNotMatch(r.out, /zametki|readme|razgovor/);
 
   // Словарь уже вернули к версии 1: она совпадает с текущим, вернуть можно только версию 3 (версия 2 тоже совпадает).
@@ -621,7 +624,7 @@ test('versions: без версий, три версии от новой к ст
   assert.ok(back.out.includes('   Словарь совпадает с текущим.'), back.out);
   assert.equal(
     back.out.trim().split('\n').at(-1),
-    'Последняя версия, которая отличается от текущей: 3 (20.10.2026 09:00). Вернуть: output/razbor/versions/2026-10-20-090000/slovar.json → processes/razbor/slovar.json, output/razbor/versions/2026-10-20-090000/run.py → processes/razbor/run.py.',
+    'Последняя версия, которая отличается от текущей: 3 (20.10.2026 09:00). Вернуть: output/razbor/versions/2026-10-20-090000/slovar.json → processes/razbor/slovar.json (текст: node tools/processes.mjs versions razbor --show 2026-10-20-090000 slovar.json), output/razbor/versions/2026-10-20-090000/run.py → processes/razbor/run.py.',
   );
 
   for (const bad of ['..', '../me', 'Razbor', 'a/b', '']) {
@@ -651,4 +654,63 @@ test('versions: показывает не больше 5 версий; все с
   const c = cli(['compare', 'pyat']);
   assert.match(c.out, /строка 1: запуск программ или выход в сеть: import subprocess/);
   assert.match(c.out, /Итог проверки программы: уберите это из программы, «готово» нельзя\./);
+});
+
+test('versions --show: файл версии целиком, JSON по строкам с отступом 2; неверная папка, файл, имя: отказ', () => {
+  addProcess('pokaz', script('pokaz', 'Показ'), 'print(1)\n');
+  const V = join(cab, 'output', 'pokaz', 'versions', '2026-10-23-140512');
+  mkdirSync(V, { recursive: true });
+  const big = {};
+  for (let t = 0; t < 10; t++) big[`тема ${t}`] = Array.from({ length: 50 }, (_, i) => `слово${t}-${i}`);
+  big['срочно (не тема)'] = ['пролил', 'запах бенз'];
+  const oneLine = JSON.stringify(big);
+  assert.ok(oneLine.length > 5000);
+  writeFileSync(join(V, 'slovar.json'), `\uFEFF${oneLine}`);
+  writeFileSync(join(V, 'process.json'), '{"title":"Показ старый","phrase":"запусти показ","kind":"script"}');
+  writeFileSync(join(V, 'run.py'), 'print(1)\r\nprint(2)\r\n');
+  const r = cli(['versions', 'pokaz', '--show', '2026-10-23-140512', 'slovar.json']);
+  assert.equal(r.code, 0, r.out);
+  const lines = r.out.replace(/\n$/, '').split('\n');
+  assert.ok(Math.max(...lines.map((l) => l.length)) < 100, 'строки короткие');
+  assert.equal(lines[1], '  "тема 0": [');
+  assert.deepEqual(JSON.parse(r.out), big);
+  const p = cli(['versions', 'pokaz', '--show', '2026-10-23-140512', 'process.json']);
+  assert.deepEqual(JSON.parse(p.out), { title: 'Показ старый', phrase: 'запусти показ', kind: 'script' });
+  assert.match(p.out, /^\{\n  "title": "Показ старый",/);
+  assert.equal(cli(['versions', 'pokaz', '--show', '2026-10-23-140512', 'run.py']).out, 'print(1)\nprint(2)\n');
+  for (const args of [
+    ['pokaz', '--show', '2026-10-26-140513', 'slovar.json'],
+    ['pokaz', '--show', '../../processes', 'slovar.json'],
+    ['pokaz', '--show', '2026-10-23-140512', '../../../CLAUDE.md'],
+    ['pokaz', '--show', '2026-10-23-140512', 'etalon-skilla.json'],
+    ['pokaz', '--show'],
+    ['..', '--show', '2026-10-23-140512', 'slovar.json'],
+  ]) {
+    const x = cli(['versions', ...args]);
+    assert.equal(x.code, 2, `${args.join(' ')}: ${x.out}`);
+    assert.doesNotMatch(x.out, /\n\s+at /);
+  }
+  // Испорченный JSON не показывается: вернуть его нельзя.
+  writeFileSync(join(V, 'slovar.json'), '{"тема": ["слово",');
+  const broken = cli(['versions', 'pokaz', '--show', '2026-10-23-140512', 'slovar.json']);
+  assert.equal(broken.code, 2, broken.out);
+  assert.match(broken.out, /испорчен/);
+  // Описание процесса в списке версий: что вернётся.
+  const list = cli(['versions', 'pokaz']);
+  assert.ok(list.out.includes('   Описание процесса: отличается от текущего: вернётся название «Показ старый» (сейчас «Показ»).'), list.out);
+  assert.match(list.out, /Вернуть: .*process\.json → processes\/pokaz\/process\.json \(текст: node tools\/processes\.mjs versions pokaz --show 2026-10-23-140512 process\.json\)/);
+});
+
+test('versions: папка с временем позже текущего не считается новой, идёт в конец списка', () => {
+  addProcess('budushchee', script('budushchee', 'Будущее'), 'print(1)\n');
+  writeFileSync(join(cab, 'processes', 'budushchee', 'slovar.json'), JSON.stringify({ оплата: ['касса?'] }));
+  const V = join(cab, 'output', 'budushchee', 'versions');
+  for (const [s, words] of [['2099-01-01-000000', ['наличные']], ['2026-10-20-090000', ['терминал']]]) {
+    mkdirSync(join(V, s), { recursive: true });
+    writeFileSync(join(V, s, 'slovar.json'), JSON.stringify({ оплата: words }));
+  }
+  const r = cli(['versions', 'budushchee']);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.out.indexOf('20.10.2026 09:00') < r.out.indexOf('01.01.2099 00:00'), r.out);
+  assert.match(r.out.trim().split('\n').at(-1), /^Последняя версия, которая отличается от текущей: 1 \(20\.10\.2026 09:00\)/);
 });

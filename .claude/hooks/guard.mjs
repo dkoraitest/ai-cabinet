@@ -417,12 +417,15 @@ export function decide(input, ctx = {}) {
 // папки (возврат версии), а сейчас файл другой; тогда текущее состояние идёт в новую папку, иначе вернуть его
 // обратно («откат отката») было бы нельзя. Иначе новая папка. Не больше 20 папок на процесс: старшие по имени
 // удаляются, только папки с именем-временем внутри versions/. Имя процесса только из пути
-// processes/<имя>/<файл> от корня кабинета, без .., латиница, цифры, дефис. output/, output/<имя>/ и versions/
-// должны быть настоящими папками, не ссылками. Файл больше 2 МБ не копируется. Любая ошибка: копии нет, и всё.
+// processes/<имя>/<файл> от корня кабинета, без .., латиница, цифры, дефис. Ссылкам не следуем: processes/,
+// processes/<имя>/, output/, output/<имя>/ и versions/ должны быть настоящими папками, файл обычным файлом.
+// Папка с временем позже текущего больше чем на минуту (часы переводили назад) не продолжается, а только что
+// записанную папку чистка не удаляет. Файл больше 2 МБ не копируется. Любая ошибка: копии нет, и всё.
 export const VERSION_FILES = ['run.py', 'slovar.json', 'process.json'];
 export const VERSION_WINDOW_MS = 10 * 60 * 1000;
 export const VERSION_MAX_BYTES = 2 * 1024 * 1024;
 export const VERSION_KEEP = 20;
+const VERSION_FUTURE_MS = 60 * 1000;
 const VERSION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 const VERSION_SLUG = /^[a-z0-9-]{1,40}$/;
 const STAMP = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$/;
@@ -511,12 +514,14 @@ function sessionOf(dir, P) {
   }
 }
 
-function pruneVersions(vers, P) {
+// Старшие по имени папки сверх 20, кроме только что записанной keep.
+function pruneVersions(vers, P, keep) {
   const all = readdirSync(vers, { withFileTypes: true })
     .filter((e) => e.isDirectory() && STAMP.test(e.name))
     .map((e) => e.name)
     .sort();
-  for (const name of all.slice(0, Math.max(0, all.length - VERSION_KEEP))) {
+  const old = all.filter((n) => n !== keep);
+  for (const name of old.slice(0, Math.max(0, all.length - VERSION_KEEP))) {
     try {
       rmSync(P.join(vers, name), { recursive: true, force: true });
     } catch {
@@ -534,7 +539,8 @@ export function saveVersion(input, { roots = [], cwds = [], platform = process.p
     const t = versionTarget(ti.file_path, { cwds, roots, platform });
     if (!t) return null;
     const { P } = t;
-    const st = statSync(t.file);
+    if (!realDir(P.join(t.root, 'processes')) || !realDir(P.join(t.root, 'processes', t.slug))) return null;
+    const st = lstatSync(t.file);
     if (!st.isFile() || st.size > VERSION_MAX_BYTES) return null;
     const vers = P.join(t.root, 'output', t.slug, 'versions');
     for (const d of [P.join(t.root, 'output'), P.join(t.root, 'output', t.slug), vers]) if (!ensureDir(d)) return null;
@@ -542,12 +548,13 @@ export function saveVersion(input, { roots = [], cwds = [], platform = process.p
     const last = readdirSync(vers, { withFileTypes: true })
       .filter((e) => e.isDirectory() && STAMP.test(e.name))
       .map((e) => e.name)
+      .filter((n) => !(stampTime(n) > now + VERSION_FUTURE_MS))
       .sort()
       .at(-1);
     let dir = null;
     if (last) {
       const age = now - stampTime(last);
-      if (age >= 0 && age < VERSION_WINDOW_MS && realDir(P.join(vers, last)) && sessionOf(P.join(vers, last), P) === session) dir = last;
+      if (age >= -VERSION_FUTURE_MS && age < VERSION_WINDOW_MS && realDir(P.join(vers, last)) && sessionOf(P.join(vers, last), P) === session) dir = last;
     }
     if (dir && present(P.join(vers, dir, t.name))) {
       const saved = P.join(vers, dir, t.name);
@@ -578,7 +585,7 @@ export function saveVersion(input, { roots = [], cwds = [], platform = process.p
       } catch {
         // без отметки разговора папка просто не продолжится
       }
-      pruneVersions(vers, P);
+      pruneVersions(vers, P, dir);
     }
     return dest;
   } catch {
