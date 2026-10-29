@@ -1,4 +1,6 @@
 // Файлы участника (me/, site/) создаются из шаблонов, если их ещё нет. Существующие не трогаем никогда.
+// Новый файл в MANIFEST (как страница сервиса «Спроси таблицу» site/analiz.html) появляется в уже поставленном
+// кабинете при «обнови кабинет» (update.mjs запускает init) или при следующем запуске страницы (serve.mjs).
 // Запуск: node tools/init.mjs [--json]. Его же вызывают check.mjs, serve.mjs и update.mjs.
 // --json: только список созданных файлов в JSON (его читает update.mjs).
 import { constants, copyFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -11,6 +13,8 @@ export const MANIFEST = [
   { from: 'templates/rules.md', to: 'me/rules.md' },
   { from: 'templates/site/index.html', to: 'site/index.html' },
   { from: 'templates/site/render.js', to: 'site/render.js' },
+  { from: 'templates/site/analiz.html', to: 'site/analiz.html' },
+  { from: 'templates/site/analiz.js', to: 'site/analiz.js' },
 ];
 
 export function ensureParticipantFiles(root) {

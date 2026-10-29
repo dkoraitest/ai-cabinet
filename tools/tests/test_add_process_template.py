@@ -37,7 +37,7 @@ except ImportError:
 def blocks():
     found = re.findall(r"```python\n(.*?)```", GUIDE.read_text(encoding="utf-8"), re.S)
     found_dva = re.findall(r"```python\n(.*?)```", GUIDE_DVA.read_text(encoding="utf-8"), re.S)
-    assert len(found) == 6, f"в programma.md нужны 6 образцов, найдено {len(found)}"
+    assert len(found) == 7, f"в programma.md нужны 7 образцов, найдено {len(found)}"
     assert len(found_dva) == 2, f"в programma-dva-dokumenta.md нужны 2 образца, найдено {len(found_dva)}"
     named = {}
     for b in found + found_dva:
@@ -49,6 +49,8 @@ def blocks():
             named["word"] = b
         elif b.startswith("# --- Данные из интернета"):
             named["net"] = b
+        elif b.startswith("try:\n    import llm"):
+            named["model"] = b
         elif "slovar = load_slovar()" in b and b.startswith("def main():"):
             named["main_slovar"] = b
         elif "fill_docx(" in b and b.startswith("def main():"):
@@ -57,7 +59,7 @@ def blocks():
             named["dva"] = b
         elif "two_documents(" in b and b.startswith("def main():"):
             named["main_dva"] = b
-    assert len(named) == 8, f"в справке нужны 8 образцов, найдено {sorted(named)}"
+    assert len(named) == 9, f"в справке нужны 9 образцов, найдено {sorted(named)}"
     return named
 
 

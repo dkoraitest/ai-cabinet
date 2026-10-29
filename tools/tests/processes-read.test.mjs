@@ -608,3 +608,14 @@ test('programProblems: блок «Данные из интернета» из с
   assert.ok(block, 'в справке нет блока «Данные из интернета»');
   assert.deepEqual(programProblems(block[1]), []);
 });
+
+test('programProblems: модель только через tools/llm.py; прямые API моделей помечаются', () => {
+  const guide = readFileSync(join(ROOT, '.claude', 'skills', 'add-process', 'programma.md'), 'utf8');
+  const block = /```python\r?\n(try:\r?\n    import llm[\s\S]*?)```/.exec(guide);
+  assert.ok(block, 'в справке нет блока «Модель внутри программы»');
+  assert.deepEqual(programProblems(block[1]), []);
+  assert.deepEqual(programProblems('import llm\nans = llm.ask("Кратко", "итоги")'), []);
+  for (const bad of ['url = "https://api.anthropic.com/v1/messages"', 'import openai', 'r = requests.post("https://api.openai.com/v1/chat")']) {
+    assert.ok(programProblems(bad).some((x) => x.why.includes('tools/llm.py')), bad);
+  }
+});

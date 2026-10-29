@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Спроси таблицу</title>
+<style>
+  /* Страница сервиса «Спроси таблицу». Цвета и размеры как на главной странице кабинета (index.html);
+     папка бренда (brand/theme.css, подключена ниже) переопределяет переменные --accent, --link, --stripe и другие. */
+  :root {
+    color-scheme: light;
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --header-bg: #ffffff;
+    --text: #172033;
+    --muted: #5b6577;
+    --line: #e2e7ee;
+    --line-strong: #cfd6e0;
+    --th-bg: #f6f8fb;
+    --accent: #2456c9;
+    --accent-ink: #ffffff;
+    --accent-dark: #1a3f96;
+    --accent-dark-ink: #ffffff;
+    --link: var(--accent-dark);
+    --stripe: var(--accent);
+    --logo-height: 40px;
+    --radius: 16px;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 2px 8px rgba(16, 24, 40, 0.04);
+    --red: #b42318;
+    --red-bg: #fef1f0;
+    --yellow: #8a5300;
+    --yellow-bg: #fff7e0;
+    --green: #1f7a3a;
+    --green-bg: #effaf2;
+    --grey: #4f5662;
+    --grey-bg: #f0f2f5;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.55 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Roboto, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* Шапка: полоса цвета компании, логотип, название страницы, ссылка на главную. */
+  .top {
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--line);
+    box-shadow: inset 0 4px 0 var(--stripe);
+  }
+  .top-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; min-height: 80px; padding-top: 4px; }
+  .brand-logo { display: block; height: var(--logo-height); width: auto; max-width: 260px; object-fit: contain; }
+  .brand-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+  h1 { font-size: 22px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .top.branded h1 { padding-left: 22px; border-left: 1px solid var(--line-strong); color: var(--muted); }
+  .back {
+    margin-left: auto;
+    color: var(--link);
+    font-weight: 600;
+    font-size: 16px;
+    text-decoration: none;
+    padding: 8px 2px;
+  }
+  .back:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .back:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; border-radius: 4px; }
+
+  main { padding-top: 28px; padding-bottom: 56px; }
+  .lead { margin: 0 0 22px; color: var(--muted); font-size: 17px; max-width: 900px; }
+  .loading, .empty {
+    background: var(--card);
+    border: 1px dashed var(--line-strong);
+    border-radius: 12px;
+    padding: 28px;
+    font-size: 17px;
+    text-align: center;
+    color: var(--muted);
+    margin: 0;
+  }
+  .card .loading { background: var(--th-bg); }
+
+  /* Карточки блоков и ответов. */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 22px 26px 24px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+  }
+  .card > :last-child { margin-bottom: 0; }
+  .card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin-bottom: 14px; }
+  .card h2, .section-title { font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+  .section-title { margin: 34px 0 14px; }
+  .head-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  /* Кнопки: главная «Спросить» в цвете компании, остальные спокойные. */
+  .btn, .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    min-height: 40px;
+    padding: 8px 16px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+  .btn { background: var(--card); color: var(--text); border: 1px solid var(--line-strong); }
+  .btn:hover:not(:disabled) { border-color: var(--accent-dark); color: var(--accent-dark); }
+  .btn:disabled { color: #8a93a3; cursor: default; background: var(--th-bg); }
+  .btn-primary {
+    font-size: 16px;
+    min-height: 46px;
+    padding: 10px 26px;
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.14);
+  }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-dark); color: var(--accent-dark-ink); }
+  .btn-primary:disabled { background: #e6e9ef; color: #4a5363; box-shadow: none; cursor: default; }
+  .btn:focus-visible, .btn-primary:focus-visible, textarea:focus-visible, select:focus-visible, .phrase-input:focus-visible, summary:focus-visible {
+    outline: 3px solid var(--accent-dark);
+    outline-offset: 2px;
+  }
+
+  /* Паспорт данных. */
+  .data-sum { margin: 0 0 12px; color: var(--muted); }
+  .folder-msg { margin: 0 0 14px; padding: 10px 14px; background: var(--th-bg); border-radius: 10px; overflow-wrap: anywhere; }
+  .empty-data { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 18px 22px; background: var(--th-bg); }
+  .empty-data p { margin: 0; }
+  .empty-data .empty-title { font-weight: 650; font-size: 18px; margin-bottom: 6px; }
+  details.file { border: 1px solid var(--line); border-radius: 12px; margin-top: 10px; }
+  details.file > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 14px;
+    padding: 12px 16px;
+    cursor: pointer;
+    list-style: none;
+  }
+  details.file > summary::-webkit-details-marker { display: none; }
+  details.file > summary::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--muted);
+    border-bottom: 2px solid var(--muted);
+    transform: rotate(-45deg);
+    margin-right: 2px;
+    align-self: center;
+    transition: transform 0.15s ease;
+  }
+  details.file[open] > summary::before { transform: rotate(45deg); }
+  details.file[open] > summary { border-bottom: 1px solid var(--line); }
+  .file-name { font-weight: 650; overflow-wrap: anywhere; }
+  .file-meta, .sheet-meta { color: var(--muted); font-size: 15px; }
+  details.file > .table-wrap, details.file > .sheet, details.file > p { margin: 12px 16px; }
+  .sheet { font-size: 16px; font-weight: 650; margin: 14px 16px 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .table-wrap.cols { max-height: 460px; }
+  td.col-name { font-weight: 600; white-space: nowrap; }
+  td.col-info { color: var(--text); overflow-wrap: anywhere; }
+  td.col-info.muted { color: var(--muted); font-style: italic; }
+  .col-extra { color: var(--muted); }
+  .sheet-title { color: var(--muted); font-size: 15px; margin: 10px 16px 0; }
+  .type { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .t-num { color: #1a4a9c; background: #eaf1fd; }
+  .t-date { color: var(--green); background: var(--green-bg); }
+  .t-text { color: var(--grey); background: var(--grey-bg); }
+  .t-other { color: var(--yellow); background: var(--yellow-bg); }
+
+  /* Вопрос. */
+  textarea {
+    display: block;
+    width: 100%;
+    min-height: 92px;
+    resize: vertical;
+    font: inherit;
+    font-size: 18px;
+    line-height: 1.45;
+    color: var(--text);
+    padding: 12px 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    background: var(--card);
+  }
+  textarea::placeholder { color: #8a93a3; }
+  .ask-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 12px; }
+  .busy { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-weight: 600; }
+  .busy::before {
+    content: "";
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .busy::before { animation: none; }
+  }
+  .ask-note { margin: 12px 0 0; color: var(--muted); font-size: 15px; }
+  #ask-msg:empty { display: none; }
+  #ask-msg { margin-top: 14px; }
+  .notice { padding: 14px 18px; border-radius: 12px; background: var(--yellow-bg); box-shadow: inset 0 0 0 1px rgba(138, 83, 0, 0.18); }
+  .notice-red { background: var(--red-bg); box-shadow: inset 0 0 0 1px rgba(180, 35, 24, 0.18); }
+  .notice p { margin: 0 0 10px; }
+  .notice > :last-child { margin-bottom: 0; }
+  .phrase { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .phrase-input {
+    flex: 1 1 320px;
+    min-width: 0;
+    font: inherit;
+    font-size: 16px;
+    padding: 9px 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+  }
+
+  /* Ответы. */
+  .answer-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 20px; margin-bottom: 12px; }
+  .question { font-size: 20px; line-height: 1.3; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
+  .when { color: var(--muted); font-size: 15px; white-space: nowrap; }
+  .summary { font-size: 18px; margin: 0 0 16px; padding: 12px 16px; background: var(--th-bg); border-radius: 10px; }
+  .table-wrap { overflow: auto; max-height: 60vh; border: 1px solid var(--line); border-radius: 12px; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  th.num, td.num { text-align: right; white-space: nowrap; }
+  th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--th-bg);
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 600;
+    border-bottom-color: var(--line-strong);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background-image: linear-gradient(rgba(16, 24, 40, 0.035), rgba(16, 24, 40, 0.035)); }
+  tfoot td { position: sticky; bottom: 0; background: var(--th-bg); font-weight: 650; border-top: 1px solid var(--line-strong); border-bottom: 0; }
+  .rows-note { margin: 10px 0 0; color: var(--muted); font-size: 15px; }
+  .notes-box { margin-top: 14px; }
+  .notes-title { margin: 0 0 4px; font-weight: 600; font-size: 15px; color: var(--muted); }
+  .notes { margin: 0; padding-left: 20px; color: var(--muted); font-size: 15px; }
+  .answer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 16px; }
+  .action-msg { color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
+  .action-msg a, .files a { color: var(--link); font-weight: 600; text-underline-offset: 3px; }
+  .hint { color: var(--muted); }
+  .error { color: var(--red); overflow-wrap: anywhere; }
+  .run-error { margin: 0; color: var(--red); font-weight: 600; padding: 10px 14px; background: var(--red-bg); border-radius: 10px; overflow-wrap: anywhere; }
+  .answer .run-error { margin-bottom: 14px; }
+
+  /* График: рисует analiz.js в SVG из таблицы ответа. Цвет столбиков и линии из бренда (--accent). */
+  .chart { margin-top: 16px; padding: 16px 18px 12px; border: 1px solid var(--line); border-radius: 12px; }
+  .chart-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; margin-bottom: 8px; }
+  .chart-title { margin: 0; font-weight: 650; font-size: 17px; }
+  .chart-by { color: var(--muted); font-weight: 400; }
+  .measure { color: var(--muted); font-size: 15px; display: inline-flex; align-items: center; gap: 8px; }
+  .measure select { font: inherit; font-size: 15px; color: var(--text); padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--card); }
+  .chart-box { overflow-x: auto; }
+  .chart-svg { display: block; width: 100%; height: auto; min-width: 560px; font-family: inherit; }
+  .chart-svg .bar { fill: var(--accent); }
+  .chart-svg .mark:hover .bar { fill: var(--accent-dark); }
+  .chart-svg .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .chart-svg .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
+  .chart-svg .mark:hover .dot { fill: var(--accent-dark); }
+  .chart-svg .hit { fill: transparent; }
+  .chart-svg .mark:hover .hit { fill: rgba(16, 24, 40, 0.04); }
+  .chart-svg .grid { stroke: var(--line); stroke-width: 1; }
+  .chart-svg .base { stroke: var(--line-strong); stroke-width: 1; }
+  .chart-svg .zero { stroke: #8a93a3; stroke-width: 1.25; }
+  .chart-svg text { font-size: 13px; }
+  .chart-svg .axis { fill: var(--muted); font-size: 12px; }
+  .chart-svg .cat { fill: var(--text); }
+  .chart-svg .value { fill: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  @media (max-width: 640px) {
+    body { font-size: 16px; }
+    .wrap { padding-left: 16px; padding-right: 16px; }
+    .top-inner { min-height: 64px; padding-bottom: 6px; }
+    .brand-logo { height: calc(var(--logo-height) * 0.8); }
+    h1 { font-size: 19px; }
+    .top.branded h1 { padding-left: 16px; }
+    .back { margin-left: 0; }
+    main { padding-top: 20px; }
+    .card { padding: 16px; }
+    .card h2, .section-title { font-size: 20px; }
+    .question { font-size: 18px; }
+    .summary { font-size: 17px; }
+    table { font-size: 14px; }
+    .btn-primary { width: 100%; }
+  }
+</style>
+<link rel="stylesheet" href="brand/theme.css">
+</head>
+<body data-cabinet="ok" data-service="analiz">
+<header class="top" id="top">
+  <div class="wrap top-inner">
+    <img class="brand-logo" id="brand-logo" alt="" hidden>
+    <span class="brand-name" id="brand-name" hidden></span>
+    <h1>Спроси таблицу</h1>
+    <a class="back" href="./">← Мой кабинет</a>
+  </div>
+</header>
+<main class="wrap">
+  <p class="lead">Задайте вопрос своим таблицам словами. Считает программа на вашем компьютере: в модель уходят только описание таблиц (названия столбцов и их типы) и ваш вопрос, строки файлов никуда не уходят.</p>
+
+  <section class="card" aria-labelledby="data-title">
+    <div class="card-head">
+      <h2 id="data-title">Ваши данные</h2>
+      <div class="head-actions">
+        <button type="button" class="btn" id="refresh">Обновить</button>
+        <button type="button" class="btn" id="open-folder">Открыть папку с данными</button>
+      </div>
+    </div>
+    <p class="folder-msg" id="folder-msg" hidden></p>
+    <div id="passport" aria-live="polite"><p class="loading">Смотрю файлы…</p></div>
+  </section>
+
+  <section class="card" aria-labelledby="ask-title">
+    <div class="card-head"><h2 id="ask-title">Ваш вопрос</h2></div>
+    <form id="ask-form" autocomplete="off">
+      <label class="sr-only" for="question">Ваш вопрос</label>
+      <textarea id="question" rows="3" maxlength="1000" placeholder="Например: как изменились продажи по АЗС за последнюю неделю к предыдущей?"></textarea>
+      <div class="ask-row">
+        <button type="submit" class="btn-primary" id="ask">Спросить</button>
+        <span class="busy" id="busy" role="status" hidden>Считаю…</span>
+      </div>
+    </form>
+    <p class="ask-note">Ответ появится ниже, в «Ответах», обычно за минуту. Вопрос можно задать и Claude во вкладке Code: «спроси таблицу: ваш вопрос».</p>
+    <div id="ask-msg" aria-live="polite"></div>
+  </section>
+
+  <h2 class="section-title" id="answers-title">Ответы</h2>
+  <div id="answers" aria-live="polite" aria-labelledby="answers-title"><p class="loading">Загружаю ответы…</p></div>
+</main>
+<script src="analiz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var R = window.AnalizRender;
+  var byId = function (id) { return document.getElementById(id); };
+  var passportBox = byId('passport');
+  var answersBox = byId('answers');
+  var form = byId('ask-form');
+  var input = byId('question');
+  var askBtn = byId('ask');
+  var busy = byId('busy');
+  var askMsg = byId('ask-msg');
+  var folderMsg = byId('folder-msg');
+  var openBtn = byId('open-folder');
+  var refreshBtn = byId('refresh');
+  var READ = { 'X-Cabinet': '1' };
+  var WRITE = { 'X-Cabinet': '1', 'Content-Type': 'application/json' };
+  var OFFLINE = 'Страница не отвечает. Скажите Claude «открой страницу».';
+  var STOPPED = 'Страница остановлена. Скажите Claude «открой страницу».';
+  var OLD_SERVER = 'Страница кабинета запущена до обновления. Скажите Claude «открой страницу» в новом разговоре.';
+  var REFRESH_MS = 10000;
+  // После трёх неудачных запросов подряд вкладка больше ничего не спрашивает: страница остановлена,
+  // а на её номере может работать чужая программа. Адрес с новым токеном даёт Claude.
+  var MAX_FAILS = 3;
+  var fails = 0;
+  var stopped = false;
+  var timer = null;
+  var items = [];
+  var total = 0;
+  var shownItems = '';
+  var states = {};
+  var asking = false;
+  var clock = null;
+  var passportOnFocus = false;
+
+  function stop() {
+    stopped = true;
+    if (timer !== null) clearInterval(timer);
+    var text = '<p class="empty">' + STOPPED + '</p>';
+    passportBox.innerHTML = text;
+    answersBox.innerHTML = text;
+    shownItems = '';
+    askBtn.disabled = true;
+    openBtn.disabled = true;
+    refreshBtn.disabled = true;
+  }
+
+  // true: запросов больше не будет.
+  function failed() {
+    fails += 1;
+    if (fails < MAX_FAILS) return false;
+    stop();
+    return true;
+  }
+
+  // Запрос к сервису: { status, data }. Сеть недоступна или 403 без текста (чужой или старый токен): ошибка.
+  function call(path, body) {
+    var opts = body === undefined
+      ? { headers: READ, cache: 'no-store' }
+      : { method: 'POST', headers: WRITE, body: JSON.stringify(body) };
+    return fetch('api/analiz/' + path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        var data = j && typeof j === 'object' ? j : {};
+        if (r.status === 403 && !data.error) throw new Error('403');
+        fails = 0;
+        return { status: r.status, data: data };
+      });
+    });
+  }
+
+  function problem(r, fallback) {
+    if (r.status === 404) return '<p class="run-error">' + OLD_SERVER + '</p>';
+    return '<p class="run-error">' + R.esc(r.data.error || fallback) + '</p>';
+  }
+
+  function loadPassport() {
+    if (stopped) return Promise.resolve();
+    return call('passport')
+      .then(function (r) {
+        if (r.status === 200 && r.data.passport) passportBox.innerHTML = R.renderPassport(r.data.passport);
+        else passportBox.innerHTML = problem(r, 'Не получилось прочитать файлы с данными.');
+      })
+      .catch(function () {
+        if (failed()) return;
+        passportBox.innerHTML = '<p class="empty">' + OFFLINE + '</p>';
+      });
+  }
+
+  // Перерисовываем ответы, только если что-то поменялось: иначе сбивалась бы прокрутка таблиц.
+  function draw() {
+    if (stopped) return;
+    answersBox.innerHTML = R.renderAnswers(items, states, total);
+  }
+
+  function setItems(list, count) {
+    var key = JSON.stringify([list, count]);
+    if (key === shownItems) return;
+    shownItems = key;
+    items = list;
+    total = count;
+    draw();
+  }
+
+  function loadHistory() {
+    if (stopped) return Promise.resolve();
+    return call('history')
+      .then(function (r) {
+        if (r.status === 200 && Array.isArray(r.data.items)) return setItems(r.data.items, r.data.total);
+        shownItems = '';
+        answersBox.innerHTML = problem(r, 'Не получилось прочитать историю ответов.');
+      })
+      .catch(function () {
+        if (failed()) return;
+        shownItems = '';
+        answersBox.innerHTML = '<p class="empty">' + OFFLINE + '</p>';
+      });
+  }
+
+  function find(key) {
+    for (var i = 0; i < items.length; i++) if (R.answerKey(items[i]) === key) return items[i];
+    return null;
+  }
+
+  function stateOf(key) {
+    if (!states[key]) states[key] = {};
+    return states[key];
+  }
+
+  function setBusy(on) {
+    asking = on;
+    askBtn.disabled = on || stopped;
+    busy.hidden = !on;
+    if (clock !== null) clearInterval(clock);
+    clock = null;
+    if (!on) return;
+    var started = Date.now();
+    busy.textContent = 'Считаю…';
+    clock = setInterval(function () {
+      var s = Math.round((Date.now() - started) / 1000);
+      busy.textContent = s >= 5 ? 'Считаю… ' + s + ' с' : 'Считаю…';
+    }, 1000);
+  }
+
+  function ask(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (stopped || asking) return;
+    var q = String(input.value || '').trim();
+    if (!q) {
+      askMsg.innerHTML = '<p class="run-error">Напишите вопрос.</p>';
+      if (input.focus) input.focus();
+      return;
+    }
+    askMsg.innerHTML = '';
+    setBusy(true);
+    return call('ask', { question: q })
+      .then(function (r) {
+        if (r.status !== 200 || !r.data.answer) {
+          askMsg.innerHTML = R.renderAskProblem(r.status, r.data, q);
+          return;
+        }
+        var answer = r.data.answer;
+        input.value = '';
+        return loadHistory().then(function () {
+          // Движок не дописал ответ в историю: показываем его сверху всё равно.
+          if (!find(R.answerKey(answer))) {
+            items = [answer].concat(items);
+            shownItems = '';
+            draw();
+          }
+          var top = answersBox.querySelector ? answersBox.querySelector('article') : null;
+          if (top && top.scrollIntoView) top.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      })
+      .catch(function () {
+        if (failed()) return;
+        askMsg.innerHTML = '<p class="run-error">' + OFFLINE + '</p>';
+      })
+      .then(function () {
+        setBusy(false);
+      });
+  }
+
+  function download(url, name) {
+    if (!document.createElement) return;
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = name || '';
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.parentNode.removeChild(link);
+  }
+
+  function excel(key) {
+    var a = find(key);
+    if (!a || stopped) return;
+    var st = stateOf(key);
+    st.excel = { busy: true };
+    draw();
+    return call('excel', { id: a.id })
+      .then(function (r) {
+        if (r.status === 200 && r.data.url) {
+          st.excel = { url: r.data.url, file: r.data.file };
+          draw();
+          download(r.data.url, r.data.file);
+        } else {
+          st.excel = { error: r.status === 404 ? OLD_SERVER : r.data.error || 'Не получилось сделать файл Excel.' };
+          draw();
+        }
+      })
+      .catch(function () {
+        st.excel = {};
+        if (failed()) return;
+        st.excel = { error: OFFLINE };
+        draw();
+      });
+  }
+
+  function copyPhrase(button) {
+    var field = byId('phrase');
+    if (!field) return;
+    var done = function () { button.textContent = 'Скопировано'; };
+    var manual = function () {
+      field.focus();
+      field.select();
+      try {
+        if (document.execCommand('copy')) return done();
+      } catch (err) {
+        // ниже подсказка
+      }
+      button.textContent = 'Выделено: нажмите Ctrl+C';
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(field.value).then(done, manual);
+    else manual();
+  }
+
+  form.addEventListener('submit', ask);
+  // Ctrl+Enter (Cmd+Enter на Mac) в поле вопроса: спросить.
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) ask(e);
+  });
+  askMsg.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('button[data-copy]') : null;
+    if (b) copyPhrase(b);
+  });
+  answersBox.addEventListener('click', function (e) {
+    if (!e.target || !e.target.closest) return;
+    var b = e.target.closest('button[data-chart]');
+    if (b) {
+      var st = stateOf(b.getAttribute('data-chart'));
+      st.chart = !st.chart;
+      return draw();
+    }
+    b = e.target.closest('button[data-excel]');
+    if (b && !b.disabled) excel(b.getAttribute('data-excel'));
+  });
+  answersBox.addEventListener('change', function (e) {
+    var s = e.target;
+    if (!s || !s.getAttribute || s.getAttribute('data-measure') === null) return;
+    stateOf(s.getAttribute('data-measure')).measure = Number(s.value);
+    draw();
+  });
+  refreshBtn.addEventListener('click', function () {
+    passportBox.innerHTML = '<p class="loading">Смотрю файлы…</p>';
+    loadPassport();
+  });
+  openBtn.addEventListener('click', function () {
+    if (stopped) return;
+    openBtn.disabled = true;
+    call('open-folder', {})
+      .then(function (r) {
+        folderMsg.hidden = false;
+        if (r.status !== 200) {
+          folderMsg.textContent = r.status === 404 ? OLD_SERVER : r.data.error || 'Не получилось открыть папку.';
+          return;
+        }
+        passportOnFocus = true;
+        folderMsg.textContent = r.data.opened
+          ? 'Папка открыта в ' + (r.data.app === 'Finder' ? 'Finder' : 'Проводнике') + ': ' + r.data.path + '. Положите в неё файлы Excel или CSV и нажмите «Обновить».'
+          : 'Папка с данными: ' + r.data.path + '. Откройте её и положите файлы Excel или CSV, затем нажмите «Обновить».';
+      })
+      .catch(function () {
+        if (failed()) return;
+        folderMsg.hidden = false;
+        folderMsg.textContent = OFFLINE;
+      })
+      .then(function () {
+        openBtn.disabled = stopped;
+      });
+  });
+  // Вернулись на страницу (например, после вопроса Claude во вкладке Code или из папки с данными): свежие ответы
+  // и, если открывали папку, свежий паспорт. Пока страница на экране, ответы перечитываются раз в 10 секунд.
+  function onReturn() {
+    if (stopped || document.visibilityState === 'hidden') return;
+    loadHistory();
+    if (passportOnFocus) {
+      passportOnFocus = false;
+      loadPassport();
+    }
+  }
+  window.addEventListener('focus', onReturn);
+  document.addEventListener('visibilitychange', onReturn);
+  timer = setInterval(function () {
+    if (document.visibilityState === 'visible') loadHistory();
+  }, REFRESH_MS);
+  loadPassport();
+  loadHistory();
+})();
+</script>
+<script>
+// Логотип и название компании из папки бренда (tools/brand.mjs), как на главной странице кабинета.
+(function () {
+  'use strict';
+  var top = document.getElementById('top');
+  var logo = document.getElementById('brand-logo');
+  var nameBox = document.getElementById('brand-name');
+  if (!top || !logo || !nameBox || typeof logo.addEventListener !== 'function') return;
+  var TITLE = 'Спроси таблицу';
+  var sources = ['brand/logo.svg', 'brand/logo.png'];
+  var state = { name: '', logo: false };
+
+  function paint() {
+    top.className = state.logo || state.name ? 'top branded' : 'top';
+    logo.hidden = !state.logo;
+    logo.alt = state.name || 'Логотип компании';
+    nameBox.hidden = state.logo || !state.name;
+    nameBox.textContent = state.name;
+    document.title = state.name ? TITLE + ' · ' + state.name : TITLE;
+  }
+
+  logo.addEventListener('load', function () {
+    state.logo = true;
+    paint();
+  });
+  logo.addEventListener('error', function () {
+    sources.shift();
+    if (sources.length) {
+      logo.src = sources[0];
+      return;
+    }
+    state.logo = false;
+    paint();
+  });
+  logo.src = sources[0];
+
+  fetch('brand/brand.json', { cache: 'no-store' })
+    .then(function (r) {
+      return r.ok ? r.json() : null;
+    })
+    .then(function (b) {
+      var name = b && typeof b.name === 'string' ? b.name.trim().slice(0, 80) : '';
+      if (!name) return;
+      state.name = name;
+      paint();
+    })
+    .catch(function () {});
+})();
+</script>
+</body>
+</html>

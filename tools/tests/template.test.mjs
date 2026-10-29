@@ -264,7 +264,9 @@ test('добавить процесс: всегда программа (kind scr
   assert.ok(skill.includes('Файлы человека в модель для анализа не идут') && rules0().includes('Файлы человека в модель для анализа не идут'));
   assert.ok(skill.includes('«Из чего собираем процесс?»') && skill.includes('«Опишу своими словами»') && skill.includes('### Известный ответ'));
   assert.ok(guide.includes('## Данные из интернета') && guide.includes('# --- Данные из интернета ---'));
-  assert.ok(guide.includes('в ИИ-модели не отправляет'));
+  // 29.10 поздно: модель внутри сервиса можно, только через tools/llm.py с проверкой данных.
+  assert.ok(guide.includes('## Модель внутри программы') && guide.includes('llm.LLMBlocked'));
+  assert.ok(rules0().includes('tools/llm.py'));
   assert.ok(run.includes('→ срочно') && run.includes('«срочно (не тема)»'));
   assert.ok(read('tools/processes.mjs').includes('Добавьте в раздел «срочно (не тема)»'));
   // Слабые слова «?»: правило с примерами в справке и в шаге 4, проверка строк «проверьте» при пополнении.

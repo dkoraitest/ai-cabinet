@@ -12,6 +12,7 @@ import { isMain } from './is-main.mjs';
 import { ensureParticipantFiles } from './init.mjs';
 import { BRAND_EXT, findBrandDir } from './brand.mjs';
 import { SLUG_RE, hasProcess, isInside, listProcesses, processStatus, startRun } from './processes.mjs';
+import { ANALIZ, EXCEL_NAME_RE, createAnalizApi } from './analiz-api.mjs';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -123,9 +124,9 @@ const brandHeaders = () => ({ 'Content-Security-Policy': 'sandbox' });
 // Страница отдаётся только под /<token>/. Остальные пути: 403.
 // Необязательный api(req, res, sub) вызывается для /<token>/api/<sub>; вернёт true или промис
 // с true, если ответ отправлен.
-// Необязательный output { root, allow(slug) }: /<token>/output/<slug>/<файл> отдаётся из <root>/output/<slug>
-// только для чтения, на скачивание и только для slug, где allow(slug) истинно. Граница считается от настоящего
-// пути кабинета: папка output, ведущая в другое место, не отдаётся.
+// Необязательный output { root, allow(slug, parts) }: /<token>/output/<slug>/<файл> отдаётся из <root>/output/<slug>
+// только для чтения, на скачивание и только там, где allow(slug, parts) истинно (parts: части пути после slug).
+// Граница считается от настоящего пути кабинета: папка output, ведущая в другое место, не отдаётся.
 // Необязательный brand(): папка бренда или null. /<token>/brand/<файл> отдаётся только из неё (tools/brand.mjs):
 // .css, .svg, .png, .json, без вложенных папок и без выхода за неё по ссылкам. Нет папки: 404.
 export function createSiteServer(rootDir, { token, api, output, brand } = {}) {
@@ -164,7 +165,7 @@ export function createSiteServer(rootDir, { token, api, output, brand } = {}) {
       }
       if (output && rel.startsWith('/output/')) {
         const [slug, ...rest] = rel.slice('/output/'.length).split('/');
-        if (!SLUG_RE.test(slug) || !output.allow(slug)) return notFound(res, 'output');
+        if (!SLUG_RE.test(slug) || !output.allow(slug, rest)) return notFound(res, 'output');
         const cabinet = resolve(output.root);
         return await serveFile(res, resolve(cabinet, 'output', slug), '/' + rest.join('/'), {
           top: async () => join(await realpath(cabinet), 'output'),
@@ -236,14 +237,24 @@ export function createProcessApi(root, { python, timeoutMs } = {}) {
   };
 }
 
-// Страница кабинета целиком: site/, API процессов, файлы результатов из output/<slug>/ и бренд.
+// Файлы результатов, которые страница отдаёт на скачивание: output/<slug>/ процесса и файлы Excel сервиса
+// «Спроси таблицу» прямо в output/analiz/ (история и прочее оттуда не отдаются).
+const outputAllowed = (root) => (slug, parts) =>
+  hasProcess(root, slug) || (slug === ANALIZ && parts.length === 1 && EXCEL_NAME_RE.test(parts[0]));
+
+// Страница кабинета целиком: site/ (с ней и страница сервиса analiz.html), API процессов и сервиса
+// «Спроси таблицу» (api/analiz/...), файлы результатов из output/ и бренд.
 // Папка бренда ищется при каждом запросе: её можно положить, не перезапуская страницу.
-export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand } = {}) {
+// analiz: параметры API сервиса для тестов (tools/analiz-api.mjs).
+export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {} } = {}) {
   const root = resolve(cabinetRoot);
+  const processApi = createProcessApi(root, { python, timeoutMs });
+  const analizApi = createAnalizApi(root, { python, ...analiz });
+  const prefix = `${ANALIZ}/`;
   return createSiteServer(resolve(root, 'site'), {
     token,
-    api: createProcessApi(root, { python, timeoutMs }),
-    output: { root, allow: (slug) => hasProcess(root, slug) },
+    api: (req, res, sub) => (sub.startsWith(prefix) ? analizApi(req, res, sub.slice(prefix.length)) : processApi(req, res, sub)),
+    output: { root, allow: outputAllowed(root) },
     brand: brand ?? (() => findBrandDir(root)),
   });
 }

@@ -424,7 +424,7 @@ export async function resolvePython(root) {
 
 let foundPython = null;
 
-async function findPython(root) {
+export async function findPython(root) {
   if (foundPython && isFile(foundPython) && isOutsideCabinet(foundPython, root)) return foundPython;
   const exe = await resolvePython(root);
   foundPython = exe;
@@ -438,7 +438,7 @@ function forgetPython(exe) {
 
 // На Windows дерево процессов останавливает taskkill (полный путь: не из папки кабинета), на остальных
 // системах вся группа процессов. Не вышло: останавливаем хотя бы сам процесс.
-function killTree(child) {
+export function killTree(child) {
   if (process.platform === 'win32') {
     const k = spawn(TASKKILL, ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' });
     k.on('error', () => child.kill());
@@ -1272,14 +1272,18 @@ export const ALLOWED_IMPORTS = new Set([
   // интернет (решение 29.10): запросы к сайтам и разбор ответа
   'urllib', 'urllib3', 'http', 'requests', 'httpx', 'socket', 'ssl', 'html', 'xml', 'email', 'base64', 'hashlib',
   'gzip', 'uuid', 'random', 'smtplib', 'ftplib',
+  // модель внутри сервиса (решение 29.10): только через tools/llm.py, он проверяет данные перед отправкой
+  'llm',
 ]);
 // Что можно взять из os и sys через from ... import: остальное у них запуск программ и обходы проверки.
 const FROM_LIMITS = { os: ['path'], sys: ['argv', 'exit', 'path', 'stderr', 'stdout'] };
-const NOT_ALLOWED_IMPORT = 'библиотека не из списка (стандартный Python из справки, интернет, openpyxl, python-docx, read_table)';
+const NOT_ALLOWED_IMPORT = 'библиотека не из списка (стандартный Python из справки, интернет, openpyxl, python-docx, read_table, llm)';
 
 // Сначала названные прямо опасности (у них понятная причина), потом библиотеки не из списка, потом обходы.
 const PROGRAM_RULES = [
   [/\b(subprocess|ctypes|importlib|webbrowser)\b/, 'запуск программ'],
+  [/api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis|api\.mistral\.ai|api\.deepseek|gigachat|llm\.api\.cloud\.yandex|api\.groq|openrouter\.ai|\b(anthropic|openai)\b/i,
+    'модель только через tools/llm.py: он проверяет данные перед отправкой'],
   [/\bhttp\.server\b|^\s*from\s+http\s+import\s+server\b/, 'своя страница или сервер в программе процесса'],
   [/\bos\.(system|popen|exec\w*|spawn\w*|posix_spawn\w*|startfile|fork\w*)\b/, 'запуск программ'],
   [/(?<![\w.])(eval|exec|compile|__import__)\s*\(/, 'выполнение текста как программы'],
@@ -1386,7 +1390,7 @@ export function compareProcess(root, slug) {
 // ---------- свои скиллы человека ----------
 
 // Скиллы курса: их кабинет привозит сам, «своими» они не считаются.
-export const COURSE_SKILLS = ['about-me', 'setup-check', 'update-cabinet', 'add-process', 'run-process', 'demo-process', 'find-process'];
+export const COURSE_SKILLS = ['about-me', 'setup-check', 'update-cabinet', 'add-process', 'run-process', 'demo-process', 'find-process', 'ask-table'];
 
 // Список своих скиллов из .claude/skills для операции «добавить процесс». Командой курса, без окна:
 // ls или find с папкой .claude спрашивают окно разрешения, а поиска файлов без команды может не быть.
@@ -1586,7 +1590,7 @@ async function cliRun(root, slug) {
   return reportRun(root, slug, r, startedAt);
 }
 
-function openFolder(dir) {
+export function openFolder(dir) {
   const [cmd, args] =
     process.platform === 'win32'
       ? [join(SYSTEM_ROOT, 'explorer.exe'), [dir]]

@@ -25,7 +25,7 @@ test('init: создаёт отсутствующие, не трогает су�
     writeFileSync(join(dir, 'me', 'rules.md'), 'мои правила участника');
 
     const created = ensureParticipantFiles(dir);
-    assert.deepEqual(created.sort(), ['me/about-me.md', 'site/index.html', 'site/render.js']);
+    assert.deepEqual(created.sort(), ['me/about-me.md', 'site/analiz.html', 'site/analiz.js', 'site/index.html', 'site/render.js']);
     assert.equal(readFileSync(join(dir, 'me', 'rules.md'), 'utf8'), 'мои правила участника');
     for (const { from, to } of MANIFEST.filter((m) => m.to !== 'me/rules.md')) {
       assert.equal(readFileSync(join(dir, to), 'utf8'), readFileSync(join(dir, from), 'utf8'), to);
@@ -45,6 +45,8 @@ test('init: MANIFEST берёт шаблоны из templates и кладёт в
     { from: 'templates/rules.md', to: 'me/rules.md' },
     { from: 'templates/site/index.html', to: 'site/index.html' },
     { from: 'templates/site/render.js', to: 'site/render.js' },
+    { from: 'templates/site/analiz.html', to: 'site/analiz.html' },
+    { from: 'templates/site/analiz.js', to: 'site/analiz.js' },
   ]);
   for (const { from } of MANIFEST) assert.ok(existsSync(join(ROOT, from)), from);
 });
@@ -77,6 +79,24 @@ test('init: --json печатает список созданных файлов
     assert.deepEqual(JSON.parse(r.stdout).sort(), MANIFEST.map((m) => m.to).sort());
     r = run();
     assert.deepEqual(JSON.parse(r.stdout), []);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('init: кабинет, поставленный до сервиса «Спроси таблицу», получает его страницу, своя страница и render.js целы', () => {
+  const { base, dir } = makeCabinet();
+  try {
+    mkdirSync(join(dir, 'me'), { recursive: true });
+    mkdirSync(join(dir, 'site'), { recursive: true });
+    writeFileSync(join(dir, 'me', 'about-me.md'), 'обо мне');
+    writeFileSync(join(dir, 'me', 'rules.md'), 'мои правила');
+    writeFileSync(join(dir, 'site', 'index.html'), '<p>моя страница</p>');
+    writeFileSync(join(dir, 'site', 'render.js'), '// мой render');
+    assert.deepEqual(ensureParticipantFiles(dir).sort(), ['site/analiz.html', 'site/analiz.js']);
+    assert.equal(readFileSync(join(dir, 'site', 'index.html'), 'utf8'), '<p>моя страница</p>');
+    assert.equal(readFileSync(join(dir, 'site', 'render.js'), 'utf8'), '// мой render');
+    assert.equal(readFileSync(join(dir, 'site', 'analiz.html'), 'utf8'), readFileSync(join(ROOT, 'templates', 'site', 'analiz.html'), 'utf8'));
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

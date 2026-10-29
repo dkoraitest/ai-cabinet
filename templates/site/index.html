@@ -75,6 +75,39 @@
     margin: 0;
   }
 
+  /* Карточка-ссылка на сервис «Спроси таблицу» (страница analiz.html): видна всегда, над карточками процессов. */
+  .service {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 24px;
+    margin-bottom: 28px;
+    box-shadow: var(--shadow);
+    color: var(--text);
+    text-decoration: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .service:hover { border-color: var(--accent-dark); box-shadow: 0 2px 4px rgba(16, 24, 40, 0.06), 0 6px 18px rgba(16, 24, 40, 0.08); }
+  .service:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; }
+  .service-icon {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: var(--th-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--accent-dark);
+  }
+  .service-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .service-title { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.3; }
+  .service-desc { color: var(--muted); font-size: 16px; }
+  .service-go { flex: none; color: var(--link); font-weight: 600; font-size: 16px; white-space: nowrap; }
+
   /* Карточка процесса. */
   .card {
     background: var(--card);
@@ -213,6 +246,8 @@
     .summary { font-size: 17px; }
     table { font-size: 14px; }
     .actions, button.run { width: 100%; }
+    .service { padding: 14px 16px; gap: 14px; align-items: flex-start; }
+    .service-go { display: none; }
   }
 </style>
 <link rel="stylesheet" href="brand/theme.css">
@@ -226,6 +261,14 @@
   </div>
 </header>
 <main class="wrap">
+  <a class="service" href="analiz.html">
+    <span class="service-icon" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 10h20M10 10v12"/><path d="M14.5 18.5v-3M17.5 18.5v-5M20.5 18.5v-2"/></svg></span>
+    <span class="service-text">
+      <span class="service-title">Спроси таблицу</span>
+      <span class="service-desc">Задайте вопрос своим таблицам: считает программа на вашем компьютере, строки никуда не уходят</span>
+    </span>
+    <span class="service-go" aria-hidden="true">Открыть →</span>
+  </a>
   <p class="lead">Последние результаты ваших процессов. Чтобы пересчитать, нажмите «Запустить» на карточке.</p>
   <div id="processes" aria-live="polite"><p class="loading">Загружаю процессы…</p></div>
 </main>

@@ -13,3 +13,9 @@ output/*
 /.claude/worktrees/
 __pycache__/
 *.pyc
+
+# секреты сервисов (ключи, токены): только на компьютере, не в git и не для Claude
+.env
+.env.*
+**/.env
+**/.env.*
