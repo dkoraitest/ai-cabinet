@@ -191,8 +191,18 @@
   var ICON_PROCESS = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.5"/><circle cx="4.5" cy="12" r="1.5"/><circle cx="4.5" cy="18" r="1.5"/></svg>';
   var ICON_PAGE = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><circle cx="6.5" cy="6.5" r="0.6"/><path d="M8 14h8M8 17h5"/></svg>';
 
-  // Карточка сервиса «Аналитика таблиц» (страница analiz.html): в сетке всегда первая.
-  function renderServiceTile() {
+  // Карточка сервиса «Аналитика таблиц» (страница analiz.html): в сетке всегда первая. С карандашом (ui.edit дал
+  // ссылку, Дмитрий 30.10) карточка не ссылка целиком: ссылка внутри ссылки не работает, поэтому название, «Открыть»
+  // и карандаш отдельными ссылками.
+  var ANALIZ_ITEM = { source: 'builtin', slug: 'analiz', title: 'Аналитика таблиц' };
+  function renderServiceTile(ui) {
+    var edit = editLink(ANALIZ_ITEM, ui, 'tile-edit', ICON_EDIT);
+    if (edit) {
+      return '<article class="tile tile-service"><div class="tile-top"><span class="tile-icon" aria-hidden="true">' + ICON_TABLE + '</span>' + edit + '</div>' +
+        '<h2 class="tile-title"><a href="analiz.html">Аналитика таблиц</a></h2>' +
+        '<p class="tile-desc">Вопрос своим таблицам словами, строки не уходят с компьютера</p>' +
+        '<div class="tile-actions"><a class="btn" href="analiz.html">Открыть</a></div></article>';
+    }
     return '<a class="tile tile-service" href="analiz.html">' +
       '<span class="tile-top"><span class="tile-icon" aria-hidden="true">' + ICON_TABLE + '</span></span>' +
       '<span class="tile-title">Аналитика таблиц</span>' +
@@ -263,7 +273,7 @@
       return '<div class="detail"><p class="crumbs"><a class="back" href="#">← Все сервисы</a></p>' +
         renderCard(open, { message: messages && messages[itemKey(open)], edit: view && view.edit }) + '</div>';
     }
-    return '<div class="grid">' + renderServiceTile() + items.map(function (p) {
+    return '<div class="grid">' + renderServiceTile({ edit: view && view.edit }) + items.map(function (p) {
       return renderTile(p, { message: messages && messages[itemKey(p)], edit: view && view.edit });
     }).join('') + '</div>';
   }

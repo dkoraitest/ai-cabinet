@@ -259,3 +259,15 @@ test('тема: prefs.js в <head> до стилей, dark.css после сти
   assert.deepEqual(vars(a), vars(b));
   assert.doesNotMatch(readFileSync(join(SITE, 'prefs.js'), 'utf8'), /[\u2012-\u2015]/);
 });
+
+test('render.js: карандаш на «Аналитике таблиц»: карточка не ссылка целиком, название, «Открыть» и карандаш отдельно', () => {
+  const edit = (p) => (p.source === 'builtin' ? 'claude://code/new?folder=%2Fk&q=x' : null);
+  const html = R.renderPage([], {}, { edit });
+  assert.match(html, /^<div class="grid"><article class="tile tile-service"><div class="tile-top"><span class="tile-icon" aria-hidden="true">/);
+  assert.match(html, /<a class="tile-edit" href="claude:\/\/code\/new\?folder=%2Fk&amp;q=x" title="Редактировать в Claude" aria-label="Редактировать «Аналитика таблиц»">/);
+  assert.match(html, /<h2 class="tile-title"><a href="analiz\.html">Аналитика таблиц<\/a><\/h2>/);
+  assert.match(html, /<a class="btn" href="analiz\.html">Открыть<\/a>/);
+  assert.doesNotMatch(html, /<a class="tile[ "]/, 'ссылки внутри ссылки нет');
+  // Без ссылки от страницы карточка прежняя.
+  assert.match(R.renderPage([], {}, {}), /^<div class="grid"><a class="tile tile-service" href="analiz\.html">/);
+});

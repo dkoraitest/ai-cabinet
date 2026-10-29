@@ -591,13 +591,14 @@
       .catch(function () { return []; });
   }
 
-  // «Редактировать» (Дмитрий 30.10): встроенный проект открывается в своей папке, процесс в папке кабинета с началом
-  // просьбы «Доработай <название>». Папку кабинета страница узнаёт один раз из api/cabinet.
+  // «Редактировать» (Дмитрий 30.10): встроенный проект открывается в своей папке, процесс и «Аналитика таблиц» в папке
+  // кабинета с началом просьбы «Доработай <название>». Папку кабинета страница узнаёт один раз из api/cabinet.
   var cabinetRoot = null;
   function editHref(p) {
     var P = window.CabinetPrefs;
     if (!P) return null;
     if (p.source === 'service') return p.path ? P.editHref(p.path, 'Доработай сервис: ') : null;
+    if (p.source === 'builtin') return cabinetRoot ? P.editHref(cabinetRoot, 'Доработай «Аналитику таблиц»: ') : null;
     return cabinetRoot ? P.editHref(cabinetRoot, 'Доработай ' + (p.title || p.slug) + ': ') : null;
   }
   function loadCabinet() {
