@@ -129,15 +129,18 @@ const removeQuietly = (p) => {
 
 // Тело запроса во временный файл, не больше limit байт: { size } или { over } или { error }. Тело больше limit
 // дочитывается без записи, чтобы страница получила ответ, а не оборванное соединение.
+// Ответ только после закрытия записи: файл создаётся не сразу, и удалённый раньше времени .part появился бы снова.
 function receiveFile(req, tmp, limit) {
   return new Promise((done) => {
     let size = 0;
     let over = false;
     let ended = false;
     const out = createWriteStream(tmp, { flags: 'wx' });
+    const closed = new Promise((ok) => out.once('close', ok));
+    const finish = (result) => closed.then(() => done(result));
     out.on('error', (e) => {
       req.resume();
-      done({ error: e });
+      finish({ error: e });
     });
     req.on('data', (c) => {
       if (over) return;
@@ -154,17 +157,17 @@ function receiveFile(req, tmp, limit) {
     });
     req.on('end', () => {
       ended = true;
-      if (over) return done({ over: true });
-      out.end(() => done({ size }));
+      if (over) return finish({ over: true });
+      out.end(() => finish({ size }));
     });
     req.on('error', (e) => {
       out.destroy();
-      done({ error: e });
+      finish({ error: e });
     });
     req.on('close', () => {
       if (ended) return;
       out.destroy();
-      done({ error: new Error('соединение оборвалось') });
+      finish({ error: new Error('соединение оборвалось') });
     });
   });
 }

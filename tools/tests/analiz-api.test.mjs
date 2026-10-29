@@ -509,7 +509,9 @@ test('upload: не та таблица → 415, больше ограничен�
   assert.equal(big.status, 413);
   assert.equal(big.json.code, 'EBIG');
   assert.match(big.json.error, /больше 50 МБ/);
-  const chunked = await new Promise((res, rej) => {
+  // Тело кусками больше ограничения: ответ 413, временный .part не остаётся. Повторы ловят гонку: файл
+  // создаётся не сразу, и удалить его можно только после закрытия записи.
+  const chunkedOver = (parts) => new Promise((res, rej) => {
     const req = http.request(
       { host: '127.0.0.1', port: quickPort, path: `${T}/api/analiz/upload`, method: 'POST', agent: false, headers: { ...UP, 'X-File-Name': 'kuskami.csv', 'Transfer-Encoding': 'chunked' } },
       (r) => {
@@ -519,10 +521,13 @@ test('upload: не та таблица → 415, больше ограничен�
       },
     );
     req.on('error', rej);
-    for (let i = 0; i < 4; i++) req.write(Buffer.alloc(600, 0x42));
+    for (const n of parts) req.write(Buffer.alloc(n, 0x42));
     req.end();
   });
-  assert.equal(chunked.status, 413);
+  for (let i = 0; i < 30; i++) {
+    assert.equal((await chunkedOver([600, 600, 600, 600])).status, 413);
+    assert.equal((await chunkedOver([2048])).status, 413, 'больше ограничения первым же куском');
+  }
   assert.equal((await upload('malenkii.csv', Buffer.alloc(1000, 0x41), UP, quickPort)).status, 200, 'до ограничения можно');
   const empty = await upload('pustoi.csv', Buffer.alloc(0));
   assert.equal(empty.status, 400);
