@@ -603,7 +603,8 @@ test('compare: эталон и result.json из файлов; нет этало�
 
 test('programProblems: блок «Данные из интернета» из справки проходит проверку программы', () => {
   const guide = readFileSync(join(ROOT, '.claude', 'skills', 'add-process', 'programma.md'), 'utf8');
-  const block = /```python\n(# --- Данные из интернета ---[\s\S]*?)```/.exec(guide);
+  // На Windows git отдаёт файлы с CRLF: перевод строки любой.
+  const block = /```python\r?\n(# --- Данные из интернета ---[\s\S]*?)```/.exec(guide);
   assert.ok(block, 'в справке нет блока «Данные из интернета»');
   assert.deepEqual(programProblems(block[1]), []);
 });

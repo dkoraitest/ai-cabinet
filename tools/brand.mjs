@@ -1,8 +1,9 @@
-// Папка бренда страницы кабинета: логотип и цвета компании. Лежит вне git: в публичном репозитории их нет.
-// Ищется по порядку, берётся первая папка, где есть хотя бы один файл бренда:
+// Папка бренда страницы кабинета: логотип и цвета компании. Бренд курса лежит в templates/brand/ (решение
+// Дмитрия 29.10: встроен в репозиторий). Ищется по порядку, берётся первая папка, где есть хотя бы один файл бренда:
 //   1. site/brand/ в кабинете (своё оформление участника);
 //   2. на Windows %PUBLIC%\ai-cabinet-brand\ (обычно C:\Users\Public\ai-cabinet-brand, общая для сервера);
-//   3. папка из переменной окружения AI_CABINET_BRAND_DIR (тесты, Mac).
+//   3. папка из переменной окружения AI_CABINET_BRAND_DIR (тесты, Mac);
+//   4. templates/brand/ (бренд курса, приходит с кабинетом).
 // Файлы: theme.css (переменные цветов страницы), logo.svg или logo.png, необязательно brand.json ({"name": "..."}).
 // Страница берёт их по адресу brand/<файл>; сервер отдаёт только .css, .svg, .png и .json из найденной папки.
 // Запуск: node tools/brand.mjs (какая папка найдена и что в ней).
@@ -40,6 +41,7 @@ export function brandCandidates(root, { env = process.env, platform = process.pl
     list.push(join(pub, PUBLIC_DIR_NAME));
   }
   if (env[BRAND_ENV]) list.push(resolve(env[BRAND_ENV]));
+  list.push(join(resolve(root), 'templates', 'brand'));
   return list;
 }
 

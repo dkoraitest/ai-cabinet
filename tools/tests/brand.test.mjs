@@ -2,7 +2,7 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,17 +33,19 @@ function folder(name, files = {}) {
   return dir;
 }
 
-test('порядок поиска: site/brand, на Windows %PUBLIC%\\ai-cabinet-brand, затем AI_CABINET_BRAND_DIR', () => {
+test('порядок поиска: site/brand, на Windows %PUBLIC%\\ai-cabinet-brand, затем AI_CABINET_BRAND_DIR, бренд курса последним', () => {
   const root = join(base, 'Айгуль Н', 'кабинет');
-  assert.deepEqual(brandCandidates(root, { env: {}, platform: 'darwin' }), [join(root, 'site', 'brand')]);
+  assert.deepEqual(brandCandidates(root, { env: {}, platform: 'darwin' }), [join(root, 'site', 'brand'), join(root, 'templates', 'brand')]);
   assert.deepEqual(brandCandidates(root, { env: { [BRAND_ENV]: '/x/y', PUBLIC: '/pub' }, platform: 'linux' }), [
     join(root, 'site', 'brand'),
     resolve('/x/y'),
+    join(root, 'templates', 'brand'),
   ]);
   assert.deepEqual(brandCandidates(root, { env: { [BRAND_ENV]: '/x/y', PUBLIC: '/pub' }, platform: 'win32' }), [
     join(root, 'site', 'brand'),
     join('/pub', 'ai-cabinet-brand'),
     resolve('/x/y'),
+    join(root, 'templates', 'brand'),
   ]);
   // Без переменной PUBLIC: папка Public на системном диске.
   const [, pub] = brandCandidates(root, { env: {}, platform: 'win32' });
@@ -261,4 +263,17 @@ test('CLI brand.mjs: называет найденную папку и файл�
   assert.match(r.stdout, /Папка бренда не найдена: страница в нейтральных цветах/);
   assert.ok(r.stdout.includes(join(cab, 'site', 'brand')), r.stdout);
   assert.doesNotMatch(r.stdout, /[\u2012-\u2015]/);
+});
+
+test('бренд курса в templates/brand: файлы на месте; без других папок кабинет берёт его', () => {
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  for (const f of ['logo.svg', 'theme.css', 'brand.json']) assert.ok(existsSync(join(repo, 'templates', 'brand', f)), f);
+  const root = join(base, 'кабинет с брендом курса');
+  mkdirSync(join(root, 'templates', 'brand'), { recursive: true });
+  writeFileSync(join(root, 'templates', 'brand', 'theme.css'), ':root{}');
+  assert.equal(findBrandDir(root, { env: {}, platform: 'darwin' }), join(root, 'templates', 'brand'));
+  // Своя папка участника важнее бренда курса.
+  mkdirSync(join(root, 'site', 'brand'), { recursive: true });
+  writeFileSync(join(root, 'site', 'brand', 'logo.svg'), '<svg/>');
+  assert.equal(findBrandDir(root, { env: {}, platform: 'darwin' }), join(root, 'site', 'brand'));
 });

@@ -77,7 +77,8 @@ function hasClientName(text) {
 
 test('нет имени клиента (по хешам)', () => {
   assert.equal(hasClientName('Hello world'), false);
-  const bad = files.filter((f) => hasClientName(f) || ((!isCase(f) || TEXT_EXT.test(f)) && hasClientName(read(f))));
+  // Бренд курса (логотип, цвета, название компании) встроен по решению Дмитрия 29.10: только templates/brand/.
+  const bad = files.filter((f) => !f.startsWith('templates/brand/') && (hasClientName(f) || ((!isCase(f) || TEXT_EXT.test(f)) && hasClientName(read(f)))));
   assert.deepEqual(bad, []);
 });
 
