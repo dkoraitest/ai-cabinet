@@ -2,11 +2,11 @@
   "model": "sonnet",
   "language": "russian",
   "autoMemoryEnabled": false,
-  "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" },
+  "env": { "AI_CABINET": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" },
   "permissions": {
     "defaultMode": "acceptEdits",
     "disableBypassPermissionsMode": "disable",
-    "allow": ["Bash(node tools/serve.mjs*)", "Bash(node tools/check.mjs*)", "Bash(node tools/update.mjs*)", "Bash(node tools/processes.mjs*)", "Bash(python tools/read_table.py*)", "Bash(py tools/read_table.py*)"],
+    "allow": ["Bash(node tools/serve.mjs*)", "Bash(node tools/check.mjs*)", "Bash(node tools/update.mjs*)", "Bash(node tools/processes.mjs*)", "Bash(python tools/read_table.py*)", "Bash(py tools/read_table.py*)", "Bash(python3 tools/read_table.py*)"],
     "ask": ["Edit(./processes/**)"],
     "deny": ["Edit(./input/**)", "Edit(./tools/**)", "Edit(./templates/**)", "Edit(./.claude/hooks/**)", "Bash(rm -rf *)", "Bash(git push *)"]
   },

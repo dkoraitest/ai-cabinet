@@ -114,6 +114,8 @@ const COURSE_CMDS = [
   'python tools/read_table.py "input/case-azs/data/sales_azs_1c.csv" --rows 3',
   'py tools/read_table.py "input\\svodka\\Продажи сентябрь.xlsx" --sheet 2',
   'python tools/read_table.py "processes/svodka/data.csv"',
+  // Mac: python и py обычно нет, есть python3.
+  'python3 tools/read_table.py "input/case-azs/data/sales_azs_1c.csv" --rows 3',
   // Скобки внутри кавычек: имя скачанного файла «skill (1).zip».
   'node tools/processes.mjs read razbor "skill (1).zip"',
   "node tools/processes.mjs read razbor 'skill (1).zip'",
@@ -587,6 +589,8 @@ test('settings.json: сторож без оболочки (exec) на Bash, Powe
   for (const d of ['Edit(./input/**)', 'Edit(./tools/**)', 'Edit(./templates/**)']) assert.ok(s.permissions.deny.includes(d), d);
   assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
   assert.ok(s.permissions.allow.includes('Bash(py tools/read_table.py*)'), 'нужно разрешение Bash(py tools/read_table.py*)');
+  assert.ok(s.permissions.allow.includes('Bash(python3 tools/read_table.py*)'), 'нужно разрешение Bash(python3 tools/read_table.py*)');
+  assert.equal(s.env?.AI_CABINET, '1', 'нужна метка env.AI_CABINET: по ней проверка сетапа видит разговор в папке кабинета');
 });
 
 // Встроенные команды в скиллах: !`команда` и блок ```! выполняются при запуске скилла без вопроса.

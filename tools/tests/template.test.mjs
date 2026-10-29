@@ -82,10 +82,11 @@ test('нет имени клиента (по хешам)', () => {
   assert.deepEqual(bad, []);
 });
 
-test('тексты участника без тире (U+2012-U+2015) и python3', (t) => {
+// python3 только в строке про Mac: на Windows python3 открывает заглушку Microsoft Store.
+test('тексты участника без тире (U+2012-U+2015) и python3 вне Mac', (t) => {
   const mine = files.filter(PARTICIPANT);
   if (mine.length === 0) return t.skip('нет файлов участника');
-  const bad = mine.filter((f) => /[\u2012-\u2015]|python3/.test(read(f)));
+  const bad = mine.filter((f) => /[\u2012-\u2015]/.test(read(f)) || read(f).split('\n').some((l) => l.includes('python3') && !l.includes('Mac')));
   assert.deepEqual(bad, []);
 });
 
