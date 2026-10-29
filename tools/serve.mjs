@@ -10,6 +10,7 @@ import { basename, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { ensureParticipantFiles } from './init.mjs';
+import { BRAND_EXT, findBrandDir } from './brand.mjs';
 import { SLUG_RE, hasProcess, isInside, listProcesses, processStatus, startRun } from './processes.mjs';
 
 const TYPES = {
@@ -90,13 +91,13 @@ function sameToken(a, b) {
 }
 
 // Файл из папки base. Путь не выходит за base, а настоящий путь (после ссылок) не выходит за папку,
-// которую возвращает top() (по умолчанию настоящий путь base).
-async function serveFile(res, base, rel, { top = () => realpath(base), where = 'site', headers = () => ({}) } = {}) {
+// которую возвращает top() (по умолчанию настоящий путь base). dirIndex: папка отдаётся своим index.html.
+async function serveFile(res, base, rel, { top = () => realpath(base), where = 'site', headers = () => ({}), dirIndex = true } = {}) {
   if (rel.includes('\0')) return notFound(res, where);
   let file = resolve(base, '.' + rel);
   if (file !== base && !file.startsWith(base + sep)) return notFound(res, where);
   let info = await stat(file).catch(() => null);
-  if (info?.isDirectory()) {
+  if (info?.isDirectory() && dirIndex) {
     file = resolve(file, 'index.html');
     info = await stat(file).catch(() => null);
   }
@@ -114,13 +115,20 @@ const downloadHeaders = (file) => ({
   'Content-Security-Policy': 'sandbox',
 });
 
+// Файлы бренда: имя одним сегментом из латиницы, цифр, «_» и «-» с расширением из BRAND_EXT.
+// Без «/», «\», «..» и скрытых файлов. SVG, открытый отдельной вкладкой, не выполняет скрипты.
+const BRAND_NAME_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/;
+const brandHeaders = () => ({ 'Content-Security-Policy': 'sandbox' });
+
 // Страница отдаётся только под /<token>/. Остальные пути: 403.
 // Необязательный api(req, res, sub) вызывается для /<token>/api/<sub>; вернёт true или промис
 // с true, если ответ отправлен.
 // Необязательный output { root, allow(slug) }: /<token>/output/<slug>/<файл> отдаётся из <root>/output/<slug>
 // только для чтения, на скачивание и только для slug, где allow(slug) истинно. Граница считается от настоящего
 // пути кабинета: папка output, ведущая в другое место, не отдаётся.
-export function createSiteServer(rootDir, { token, api, output } = {}) {
+// Необязательный brand(): папка бренда или null. /<token>/brand/<файл> отдаётся только из неё (tools/brand.mjs):
+// .css, .svg, .png, .json, без вложенных папок и без выхода за неё по ссылкам. Нет папки: 404.
+export function createSiteServer(rootDir, { token, api, output, brand } = {}) {
   if (typeof token !== 'string' || token.length < 8) {
     throw new Error('Для страницы нужен токен (личная часть адреса).');
   }
@@ -147,6 +155,13 @@ export function createSiteServer(rootDir, { token, api, output } = {}) {
         return;
       }
       if (!isRead(req)) return notAllowed(res, 'GET, HEAD');
+      if (brand && /^\/brand(\/|$)/i.test(rel)) {
+        const name = rel.slice('/brand/'.length);
+        if (!BRAND_NAME_RE.test(name) || !BRAND_EXT.has(extname(name).toLowerCase())) return notFound(res, 'brand');
+        const dir = await brand();
+        if (!dir) return notFound(res, 'brand');
+        return await serveFile(res, resolve(dir), '/' + name, { where: 'brand', headers: brandHeaders, dirIndex: false });
+      }
       if (output && rel.startsWith('/output/')) {
         const [slug, ...rest] = rel.slice('/output/'.length).split('/');
         if (!SLUG_RE.test(slug) || !output.allow(slug)) return notFound(res, 'output');
@@ -221,13 +236,15 @@ export function createProcessApi(root, { python, timeoutMs } = {}) {
   };
 }
 
-// Страница кабинета целиком: site/, API процессов и файлы результатов из output/<slug>/.
-export function createCabinetServer(cabinetRoot, { token, python, timeoutMs } = {}) {
+// Страница кабинета целиком: site/, API процессов, файлы результатов из output/<slug>/ и бренд.
+// Папка бренда ищется при каждом запросе: её можно положить, не перезапуская страницу.
+export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand } = {}) {
   const root = resolve(cabinetRoot);
   return createSiteServer(resolve(root, 'site'), {
     token,
     api: createProcessApi(root, { python, timeoutMs }),
     output: { root, allow: (slug) => hasProcess(root, slug) },
+    brand: brand ?? (() => findBrandDir(root)),
   });
 }
 

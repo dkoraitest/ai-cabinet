@@ -165,6 +165,17 @@ test('страница: маркер, заголовок, render.js по отн�
   assert.match(html, /<h1>Мой кабинет<\/h1>/);
   assert.match(html, /<script src="render\.js"><\/script>/);
   assert.doesNotMatch(html, /(src|href)="(\/|https?:|\/\/)/);
+  // Бренд: стили по относительной ссылке после стилей страницы (переменные переопределяются), логотип скрыт,
+  // пока не загрузится: без папки бренда нет пустой рамки и битой картинки.
+  assert.match(html, /<\/style>\s*<link rel="stylesheet" href="brand\/theme\.css">/);
+  assert.match(html, /<img class="brand-logo" id="brand-logo" alt="" hidden>/);
+  assert.match(html, /<span class="brand-name" id="brand-name" hidden><\/span>/);
+  for (const needle of ["'brand/logo.svg'", "'brand/logo.png'", "fetch('brand/brand.json'"]) assert.ok(html.includes(needle), needle);
+  assert.doesNotMatch(html, /<link[^>]+(https?:|\/\/)/);
+  // Переменные, которые переопределяет theme.css папки бренда.
+  for (const v of ['--accent:', '--accent-ink:', '--accent-dark:', '--accent-dark-ink:', '--link:', '--stripe:', '--logo-height:']) {
+    assert.ok(html.includes(v), v);
+  }
   assert.doesNotMatch(html, /fetch\(['"`]\//);
   assert.doesNotMatch(html, /@import|url\(/);
   for (const needle of ["'X-Cabinet': '1'", "'Content-Type': 'application/json'", "method: 'POST'", 'api/processes', 'api/run/', 'api/status/', '2000']) {
@@ -179,19 +190,49 @@ test('страница: маркер, заголовок, render.js по отн�
   assert.match(html, /setInterval\(/);
 });
 
-// Скрипт страницы в песочнице: fetch, таймеры и DOM подставные, запросы считаются.
-function pageSandbox(respond) {
+// Элемент страницы для песочницы: свойства и обработчики событий.
+function stubElement() {
+  return {
+    hidden: true,
+    className: '',
+    textContent: '',
+    alt: '',
+    src: '',
+    on: {},
+    addEventListener(type, fn) {
+      this.on[type] = fn;
+    },
+  };
+}
+
+// Скрипт страницы в песочнице: fetch, таймеры и DOM подставные, запросы к api/ считаются.
+// Запросы бренда (brand/...) идут в brandRespond, по умолчанию 404: папки бренда нет.
+const NO_BRAND = () => Promise.resolve({ ok: false, status: 404, json: () => Promise.reject(new SyntaxError('не JSON')) });
+
+function pageSandbox(respond, brandRespond = NO_BRAND) {
   const html = readFileSync(join(SITE, 'index.html'), 'utf8');
   const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
   const box = { innerHTML: '', addEventListener() {} };
+  const elements = { top: stubElement(), 'brand-logo': stubElement(), 'brand-name': stubElement() };
   const intervals = new Map();
   const timeouts = [];
   const calls = [];
+  const brandCalls = [];
   let nextId = 1;
+  const document = {
+    title: 'Мой кабинет',
+    getElementById: (id) => (id === 'processes' ? box : elements[id] ?? null),
+    visibilityState: 'visible',
+    addEventListener() {},
+  };
   const sandbox = {
     window: { CabinetRender: { renderPage: (list) => `карточек: ${list.length}` }, addEventListener() {} },
-    document: { getElementById: () => box, visibilityState: 'visible', addEventListener() {} },
+    document,
     fetch: (url, opts) => {
+      if (String(url).startsWith('brand/')) {
+        brandCalls.push(url);
+        return brandRespond(url, opts);
+      }
       calls.push(url);
       return respond(url, opts);
     },
@@ -211,6 +252,9 @@ function pageSandbox(respond) {
   return {
     box,
     calls,
+    brandCalls,
+    elements,
+    document,
     intervals,
     async tick() {
       for (const fn of [...intervals.values()]) fn();
@@ -258,4 +302,71 @@ test('страница: ответ 403 (чужой или старый токе�
   assert.equal(p.calls.length, 6);
   assert.match(p.box.innerHTML, /Страница остановлена/);
   assert.equal(p.intervals.size, 0);
+});
+
+// Бренд в песочнице: brand.json отвечает brandRespond, логотип «загружается» вызовом его обработчика.
+const brandJson = (data) => () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(data) });
+const OK_LIST = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+
+test('бренд: папки нет, шапка без логотипа и названия, svg и png пробуются по разу', async () => {
+  const p = pageSandbox(OK_LIST);
+  await p.settle();
+  await p.settle();
+  const logo = p.elements['brand-logo'];
+  assert.equal(logo.src, 'brand/logo.svg');
+  logo.on.error();
+  assert.equal(logo.src, 'brand/logo.png');
+  logo.on.error();
+  assert.equal(logo.src, 'brand/logo.png', 'после png ничего больше не пробует');
+  assert.equal(logo.hidden, true);
+  assert.equal(p.elements['brand-name'].hidden, true);
+  assert.equal(p.elements.top.className, 'top');
+  assert.equal(p.document.title, 'Мой кабинет');
+  assert.deepEqual(p.brandCalls, ['brand/brand.json']);
+  assert.deepEqual(p.calls, ['api/processes'], 'запросы бренда не мешают счёту запросов страницы');
+  assert.match(p.box.innerHTML, /карточек: 0/);
+});
+
+test('бренд: логотип и название, название в заголовке вкладки и подписи логотипа, текстом не повторяется', async () => {
+  const p = pageSandbox(OK_LIST, brandJson({ name: '  Компания Пример  ' }));
+  p.elements['brand-logo'].on.load();
+  await p.settle();
+  await p.settle();
+  assert.equal(p.elements['brand-logo'].hidden, false);
+  assert.equal(p.elements['brand-logo'].alt, 'Компания Пример');
+  assert.equal(p.elements['brand-name'].hidden, true);
+  assert.equal(p.elements.top.className, 'top branded');
+  assert.equal(p.document.title, 'Мой кабинет · Компания Пример');
+});
+
+test('бренд: название без логотипа показывается текстом в шапке', async () => {
+  const p = pageSandbox(OK_LIST, brandJson({ name: 'Компания Пример' }));
+  await p.settle();
+  await p.settle();
+  p.elements['brand-logo'].on.error();
+  p.elements['brand-logo'].on.error();
+  const name = p.elements['brand-name'];
+  assert.equal(name.hidden, false);
+  assert.equal(name.textContent, 'Компания Пример');
+  assert.equal(p.elements['brand-logo'].hidden, true);
+  assert.equal(p.elements.top.className, 'top branded');
+});
+
+test('бренд: brand.json без строки name или не объект не меняет шапку, длинное название обрезается', async () => {
+  for (const data of [[], { name: 5 }, { name: '   ' }, null, 'Компания']) {
+    const p = pageSandbox(OK_LIST, brandJson(data));
+    await p.settle();
+    await p.settle();
+    assert.equal(p.elements['brand-name'].hidden, true, JSON.stringify(data));
+    assert.equal(p.document.title, 'Мой кабинет', JSON.stringify(data));
+  }
+  const p = pageSandbox(OK_LIST, brandJson({ name: 'Я'.repeat(200) }));
+  await p.settle();
+  await p.settle();
+  assert.equal(p.elements['brand-name'].textContent.length, 80);
+  const broken = pageSandbox(OK_LIST, () => Promise.reject(new TypeError('Failed to fetch')));
+  await broken.settle();
+  await broken.settle();
+  assert.equal(broken.elements['brand-name'].hidden, true);
+  assert.match(broken.box.innerHTML, /карточек: 0/);
 });

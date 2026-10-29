@@ -235,6 +235,8 @@ test('скиллы процессов: фразы человеку без сло
   }
 });
 
+const rules0 = () => read('CLAUDE.md');
+
 test('добавить процесс: всегда программа (kind script), процесс без программы не создаётся; справка с образцами на месте', () => {
   const skill = read('.claude/skills/add-process/SKILL.md');
   assert.match(skill, /"kind": "script"/);
@@ -255,7 +257,12 @@ test('добавить процесс: всегда программа (kind scr
   const guide = read('.claude/skills/add-process/programma.md');
   assert.ok(guide.includes('URGENT = "срочно (не тема)"') && guide.includes('"срочно (не тема)": ['));
   assert.ok(skill.includes('| срочно (не тема) | <слова срочности через запятую> |'));
-  assert.ok(skill.includes('"срочно": ['), 'в примере эталона нет раздела «срочно»');
+  // 29.10: эталон без строк (Claude строки файла человека не читает), основа без скилла, интернет в программе.
+  assert.ok(!skill.includes('"срочно": ['), 'в примере эталона не должно быть строк: темы строк Claude не определяет');
+  assert.ok(skill.includes('Файлы человека в модель для анализа не идут') && rules0().includes('Файлы человека в модель для анализа не идут'));
+  assert.ok(skill.includes('«Из чего собираем процесс?»') && skill.includes('«Опишу своими словами»') && skill.includes('### Известный ответ'));
+  assert.ok(guide.includes('## Данные из интернета') && guide.includes('# --- Данные из интернета ---'));
+  assert.ok(guide.includes('в ИИ-модели не отправляет'));
   assert.ok(run.includes('→ срочно') && run.includes('«срочно (не тема)»'));
   assert.ok(read('tools/processes.mjs').includes('Добавьте в раздел «срочно (не тема)»'));
   // Слабые слова «?»: правило с примерами в справке и в шаге 4, проверка строк «проверьте» при пополнении.

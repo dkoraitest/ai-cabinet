@@ -986,14 +986,15 @@ export function readInputFile(root, slug, name) {
   return { text, code: 0 };
 }
 
-// ---------- сверка программы с эталоном скилла ----------
+// ---------- сверка программы с эталоном ----------
 
-// Эталон output/<slug>/etalon-skilla.json записывает Claude, выполнив скилл сам на файле человека.
+// Эталон output/<slug>/etalon-skilla.json (имя файла с v1) записывает Claude: итоги из read_table.py (их считает
+// программа на компьютере, в разговор идут только числа) и известный ответ человека. Файл построчно Claude не читает.
 // Программа пишет те же разделы в result.json, в поле sverka. Разделы (все необязательные):
 //   «итоги»: { название: число или текст }, «по категориям»: { категория: число },
 //   «документов»: число, «по строкам»: { номер или ключ строки: категория или ключевое значение },
 //   «срочно»: [ номера или ключи срочных строк ].
-// Строка с двумя темами у скилла (классификация): «X / Y» в «по строкам» (в «по категориям» она посчитана
+// Строка с двумя темами в эталоне (классификация): «X / Y» в «по строкам» (в «по категориям» она посчитана
 // по первой теме X); программа взяла X или Y, это совпадение.
 // Программа по темам пишет ещё «найдено»: { строка: { тема: [слова словаря] } }. По нему сверка подсказывает
 // слабые слова: слово темы, которое стоит в строке другой темы у скилла.
@@ -1023,7 +1024,7 @@ const asNumber = (v) => {
   return /^[-+]?\d+(\.\d+)?$/.test(t) ? Number(t) : null;
 };
 
-// Число совпадает с точностью до последнего знака эталона: 12345,6 у скилла и 12345,63 у программы равны.
+// Число совпадает с точностью до последнего знака эталона: 12345,6 в эталоне и 12345,63 у программы равны.
 function sameValue(etalon, program) {
   const a = asNumber(etalon);
   const b = asNumber(program);
@@ -1104,7 +1105,7 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
       const topics = topicsOf(value, topicSet);
       if (!got) missing.push(key);
       else if (normText(got.value) === MANUAL && normText(value) !== MANUAL) {
-        toManual.push(`  ${key}: у скилла ${show(value)}`);
+        toManual.push(`  ${key}: в эталоне ${show(value)}`);
         const main = normText(topics[0]);
         manualByCategory.set(main, (manualByCategory.get(main) ?? 0) + 1);
       } else if (sameValue(value, got.value)) same++;
@@ -1112,19 +1113,19 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
         same++;
         twoTopics++;
         if (!sameValue(topics[0], got.value)) shifted.push([topics[0], got.value]);
-      } else wrong.push(`  ${key}: у скилла ${show(value)}, у программы ${show(got.value)}`);
+      } else wrong.push(`  ${key}: в эталоне ${show(value)}, у программы ${show(got.value)}`);
     }
     const extra = [...pRows.values()].filter((v) => !eRows.has(normKey(v.key))).map((v) => v.key);
     manual = toManual.length;
     lines.push(`По строкам: совпало ${same} из ${eRows.size}.`);
-    if (twoTopics) lines.push(`Две темы у скилла: ${twoTopics}, программа взяла одну из них.`);
+    if (twoTopics) lines.push(`Две темы в эталоне: ${twoTopics}, программа взяла одну из них.`);
     if (toManual.length) lines.push(`Программа отправила в «${MANUAL}»: ${toManual.length}.`, ...listOf(toManual));
     if (wrong.length) lines.push(`Другой результат у программы: ${wrong.length}.`, ...listOf(wrong));
     if (missing.length) lines.push(`Нет у программы: ${missing.length}: ${missing.slice(0, SHOW_ROWS).join(', ')}.`);
     if (extra.length && partial) {
       lines.push(`Не входят в эталон: ${extra.length} строк или групп программы (эталон по первым ${etalon[COVERAGE]}), их не сравниваем.`);
     } else if (extra.length) {
-      lines.push(`Есть у программы, нет у скилла: ${extra.length}: ${extra.slice(0, SHOW_ROWS).join(', ')}.`);
+      lines.push(`Есть у программы, нет в эталоне: ${extra.length}: ${extra.slice(0, SHOW_ROWS).join(', ')}.`);
     }
     differences += wrong.length + missing.length + (partial ? 0 : extra.length);
   }
@@ -1169,7 +1170,7 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
     }
     if (weak.size) {
       const list = [...weak].slice(0, SHOW_ROWS).map(([id, rows]) => `${id}: ${rows.slice(0, 10).join(', ')}${rows.length > 10 ? ' ...' : ''}`);
-      lines.push(`Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: ${list.join('; ')}.`);
+      lines.push(`Слабые слова (стоят в строках другой темы в эталоне), пометьте их «?» в словаре: ${list.join('; ')}.`);
       weakWords = true;
     }
   }
@@ -1184,13 +1185,13 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
     const bad = [];
     for (const [k, { key, value }] of eTotals) {
       const got = pTotals.get(k);
-      if (!got || !sameValue(value, got.value)) bad.push(`  «${key}»: у скилла ${show(value)}, у программы ${show(got?.value)}`);
+      if (!got || !sameValue(value, got.value)) bad.push(`  «${key}»: в эталоне ${show(value)}, у программы ${show(got?.value)}`);
     }
     lines.push(bad.length ? `Итоги: не совпало ${bad.length} из ${eTotals.size}.` : `Итоги: совпали все (${eTotals.size}).`, ...bad);
     differences += bad.length;
   }
   const eCats = partial ? null : asMap(etalon['по категориям']);
-  // Строка с двумя темами посчитана у скилла по первой теме; программа взяла вторую: сдвигаем её счёт.
+  // Строка с двумя темами посчитана в эталоне по первой теме; программа взяла вторую: сдвигаем её счёт.
   if (eCats) {
     for (const [from, to] of shifted) {
       const a = eCats.get(normKey(from));
@@ -1211,13 +1212,13 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
       if (sameValue(value, gotValue)) continue;
       const gap = asNumber(value) !== null && asNumber(gotValue) !== null ? asNumber(value) - asNumber(gotValue) : null;
       if (gap !== null && gap > 0 && gap === (manualByCategory.get(k) ?? 0)) {
-        explained.push(`  «${key}»: у скилла ${show(value)}, у программы ${show(gotValue)}, разница ${show(gap)} в «${MANUAL}»`);
+        explained.push(`  «${key}»: в эталоне ${show(value)}, у программы ${show(gotValue)}, разница ${show(gap)} в «${MANUAL}»`);
       } else {
-        bad.push(`  «${key}»: у скилла ${show(value)}, у программы ${show(gotValue)}`);
+        bad.push(`  «${key}»: в эталоне ${show(value)}, у программы ${show(gotValue)}`);
       }
     }
     for (const [k, { key, value }] of pCats) {
-      if (!eCats.has(k) && k !== MANUAL && !sameValue(0, value)) bad.push(`  «${key}»: у скилла нет, у программы ${show(value)}`);
+      if (!eCats.has(k) && k !== MANUAL && !sameValue(0, value)) bad.push(`  «${key}»: в эталоне нет, у программы ${show(value)}`);
     }
     if (!bad.length && !explained.length) lines.push(`По категориям: совпали все (${eCats.size}).`);
     else {
@@ -1228,9 +1229,9 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
   }
   if (!partial && etalon['документов'] !== undefined) {
     const got = program['документов'];
-    if (sameValue(etalon['документов'], got)) lines.push(`Документов: ${show(got)}, как у скилла.`);
+    if (sameValue(etalon['документов'], got)) lines.push(`Документов: ${show(got)}, как в эталоне.`);
     else {
-      lines.push(`Документов: у скилла ${show(etalon['документов'])}, у программы ${show(got)}.`);
+      lines.push(`Документов: в эталоне ${show(etalon['документов'])}, у программы ${show(got)}.`);
       differences++;
     }
   }
@@ -1250,32 +1251,36 @@ export function compareWithEtalon(etalon, program, { slovar = program?.['най�
   if (differences) {
     lines.push(`Итог сверки: расхождений ${differences}. Поправьте словарь или программу и запустите снова.`);
   } else if (manual) {
-    lines.push(`Итог сверки: программа дала тот же результат, что скилл, кроме ${manual} строк в «${MANUAL}».`);
+    lines.push(`Итог сверки: результат программы совпал с эталоном, кроме ${manual} строк в «${MANUAL}».`);
   } else {
-    lines.push('Итог сверки: программа дала тот же результат, что скилл.');
+    lines.push('Итог сверки: результат программы совпал с эталоном.');
   }
   return { lines, code: differences ? 1 : 0, differences, manual };
 }
 
-// Что программе процесса нельзя: она запускается кнопкой без Claude и без окна. Проверка по строкам
+// Что программе процесса нельзя: она запускается кнопкой без Claude и без окна. В интернет ходить можно (решение
+// 29.10: цены, отзывы, данные сайтов без ограничений), запускать другие программы нельзя. Проверка по строкам
 // processes/<slug>/run.py (строки-комментарии пропускаются). Это проверка по словам, не песочница: она ловит
 // запрещённое, написанное прямо, и известные обходы (функция по имени, другое имя для os). Возвращает
 // [{ line, text, why }], по одной причине на строку.
-// Библиотеки только из списка: стандартный Python, который нужен образцам справки, openpyxl, python-docx и
-// read_table из tools. Остальные (asyncio, pty, runpy, shutil, subprocess и любые другие) по словам не проверить.
+// Библиотеки только из списка: стандартный Python, который нужен образцам справки, библиотеки для интернета,
+// openpyxl, python-docx и read_table из tools. Остальные (asyncio, pty, runpy, shutil, subprocess и любые другие) по словам не проверить.
 export const ALLOWED_IMPORTS = new Set([
   '__future__', 'json', 'os', 're', 'sys', 'datetime', 'pathlib', 'csv', 'math', 'decimal', 'collections',
   'itertools', 'difflib', 'unicodedata', 'zipfile', 'io', 'statistics', 'functools', 'string', 'typing',
   'dataclasses', 'copy', 'time', 'calendar', 'textwrap', 'enum', 'openpyxl', 'docx', 'read_table',
+  // интернет (решение 29.10): запросы к сайтам и разбор ответа
+  'urllib', 'urllib3', 'http', 'requests', 'httpx', 'socket', 'ssl', 'html', 'xml', 'email', 'base64', 'hashlib',
+  'gzip', 'uuid', 'random', 'smtplib', 'ftplib',
 ]);
 // Что можно взять из os и sys через from ... import: остальное у них запуск программ и обходы проверки.
 const FROM_LIMITS = { os: ['path'], sys: ['argv', 'exit', 'path', 'stderr', 'stdout'] };
-const NOT_ALLOWED_IMPORT = 'библиотека не из списка (стандартный Python из справки, openpyxl, python-docx, read_table)';
+const NOT_ALLOWED_IMPORT = 'библиотека не из списка (стандартный Python из справки, интернет, openpyxl, python-docx, read_table)';
 
 // Сначала названные прямо опасности (у них понятная причина), потом библиотеки не из списка, потом обходы.
 const PROGRAM_RULES = [
-  [/\b(subprocess|socket|urllib|urllib3|requests|httpx|ctypes|importlib|ftplib|smtplib|telnetlib|webbrowser)\b/, 'запуск программ или выход в сеть'],
-  [/\bhttp\.(client|server)\b|^\s*(import|from)\s+http\b/, 'выход в сеть'],
+  [/\b(subprocess|ctypes|importlib|webbrowser)\b/, 'запуск программ'],
+  [/\bhttp\.server\b|^\s*from\s+http\s+import\s+server\b/, 'своя страница или сервер в программе процесса'],
   [/\bos\.(system|popen|exec\w*|spawn\w*|posix_spawn\w*|startfile|fork\w*)\b/, 'запуск программ'],
   [/(?<![\w.])(eval|exec|compile|__import__)\s*\(/, 'выполнение текста как программы'],
 ];
@@ -1362,7 +1367,7 @@ export function compareProcess(root, slug) {
     : [];
   const fail = (text, code) => ({ text: [text, ...banned].join('\n'), code: banned.length ? 1 : code });
   const etalon = load(etalonRel);
-  if (etalon.error) return fail(`Эталона нет: ${etalonRel}, ${etalon.error}. Сначала выполните скилл на файле человека и запишите эталон.`, 2);
+  if (etalon.error) return fail(`Эталона нет: ${etalonRel}, ${etalon.error}. Сначала запишите эталон: итоги из read_table.py и известный ответ человека.`, 2);
   const result = load(resultRel);
   if (result.error) return fail(`Результата программы нет: ${resultRel}, ${result.error}. Запустите node tools/processes.mjs run ${slug}.`, 2);
   const e = etalon.data;
@@ -1371,7 +1376,7 @@ export function compareProcess(root, slug) {
   if (!p || typeof p !== 'object' || Array.isArray(p)) {
     return fail(`В ${resultRel} нет раздела sverka: программа должна записать туда те же разделы, что в эталоне (${SECTIONS.map((s) => `«${s}»`).join(', ')}).`, 2);
   }
-  const head = [`Сверка «${readProcessInfo(root, slug).title}»: эталон скилла ${etalonRel}${e['файл'] ? ` (файл ${e['файл']})` : ''}, программа ${resultRel}${result.data.updated_at ? ` от ${formatTime(result.data.updated_at)}` : ''}.`];
+  const head = [`Сверка «${readProcessInfo(root, slug).title}»: эталон ${etalonRel}${e['файл'] ? ` (файл ${e['файл']})` : ''}, программа ${resultRel}${result.data.updated_at ? ` от ${formatTime(result.data.updated_at)}` : ''}.`];
   const r = compareWithEtalon(e, p, { slovar: isFile(join(root, 'processes', slug, 'slovar.json')) });
   // Напоминание про окно перед правкой один раз: оно уже есть в выводе сверки, у запрещённого его не повторяем.
   const tail = r.lines.includes(FIX_NOTE) ? banned.filter((l) => l !== FIX_NOTE) : banned;

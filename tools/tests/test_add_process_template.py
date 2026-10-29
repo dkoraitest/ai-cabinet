@@ -37,7 +37,7 @@ except ImportError:
 def blocks():
     found = re.findall(r"```python\n(.*?)```", GUIDE.read_text(encoding="utf-8"), re.S)
     found_dva = re.findall(r"```python\n(.*?)```", GUIDE_DVA.read_text(encoding="utf-8"), re.S)
-    assert len(found) == 5, f"в programma.md нужны 5 образцов, найдено {len(found)}"
+    assert len(found) == 6, f"в programma.md нужны 6 образцов, найдено {len(found)}"
     assert len(found_dva) == 2, f"в programma-dva-dokumenta.md нужны 2 образца, найдено {len(found_dva)}"
     named = {}
     for b in found + found_dva:
@@ -47,6 +47,8 @@ def blocks():
             named["slovar"] = b
         elif b.startswith("# --- Шаблон Word"):
             named["word"] = b
+        elif b.startswith("# --- Данные из интернета"):
+            named["net"] = b
         elif "slovar = load_slovar()" in b and b.startswith("def main():"):
             named["main_slovar"] = b
         elif "fill_docx(" in b and b.startswith("def main():"):
@@ -55,7 +57,7 @@ def blocks():
             named["dva"] = b
         elif "two_documents(" in b and b.startswith("def main():"):
             named["main_dva"] = b
-    assert len(named) == 7, f"в справке нужны 7 образцов, найдено {sorted(named)}"
+    assert len(named) == 8, f"в справке нужны 8 образцов, найдено {sorted(named)}"
     return named
 
 
@@ -1187,13 +1189,13 @@ class Word(unittest.TestCase):
         code, out = compare({"ТОО «Ромашка»": "1 300 000,00", "ТОО «Василёк»": "[нет данных]"})
         self.assertEqual(code, 1, out)
         self.assertIn("По строкам: совпало 1 из 2.", out)
-        self.assertIn("ТОО «Ромашка»: у скилла «1 300 000,00», у программы «1 250 000,00»", out)
+        self.assertIn("ТОО «Ромашка»: в эталоне «1 300 000,00», у программы «1 250 000,00»", out)
         self.assertIn("Итог сверки: расхождений 1.", out)
         code, out = compare({"ТОО «Ромашка»": 1250000, "ТОО «Василёк»": "[нет данных]"})
         self.assertEqual(code, 0, out)
         self.assertIn("По строкам: совпало 2 из 2.", out)
-        self.assertIn("Документов: 2, как у скилла.", out)
-        self.assertTrue(out.rstrip().endswith("Итог сверки: программа дала тот же результат, что скилл."), out)
+        self.assertIn("Документов: 2, как в эталоне.", out)
+        self.assertTrue(out.rstrip().endswith("Итог сверки: результат программы совпал с эталоном."), out)
         self.assertNotIn("словарь", out)
 
     @unittest.skipUnless(NODE, "нет node")
@@ -1965,9 +1967,55 @@ class TwoDocuments(unittest.TestCase):
         (self.c.out / "etalon-skilla.json").write_text(json.dumps(etalon, ensure_ascii=False), encoding="utf-8")
         code, out = self.c.node("compare", "proba")
         self.assertEqual(code, 0, out)
-        self.assertIn("Итог сверки: программа дала тот же результат, что скилл.", out)
+        self.assertIn("Итог сверки: результат программы совпал с эталоном.", out)
         self.assertNotIn("Внимание", out)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Net(unittest.TestCase):
+    """Блок «Данные из интернета» (решение 29.10): сайт не ответил или ответил ошибкой: понятная причина, код 2."""
+
+    def compose_net(self, url):
+        b = blocks()
+        base = b["base"].replace("<имя>", "proba").replace("<Название процесса>", "Проба")
+        head, sep, tail = base.partition("\ndef main():")
+        self.assertTrue(sep)
+        run_part = tail[tail.index("\nif __name__"):]
+        main = f"def main():\n    fetch({url!r})\n"
+        return head + "\n" + b["net"] + "\n" + main + run_part
+
+    def test_site_not_answering_clear_stop(self):
+        import socket
+        with socket.socket() as srv:  # свободный порт, на нём никто не слушает
+            srv.bind(("127.0.0.1", 0))
+            port = srv.getsockname()[1]
+        c = Cabinet(self.compose_net(f"http://127.0.0.1:{port}/prices"))
+        self.addCleanup(c.close)
+        r = c.run()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("не ответил", r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+
+    def test_site_error_code_clear_stop(self):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        c = Cabinet(self.compose_net(f"http://127.0.0.1:{srv.server_address[1]}/prices"))
+        self.addCleanup(c.close)
+        r = c.run()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ответил ошибкой 404", r.stdout + r.stderr)

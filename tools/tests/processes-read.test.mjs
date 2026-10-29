@@ -225,7 +225,7 @@ test('compareWithEtalon: всё совпало, числа с точностью
     'по строкам': { '1': 'оборудование', '2': 'Другое', '3': 'оборудование', '4': 'другое', '5': 'повтор' },
   });
   assert.equal(r.code, 0, r.lines.join('\n'));
-  assert.equal(r.lines.at(-1), 'Итог сверки: программа дала тот же результат, что скилл.');
+  assert.equal(r.lines.at(-1), 'Итог сверки: результат программы совпал с эталоном.');
   assert.ok(r.lines.includes('По строкам: совпало 5 из 5.'));
 });
 
@@ -238,9 +238,9 @@ test('compareWithEtalon: строки в «разобрать вручную» �
   assert.equal(r.code, 0, r.lines.join('\n'));
   assert.equal(r.manual, 2);
   const text = r.lines.join('\n');
-  assert.match(text, /Программа отправила в «разобрать вручную»: 2\.\n {2}2: у скилла «другое»\n {2}4: у скилла «другое»/);
-  assert.match(text, /«другое»: у скилла 2, у программы 0, разница 2 в «разобрать вручную»/);
-  assert.equal(r.lines.at(-1), 'Итог сверки: программа дала тот же результат, что скилл, кроме 2 строк в «разобрать вручную».');
+  assert.match(text, /Программа отправила в «разобрать вручную»: 2\.\n {2}2: в эталоне «другое»\n {2}4: в эталоне «другое»/);
+  assert.match(text, /«другое»: в эталоне 2, у программы 0, разница 2 в «разобрать вручную»/);
+  assert.equal(r.lines.at(-1), 'Итог сверки: результат программы совпал с эталоном, кроме 2 строк в «разобрать вручную».');
 });
 
 test('compareWithEtalon: другая категория, другой итог, лишняя категория, документы → расхождения, код 1', () => {
@@ -252,11 +252,11 @@ test('compareWithEtalon: другая категория, другой итог,
   });
   assert.equal(r.code, 1);
   const text = r.lines.join('\n');
-  assert.match(text, /Другой результат у программы: 1\.\n {2}1: у скилла «оборудование», у программы «чистота»/);
-  assert.match(text, /Есть у программы, нет у скилла: 1: 6\./);
-  assert.match(text, /«литров»: у скилла 12345,6, у программы 12345,7/);
-  assert.match(text, /«чистота»: у скилла нет, у программы 1/);
-  assert.match(text, /Документов: у скилла 3, у программы 2\./);
+  assert.match(text, /Другой результат у программы: 1\.\n {2}1: в эталоне «оборудование», у программы «чистота»/);
+  assert.match(text, /Есть у программы, нет в эталоне: 1: 6\./);
+  assert.match(text, /«литров»: в эталоне 12345,6, у программы 12345,7/);
+  assert.match(text, /«чистота»: в эталоне нет, у программы 1/);
+  assert.match(text, /Документов: в эталоне 3, у программы 2\./);
   assert.match(r.lines.at(-1), /^Итог сверки: расхождений 6\. Поправьте словарь или программу/);
 });
 
@@ -272,14 +272,14 @@ test('compareWithEtalon: эталон по части большого файл�
   assert.match(text, /Не входят в эталон: 1 строк или групп программы \(эталон по первым 2\), их не сравниваем\./);
   assert.match(text, /Эталон по части файла: «по категориям» по всему файлу с ним не сравнить, не сравниваем\./);
   assert.match(text, /Итоги: совпали все \(1\)\./);
-  assert.equal(r.lines.at(-1), 'Итог сверки: программа дала тот же результат, что скилл.');
+  assert.equal(r.lines.at(-1), 'Итог сверки: результат программы совпал с эталоном.');
   // Итог по всему файлу в эталоне по части файла тоже сверяется: другой итог у программы → расхождение.
   const wrongTotal = compareWithEtalon(
     { 'строк в эталоне': 2, 'по строкам': { 1: 'оборудование', 2: 'другое' }, 'итоги': { 'обращений': 3 } },
     { 'итоги': { 'обращений': 4 }, 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } },
   );
   assert.equal(wrongTotal.code, 1);
-  assert.match(wrongTotal.lines.join('\n'), /«обращений»: у скилла 3, у программы 4/);
+  assert.match(wrongTotal.lines.join('\n'), /«обращений»: в эталоне 3, у программы 4/);
   // Без пометки о части файла лишняя строка остаётся расхождением.
   const full = compareWithEtalon({ 'по строкам': { 1: 'оборудование', 2: 'другое' } }, { 'по строкам': { 1: 'оборудование', 2: 'другое', 3: 'другое' } });
   assert.equal(full.code, 1);
@@ -297,7 +297,7 @@ test('compareWithEtalon: сводная до 300 групп: все группы
   assert.ok(ok.lines.includes('По категориям: совпали все (47).'));
   const wrongGroup = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(g) }, 'по категориям': groups(47, 5) });
   assert.equal(wrongGroup.code, 1);
-  assert.match(wrongGroup.lines.join('\n'), /«АЗС-001 \/ АИ-92»: у скилла 100, у программы 105/);
+  assert.match(wrongGroup.lines.join('\n'), /«АЗС-001 \/ АИ-92»: в эталоне 100, у программы 105/);
   const wrongTotal = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(g) + 7 }, 'по категориям': { ...g } });
   assert.equal(wrongTotal.code, 1);
   assert.match(wrongTotal.lines.join('\n'), /Итоги: не совпало 1 из 1\./);
@@ -317,7 +317,7 @@ test('compareWithEtalon: сводная больше 300 групп: первы�
   const tail = { ...all, 'АЗС-300 / АИ-92': all['АЗС-300 / АИ-92'] + 50 };
   const wrongTotal = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(tail), 'групп': 350 }, 'по строкам': tail });
   assert.equal(wrongTotal.code, 1, wrongTotal.lines.join('\n'));
-  assert.match(wrongTotal.lines.join('\n'), /«литров»: у скилла/);
+  assert.match(wrongTotal.lines.join('\n'), /«литров»: в эталоне/);
   assert.match(wrongTotal.lines.at(-1), /^Итог сверки: расхождений 1\./);
   const wrongGroup = compareWithEtalon(etalon, { 'итоги': { 'литров': sum(all), 'групп': 350 }, 'по строкам': { ...all, 'АЗС-001 / АИ-92': 1 } });
   assert.equal(wrongGroup.code, 1);
@@ -333,7 +333,7 @@ test('compareWithEtalon: эталон по части файла без итог
   assert.ok(!whole.lines.some((l) => l.startsWith('В эталоне нет итогов')));
 });
 
-test('compareWithEtalon: две темы у скилла «X / Y»: программа взяла любую из двух → совпало, третью → расхождение', () => {
+test('compareWithEtalon: две темы в эталоне «X / Y»: программа взяла любую из двух → совпало, третью → расхождение', () => {
   const etalon = {
     'по категориям': { 'оплата и касса': 2, 'минимаркет и кафе': 1 },
     'по строкам': { 1: 'оплата и касса', 2: 'Оплата и касса / Минимаркет и кафе', 3: 'минимаркет и кафе' },
@@ -346,7 +346,7 @@ test('compareWithEtalon: две темы у скилла «X / Y»: програ
   assert.equal(second.code, 0, second.lines.join('\n'));
   assert.ok(second.lines.includes('По строкам: совпало 3 из 3.'));
   assert.ok(second.lines.includes('По категориям: совпали все (2).'), second.lines.join('\n'));
-  assert.ok(second.lines.includes('Две темы у скилла: 1, программа взяла одну из них.'), second.lines.join('\n'));
+  assert.ok(second.lines.includes('Две темы в эталоне: 1, программа взяла одну из них.'), second.lines.join('\n'));
   const first = compareWithEtalon(etalon, {
     'по категориям': { 'оплата и касса': 2, 'минимаркет и кафе': 1 },
     'по строкам': { 1: 'оплата и касса', 2: 'оплата и касса', 3: 'минимаркет и кафе' },
@@ -357,7 +357,7 @@ test('compareWithEtalon: две темы у скилла «X / Y»: програ
     'по строкам': { 1: 'оплата и касса', 2: 'оборудование', 3: 'минимаркет и кафе' },
   });
   assert.equal(other.code, 1);
-  assert.match(other.lines.join('\n'), /2: у скилла «Оплата и касса \/ Минимаркет и кафе», у программы «оборудование»/);
+  assert.match(other.lines.join('\n'), /2: в эталоне «Оплата и касса \/ Минимаркет и кафе», у программы «оборудование»/);
   // Строка с двумя темами в «разобрать вручную»: разница в категории первой темы объясняется ею.
   const manual = compareWithEtalon(etalon, {
     'по категориям': { 'оплата и касса': 1, 'минимаркет и кафе': 1 },
@@ -435,10 +435,10 @@ test('compareWithEtalon: «X / Y» две темы только у класси�
     { 'по категориям': { 'а': 2 }, 'по строкам': { 1: 'а', 2: 'а / б', 3: 'б' } },
     { 'по категориям': { 'а': 1, 'б': 2 }, 'по строкам': { 1: 'а', 2: 'б', 3: 'б' } },
   );
-  assert.ok(second.lines.includes('Две темы у скилла: 1, программа взяла одну из них.'), second.lines.join('\n'));
+  assert.ok(second.lines.includes('Две темы в эталоне: 1, программа взяла одну из них.'), second.lines.join('\n'));
 });
 
-test('compareWithEtalon: слабые слова: слово темы стоит в строке другой темы у скилла → подсказка, не расхождение', () => {
+test('compareWithEtalon: слабые слова: слово темы стоит в строке другой темы в эталоне → подсказка, не расхождение', () => {
   const etalon = { 'по категориям': { 'оплата': 1, 'персонал': 1, 'кафе': 1 }, 'по строкам': { 1: 'оплата', 2: 'персонал', 3: 'кафе / оплата', 4: 'повтор' } };
   const program = {
     'по категориям': { 'оплата': 1, 'персонал': 1, 'кафе': 1 },
@@ -451,8 +451,8 @@ test('compareWithEtalon: слабые слова: слово темы стоит
   };
   const r = compareWithEtalon(etalon, program);
   assert.equal(r.code, 0, r.lines.join('\n'));
-  // «касса» в строке 2 (персонал) чужая; в строке 3 у скилла две темы, «оплата» одна из них; «чек?» уже слабое.
-  assert.ok(r.lines.includes('Слабые слова (стоят в строках другой темы у скилла), пометьте их «?» в словаре: «касса» (оплата): 2.'), r.lines.join('\n'));
+  // «касса» в строке 2 (персонал) чужая; в строке 3 в эталоне две темы, «оплата» одна из них; «чек?» уже слабое.
+  assert.ok(r.lines.includes('Слабые слова (стоят в строках другой темы в эталоне), пометьте их «?» в словаре: «касса» (оплата): 2.'), r.lines.join('\n'));
   assert.equal(r.lines.filter((l) => l === FIX_NOTE).length, 1);
   const none = compareWithEtalon(etalon, { ...program, 'найдено': { 1: { 'оплата': ['касса'] } } });
   assert.ok(!none.lines.some((l) => l.startsWith('Слабые слова')));
@@ -480,13 +480,10 @@ test('compareWithEtalon: больше 20% строк в «разобрать в�
   assert.ok(!few.lines.some((l) => l.startsWith('Внимание')));
 });
 
-test('programProblems: запуск программ, сеть, eval, абсолютные пути; комментарии и обычные строки не трогает', () => {
+test('programProblems: запуск программ, eval, абсолютные пути; комментарии, обычные строки и интернет не трогает', () => {
   const bad = [
     'import subprocess',
     'os.system("del *")',
-    'from urllib.request import urlopen',
-    'import requests',
-    'from http import client',
     'v = eval(text)',
     'data = open("/Users/aigul/secret.txt").read()',
     'p = "C:\\\\Users\\\\secret.xlsx"',
@@ -494,7 +491,7 @@ test('programProblems: запуск программ, сеть, eval, абсол
     'shutil.rmtree(ROOT)',
   ];
   for (const line of bad) assert.equal(programProblems(line).length, 1, line);
-  const good = ['# subprocess не нужен', 'r = re.compile(r"\\d+")', 'out = OUT / "result.json"', 'tmp.unlink(missing_ok=True)', 's.replace("\\\\", "/")', 'os.replace(tmp, target)'];
+  const good = ['from urllib.request import urlopen, Request', 'import requests', 'from http import client', 'import json, ssl, html', 'from html.parser import HTMLParser', '# subprocess не нужен', 'r = re.compile(r"\\d+")', 'out = OUT / "result.json"', 'tmp.unlink(missing_ok=True)', 's.replace("\\\\", "/")', 'os.replace(tmp, target)'];
   for (const line of good) assert.deepEqual(programProblems(line), [], line);
 });
 
@@ -552,13 +549,13 @@ test('compare: запрещённое в программе процесса з�
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /Эталона нет/);
   assert.match(r.out, /В программе processes\/opasno\/run\.py есть то, что программе процесса нельзя/);
-  assert.match(r.out, /строка 2: запуск программ или выход в сеть: import subprocess/);
+  assert.match(r.out, /строка 2: запуск программ: import subprocess/);
   const sverka = { 'по строкам': { 1: 'а' } };
   writeFileSync(join(out, 'etalon-skilla.json'), JSON.stringify(sverka));
   writeFileSync(join(out, 'result.json'), JSON.stringify({ title: 'Опасно', updated_at: '2026-10-22T10:00:00+05:00', status: 'green', summary: 'x', columns: [], rows: [], sverka }));
   r = cli('compare', slug);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /Итог сверки: программа дала тот же результат, что скилл\./);
+  assert.match(r.out, /Итог сверки: результат программы совпал с эталоном\./);
   assert.match(r.out, /Итог проверки программы: уберите это из программы, «готово» нельзя\.$/m);
   assert.equal(r.out.split('\n').filter((l) => l === FIX_NOTE).length, 1, r.out);
   // Запрещённое и расхождение сразу: напоминание про окно одно.
@@ -593,7 +590,7 @@ test('compare: эталон и result.json из файлов; нет этало�
   writeFileSync(join(out, 'result.json'), JSON.stringify({ ...result, sverka: { 'итоги': ETALON['итоги'], 'по категориям': ETALON['по категориям'], 'по строкам': ETALON['по строкам'] } }));
   r = cli('compare', 'razbor');
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /^Сверка «Разбор обращений»: эталон скилла output\/razbor\/etalon-skilla\.json \(файл obrashcheniya\.xlsx\), программа output\/razbor\/result\.json от 22\.10\.2026/);
+  assert.match(r.out, /^Сверка «Разбор обращений»: эталон output\/razbor\/etalon-skilla\.json \(файл obrashcheniya\.xlsx\), программа output\/razbor\/result\.json от 22\.10\.2026/);
   writeFileSync(join(out, 'etalon-skilla.json'), JSON.stringify({ 'скилл': 'x' }));
   r = cli('compare', 'razbor');
   assert.equal(r.code, 2);
@@ -602,4 +599,11 @@ test('compare: эталон и result.json из файлов; нет этало�
   r = cli('compare', 'razbor');
   assert.equal(r.code, 2);
   assert.match(r.out, /повреждён/);
+});
+
+test('programProblems: блок «Данные из интернета» из справки проходит проверку программы', () => {
+  const guide = readFileSync(join(ROOT, '.claude', 'skills', 'add-process', 'programma.md'), 'utf8');
+  const block = /```python\n(# --- Данные из интернета ---[\s\S]*?)```/.exec(guide);
+  assert.ok(block, 'в справке нет блока «Данные из интернета»');
+  assert.deepEqual(programProblems(block[1]), []);
 });
