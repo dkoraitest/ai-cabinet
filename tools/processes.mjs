@@ -1298,18 +1298,20 @@ const BYPASS_RULES = [
 ];
 
 // Почему импорт нельзя (или null). stmt: «import a.b as c, d» или «from a import (b, c)» одной строкой.
-function importProblem(stmt) {
+// extra: ещё разрешённые имена (свои модули проекта сервиса, tools/services.mjs).
+function importProblem(stmt, extra) {
+  const allowed = (name) => ALLOWED_IMPORTS.has(name) || extra.has(name);
   const from = /^from\s+(\S+)\s+import\s+(.+)$/s.exec(stmt);
   if (from) {
     const [, mod, list] = from;
-    if (!ALLOWED_IMPORTS.has(mod.split('.')[0])) return NOT_ALLOWED_IMPORT;
+    if (!allowed(mod.split('.')[0])) return NOT_ALLOWED_IMPORT;
     const names = list.replace(/[()\\]/g, ' ').split(',').map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
     const limit = FROM_LIMITS[mod];
     return limit && names.some((n) => !limit.includes(n)) ? `из ${mod} можно взять только ${limit.join(', ')}` : null;
   }
   for (const part of stmt.replace(/^import\s+/, '').replace(/\\/g, ' ').split(',')) {
     const [name, as] = part.trim().split(/\s+/);
-    if (!name || !ALLOWED_IMPORTS.has(name.split('.')[0])) return NOT_ALLOWED_IMPORT;
+    if (!name || !allowed(name.split('.')[0])) return NOT_ALLOWED_IMPORT;
     if (as === 'as' && FROM_LIMITS[name]) return 'os или sys под другим именем';
   }
   return null;
@@ -1329,14 +1331,16 @@ function importsAt(lines, i) {
     .filter((stmt) => stmt && (/^import\s/.test(stmt) || /^from\s+\S+\s+import\b/.test(stmt)));
 }
 
-export function programProblems(text) {
+// allowImports: ещё разрешённые имена модулей (свои файлы .py проекта сервиса, tools/services.mjs).
+export function programProblems(text, { allowImports = [] } = {}) {
+  const extra = new Set(allowImports);
   const found = [];
   const lines = String(text).split(/\r?\n/);
   lines.forEach((line, i) => {
     if (/^\s*#/.test(line)) return;
     const stmts = importsAt(lines, i);
     const rule = (rules) => rules.find(([re, , opts]) => !(opts?.skipImport && stmts.length) && re.test(line))?.[1];
-    const why = rule(PROGRAM_RULES) ?? stmts.map(importProblem).find(Boolean) ?? rule(BYPASS_RULES);
+    const why = rule(PROGRAM_RULES) ?? stmts.map((s) => importProblem(s, extra)).find(Boolean) ?? rule(BYPASS_RULES);
     if (why) found.push({ line: i + 1, text: line.trim(), why });
   });
   return found;

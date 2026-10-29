@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -258,7 +258,8 @@ test('exitCodeFor: 1 при fail, иначе 0', () => {
 });
 
 test('CLI --json: массив результатов', () => {
-  const r = spawnSync(process.execPath, [join(ROOT, 'tools', 'check.mjs'), '--json'], { encoding: 'utf8' });
+  // Скиллы kabinet-* в настоящую папку Claude разработчика тест не ставит.
+  const r = spawnSync(process.execPath, [join(ROOT, 'tools', 'check.mjs'), '--json'], { encoding: 'utf8', env: { ...process.env, AI_CABINET_NO_USER_SKILLS: '1' } });
   const arr = JSON.parse(r.stdout);
   assert.ok(Array.isArray(arr) && arr.length >= 6);
   for (const x of arr) {
@@ -279,12 +280,17 @@ test('CLI через символическую ссылку из другого
     mkdirSync(join(real, 'input'));
     const link = join(base, 'ссылка на кабинет');
     symlinkSync(real, link, 'junction');
-    const r = spawnSync(process.execPath, [join(link, 'tools', 'check.mjs'), '--json'], { encoding: 'utf8', cwd: base });
+    const config = join(base, 'папка Claude');
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: config, AI_CABINET_NO_USER_SKILLS: '' };
+    const r = spawnSync(process.execPath, [join(link, 'tools', 'check.mjs'), '--json'], { encoding: 'utf8', cwd: base, env });
     const arr = JSON.parse(r.stdout);
     assert.ok(arr.length >= 6);
     assert.equal(arr.find((x) => x.id === 'localhost')?.status, 'ok');
     assert.ok(existsSync(join(real, 'me', 'about-me.md')), 'CLI создаёт me/ из шаблонов');
     assert.ok(existsSync(join(real, 'site', 'index.html')), 'CLI создаёт site/ из шаблонов');
+    // Проверка сетапа ставит скиллы для проектов сервисов, путь к кабинету подставлен.
+    const skill = readFileSync(join(config, 'skills', 'kabinet-novyi-servis', 'SKILL.md'), 'utf8');
+    assert.ok(skill.includes(realpathSync.native(real)) && !skill.includes('{{KABINET}}'), 'путь к кабинету в скилле');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

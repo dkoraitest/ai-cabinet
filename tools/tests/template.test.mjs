@@ -32,6 +32,8 @@ const PARTICIPANT = (f) =>
 const CASE_DIR = 'input/case-azs/';
 const isCase = (f) => f.startsWith(CASE_DIR);
 const TEXT_EXT = /\.(md|csv|txt|json|html)$/i;
+// Пользовательские скиллы курса: ставятся в папку скиллов Claude и работают в любой папке.
+const USER_SKILLS = 'templates/user-skills/';
 
 test('имена файлов только латиница без пробелов', () => {
   const bad = files.filter((f) => f.split('/').some((s) => !/^[A-Za-z0-9._-]+$/.test(s)) && !isCase(f));
@@ -82,25 +84,27 @@ test('нет имени клиента (по хешам)', () => {
   assert.deepEqual(bad, []);
 });
 
-// python3 только в строке про Mac: на Windows python3 открывает заглушку Microsoft Store.
+// python3 только в строке про Mac: на Windows python3 открывает заглушку Microsoft Store. Исключение: правило
+// allow в настройках шаблона проекта сервиса ("Bash(python3 main.py*)"), это не текст для человека и Claude.
 test('тексты участника без тире (U+2012-U+2015) и python3 вне Mac', (t) => {
   const mine = files.filter(PARTICIPANT);
   if (mine.length === 0) return t.skip('нет файлов участника');
-  const bad = mine.filter((f) => /[\u2012-\u2015]/.test(read(f)) || read(f).split('\n').some((l) => l.includes('python3') && !l.includes('Mac')));
+  const py3 = (l) => l.includes('python3') && !l.includes('Mac') && !/^\s*"Bash\(python3 [^"]*\)",?\s*$/.test(l);
+  const bad = mine.filter((f) => /[\u2012-\u2015]/.test(read(f)) || read(f).split('\n').some(py3));
   assert.deepEqual(bad, []);
 });
 
 // Неразрывный пробел из образца в скилле Claude переписывает в программу обычным: разбор чисел ломается.
 test('скиллы без неразрывных и невидимых пробелов', () => {
-  const bad = files.filter((f) => f.startsWith('.claude/skills/') && /[\u00a0\u2007\u202f\u200b]/.test(read(f)));
+  const bad = files.filter((f) => (f.startsWith('.claude/skills/') || f.startsWith(USER_SKILLS)) && /[\u00a0\u2007\u202f\u200b]/.test(read(f)));
   assert.deepEqual(bad, []);
 });
 
 test('скиллы: name совпадает с папкой, description есть', (t) => {
-  const skills = files.filter((f) => /^\.claude\/skills\/[^/]+\/SKILL\.md$/.test(f));
+  const skills = files.filter((f) => /^(\.claude\/skills|templates\/user-skills)\/[^/]+\/SKILL\.md$/.test(f));
   if (skills.length === 0) return t.skip('нет скиллов');
   for (const f of skills) {
-    const dir = f.split('/')[2];
+    const dir = f.split('/').at(-2);
     const m = read(f).replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
     assert.ok(m, `${f}: нет frontmatter`);
     const name = m[1].match(/^name:\s*(.+)$/m);
@@ -204,7 +208,7 @@ test('в tools нет системного копирования папок (п
 // Шаблон тот же, что у сторожа кабинета: восклицательный знак и команда в обратных кавычках или блок ```!.
 test('скиллы курса без встроенных команд', () => {
   const pattern = new RegExp(['!', '[ \\t]*`[^`\\n]+`|', '`'.repeat(3), '[ \\t]*!'].join(''));
-  const bad = files.filter((f) => f.startsWith('.claude/skills/') && pattern.test(read(f)));
+  const bad = files.filter((f) => (f.startsWith('.claude/skills/') || f.startsWith(USER_SKILLS)) && pattern.test(read(f)));
   assert.deepEqual(bad, []);
 });
 
@@ -231,7 +235,8 @@ function quotes(text) {
 
 test('скиллы процессов: фразы человеку без слов скрипт, порт, сервер, терминал, консоль, в фоне', () => {
   const words = /(^|[^а-яё])(скрипт|порт|сервер|терминал|консол|в фоне)/i;
-  for (const f of ['.claude/skills/add-process/SKILL.md', '.claude/skills/run-process/SKILL.md', '.claude/skills/demo-process/SKILL.md']) {
+  for (const f of ['.claude/skills/add-process/SKILL.md', '.claude/skills/run-process/SKILL.md', '.claude/skills/demo-process/SKILL.md',
+    `${USER_SKILLS}kabinet-novyi-servis/SKILL.md`, `${USER_SKILLS}kabinet-dobav-v-kabinet/SKILL.md`, 'templates/service-project/CLAUDE.md', 'templates/service-project/README.md']) {
     const bad = quotes(read(f)).filter((q) => words.test(q) && !/^(скрипт|код|сервер|порт|терминал|консоль|в фоне)$/.test(q.trim()));
     assert.deepEqual(bad, [], f);
   }
@@ -303,4 +308,81 @@ test('запуск двойным щелчком: start-cabinet.cmd и .command'
   assert.ok(!sh.includes('\r'));
   if (process.platform !== 'win32') assert.ok(statSync(join(ROOT, 'start-cabinet.command')).mode & 0o100, 'исполняемый');
   assert.ok(read('START.md').includes('start-cabinet.cmd'));
+});
+
+// Сервис = отдельный проект, кабинет = витрина (решение 30.10): шаблон проекта и скиллы, которые работают в любой папке.
+test('шаблон проекта сервиса: файлы, lib пустая, settings проекта, service.json по договору', () => {
+  const T = 'templates/service-project/';
+  for (const f of ['CLAUDE.md', 'README.md', 'service.json', 'main.py', '.gitignore', '.claude/settings.json', '.claude/hooks/guard.mjs',
+    'input/.gitkeep', 'output/.gitkeep', 'lib/.gitkeep']) {
+    assert.ok(files.includes(T + f), `нет ${T}${f}`);
+  }
+  // lib заполняет кабинет при создании проекта (tools/services.mjs new): в шаблоне своих копий нет.
+  assert.deepEqual(files.filter((f) => f.startsWith(`${T}lib/`)), [`${T}lib/.gitkeep`]);
+  const svc = JSON.parse(read(`${T}service.json`));
+  assert.deepEqual(Object.keys(svc), ['name', 'about', 'kind', 'run', 'result', 'input', 'page']);
+  assert.deepEqual([svc.kind, svc.run, svc.result, svc.input, svc.page], ['run', 'main.py', 'output/result.json', 'input/', null]);
+  const s = JSON.parse(read(`${T}.claude/settings.json`));
+  assert.equal(s.model, 'sonnet');
+  assert.equal(s.autoMemoryEnabled, false, 'уроки пишутся в правила проекта, не в автопамять');
+  assert.equal(s.permissions.disableBypassPermissionsMode, 'disable');
+  assert.equal(s.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS, '1');
+  assert.equal(s.env.PYTHONUTF8, '1');
+  for (const d of ['Read(./.env)', 'Read(./.env.*)', 'Read(./**/.env)', 'Read(./**/.env.*)', 'Edit(./lib/**)', 'Edit(./.claude/hooks/**)']) {
+    assert.ok(s.permissions.deny.includes(d), `нет запрета ${d}`);
+  }
+  for (const a of ['Bash(python main.py*)', 'Bash(py main.py*)', 'Bash(python lib/read_table.py*)']) assert.ok(s.permissions.allow.includes(a), a);
+  const hooks = s.hooks.PreToolUse.flatMap((h) => h.hooks.map((x) => ({ ...x, matcher: h.matcher })));
+  const guard = hooks.find((h) => (h.args ?? []).some((a) => a.endsWith('/.claude/hooks/guard.mjs')));
+  assert.ok(guard, 'сторож проекта не зарегистрирован');
+  assert.equal(guard.command, 'node', 'сторож запускается без оболочки');
+  assert.deepEqual(guard.args, ['${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.mjs']);
+  for (const tool of ['Bash', 'PowerShell', 'Monitor', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Artifact']) {
+    assert.ok(guard.matcher.split('|').includes(tool), `сторож не видит ${tool}`);
+  }
+});
+
+test('шаблон проекта сервиса: .gitignore закрывает .env, данные и результат, но не .gitkeep', () => {
+  const T = 'templates/service-project/';
+  const ignored = (p) => spawnSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: ROOT }).status === 0;
+  for (const p of ['.env', '.env.local', 'input/prodazhi.xlsx', 'output/result.json', '__pycache__/x.pyc', '.claude/settings.local.json']) {
+    assert.equal(ignored(T + p), true, `${p} не в .gitignore проекта`);
+  }
+  for (const p of ['input/.gitkeep', 'output/.gitkeep', 'lib/.gitkeep', 'lib/llm.py', 'main.py', 'service.json', 'CLAUDE.md', '.claude/settings.json']) {
+    assert.equal(ignored(T + p), false, `${p} попал под .gitignore`);
+  }
+});
+
+test('шаблон проекта сервиса: правила проекта (данные, секреты, модель, известный ответ, уроки, «добавь в кабинет»)', () => {
+  const rules = read('templates/service-project/CLAUDE.md');
+  for (const must of ['## Уроки', 'Уроков пока нет.', 'известный ответ', 'до слова «готово»', '`python lib/read_table.py "input/<файл>" --rows 5`',
+    'Строки файла целиком в разговор не бери', '`.env`', 'не открываешь', 'lib/llm.py', 'output/result.json', '«добавь в кабинет»',
+    'kabinet-dobav-v-kabinet', 'subprocess', 'eval', 'PYTHONPATH=lib']) {
+    assert.ok(rules.includes(must), `в правилах проекта нет ${must}`);
+  }
+  // Уроки последним разделом: Claude дописывает их в конец.
+  assert.equal(rules.trimEnd().split('\n## ').at(-1).split('\n')[0], 'Уроки');
+  const readme = read('templates/service-project/README.md');
+  assert.ok(readme.includes('**добавь в кабинет**') && readme.includes('`input`'));
+});
+
+test('скиллы kabinet-*: фразы, команды кабинета в кавычках, поиск кабинета, окно разрешения заранее', () => {
+  const nov = read(`${USER_SKILLS}kabinet-novyi-servis/SKILL.md`);
+  const add = read(`${USER_SKILLS}kabinet-dobav-v-kabinet/SKILL.md`);
+  assert.ok(nov.includes('node "<кабинет>/tools/services.mjs" new "<название>"'));
+  for (const sub of ['check', 'run', 'add']) assert.ok(add.includes(`node "<кабинет>/tools/services.mjs" ${sub} "<проект>"`), sub);
+  for (const text of [nov, add]) {
+    for (const must of ['{{KABINET}}', 'AI_CABINET_DIR', "'Documents','ai-cabinet'", "'Документы','ai-cabinet'", '**Allow** (разрешить)', 'Cannot find module']) {
+      assert.ok(text.includes(must), must);
+    }
+  }
+  assert.match(nov.split('\n---')[0], /«новый сервис», «создай сервис»/);
+  assert.match(add.split('\n---')[0], /«добавь в кабинет», «встрой в кабинет»/);
+  assert.ok(nov.includes('Откройте эту папку в новом разговоре'));
+  // Скиллы ставятся только с префиксом kabinet-: чужие папки в ~/.claude/skills init не трогает.
+  assert.ok(files.filter((f) => f.startsWith(USER_SKILLS)).every((f) => /^templates\/user-skills\/kabinet-[a-z0-9-]+\//.test(f)));
+  const rules = read('CLAUDE.md');
+  assert.match(rules, /\| «новый сервис», «создай сервис» \|[^\n]*kabinet-novyi-servis/);
+  assert.ok(rules.includes('## Сервисы-проекты') && rules.includes('templates/user-skills/kabinet-novyi-servis/SKILL.md'));
+  assert.ok(read('START.md').includes('**новый сервис**'));
 });

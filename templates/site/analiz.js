@@ -1,4 +1,4 @@
-// Сервис «Спроси таблицу»: чистые функции для страницы analiz.html. Данные на входе, HTML-строка на выходе.
+// Сервис «Аналитик таблиц»: чистые функции для страницы analiz.html. Данные на входе, HTML-строка на выходе.
 // Страница подключает файл обычным <script src="analiz.js"> и получает window.AnalizRender.
 // Паспорт и ответы приходят от движка tools/analiz.py через сервер кабинета (tools/analiz-api.mjs).
 // График рисуется здесь же, в SVG, из таблицы ответа: без библиотек и без интернета.
@@ -217,15 +217,24 @@
     var notes = asList(first(p, ['warnings', 'notes', 'warning']))
       .map(function (n) { return typeof n === 'string' ? n : isObj(n) ? first(n, ['text', 'message']) : null; })
       .filter(function (n) { return typeof n === 'string' && n; });
-    // Пропущенные файлы (не читаются, ссылка наружу): строкой с причиной.
+    // Пропущенные файлы (не читаются, ссылка наружу): имя и причина. Движок повторяет их в warnings строкой
+    // «Файл «...» не прочитан: ...»: такие строки не дублируем.
     var skipped = (Array.isArray(p && p.skipped) ? p.skipped : []).map(function (k) {
-      if (typeof k === 'string') return 'Пропущен файл ' + k + '.';
+      if (typeof k === 'string') return { file: k, reason: '' };
       if (!isObj(k)) return null;
-      return 'Пропущен файл ' + (k.file || '') + (k.reason ? ': ' + k.reason : '') + '.';
+      return { file: k.file == null ? '' : String(k.file), reason: typeof k.reason === 'string' ? k.reason.trim() : '' };
     }).filter(Boolean);
+    notes = notes.filter(function (n) {
+      for (var i = 0; i < skipped.length; i++) if (n.indexOf('Файл «' + skipped[i].file + '» не прочитан') === 0) return false;
+      return true;
+    });
     // Подсказка движка «пока нет таблиц» не нужна: пустое состояние страница показывает сама.
     if (!files.length) notes = notes.filter(function (n) { return !/пока нет таблиц/.test(n); });
-    return { files: files, notes: notes.concat(skipped) };
+    return { files: files, skipped: skipped, notes: notes };
+  }
+
+  function skippedText(k) {
+    return k.file + (k.reason ? ': ' + k.reason.replace(/[.\s]+$/, '') : '');
   }
 
   function rowsText(n) {
@@ -248,17 +257,32 @@
     return '<div class="table-wrap cols"><table><thead><tr><th>Столбец</th><th>Тип</th><th>Что внутри</th></tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
+  // Ни файлов, ни пропущенных: папка правда пустая.
   var EMPTY_DATA =
     '<div class="empty-data"><p class="empty-title">Папка с данными пока пустая.</p>' +
-    '<p>Положите свои файлы Excel (xlsx) или CSV в папку <b>input/analiz</b> в кабинете: нажмите «Открыть папку с данными», ' +
-    'скопируйте туда файлы и нажмите «Обновить». Файлов и листов может быть сколько угодно.</p></div>';
+    '<p>Загрузите свои файлы Excel (xlsx) или CSV: кнопка «Загрузить файлы» или перетащите их в этот блок. ' +
+    'Можно и через папку <b>input/analiz</b> в кабинете: нажмите «Открыть папку с данными», скопируйте туда файлы и нажмите «Обновить». ' +
+    'Файлов и листов может быть сколько угодно.</p></div>';
+
+  // Файлы есть, но ни один не прочитан: имя и причина, что сделать.
+  function renderUnreadable(skipped) {
+    return '<div class="empty-data"><p class="empty-title">Файлы есть, но не читаются: ' +
+      skipped.map(function (k) { return esc(skippedText(k)); }).join('; ') + '.</p>' +
+      '<p>Откройте файл в Excel и сохраните как .xlsx, затем «Обновить».</p></div>';
+  }
 
   function renderPassport(p) {
     var data = normalizePassport(p);
-    var notes = data.notes.length
-      ? '<ul class="notes">' + data.notes.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
+    var lines = data.notes.slice();
+    if (data.files.length) {
+      data.skipped.forEach(function (k) {
+        lines.push('Не прочитан файл ' + skippedText(k) + '. Откройте его в Excel и сохраните как .xlsx, затем «Обновить».');
+      });
+    }
+    var notes = lines.length
+      ? '<ul class="notes">' + lines.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
       : '';
-    if (!data.files.length) return EMPTY_DATA + notes;
+    if (!data.files.length) return (data.skipped.length ? renderUnreadable(data.skipped) : EMPTY_DATA) + notes;
     var totalRows = 0;
     var sheetCount = 0;
     data.files.forEach(function (f) {
@@ -674,7 +698,7 @@
   // Что сказать, если на вопрос не ответили. status и body: ответ сервера на api/analiz/ask.
   function renderAskProblem(status, body, question) {
     var b = isObj(body) ? body : {};
-    var phrase = typeof b.phrase === 'string' && b.phrase ? b.phrase : 'спроси таблицу: ' + (question || '');
+    var phrase = typeof b.phrase === 'string' && b.phrase ? b.phrase : 'проанализируй таблицу: ' + (question || '');
     var copy = '<div class="phrase"><input class="phrase-input" id="phrase" type="text" readonly value="' + esc(phrase) + '" aria-label="Фраза для Claude">' +
       '<button type="button" class="btn" data-copy="phrase">Скопировать</button></div>';
     if (b.code === 'ENOCLAUDE') {

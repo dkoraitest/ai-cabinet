@@ -13,6 +13,7 @@ import { ensureParticipantFiles } from './init.mjs';
 import { BRAND_EXT, findBrandDir } from './brand.mjs';
 import { SLUG_RE, hasProcess, isInside, listProcesses, processStatus, startRun } from './processes.mjs';
 import { ANALIZ, EXCEL_NAME_RE, createAnalizApi } from './analiz-api.mjs';
+import { attachServices } from './services-api.mjs';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -238,12 +239,12 @@ export function createProcessApi(root, { python, timeoutMs } = {}) {
 }
 
 // Файлы результатов, которые страница отдаёт на скачивание: output/<slug>/ процесса и файлы Excel сервиса
-// «Спроси таблицу» прямо в output/analiz/ (история и прочее оттуда не отдаются).
+// «Аналитик таблиц» прямо в output/analiz/ (история и прочее оттуда не отдаются).
 const outputAllowed = (root) => (slug, parts) =>
   hasProcess(root, slug) || (slug === ANALIZ && parts.length === 1 && EXCEL_NAME_RE.test(parts[0]));
 
 // Страница кабинета целиком: site/ (с ней и страница сервиса analiz.html), API процессов и сервиса
-// «Спроси таблицу» (api/analiz/...), файлы результатов из output/ и бренд.
+// «Аналитик таблиц» (api/analiz/...), файлы результатов из output/ и бренд.
 // Папка бренда ищется при каждом запросе: её можно положить, не перезапуская страницу.
 // analiz: параметры API сервиса для тестов (tools/analiz-api.mjs).
 export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {} } = {}) {
@@ -251,12 +252,14 @@ export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, bra
   const processApi = createProcessApi(root, { python, timeoutMs });
   const analizApi = createAnalizApi(root, { python, ...analiz });
   const prefix = `${ANALIZ}/`;
-  return createSiteServer(resolve(root, 'site'), {
+  const server = createSiteServer(resolve(root, 'site'), {
     token,
     api: (req, res, sub) => (sub.startsWith(prefix) ? analizApi(req, res, sub.slice(prefix.length)) : processApi(req, res, sub)),
     output: { root, allow: outputAllowed(root) },
     brand: brand ?? (() => findBrandDir(root)),
   });
+  // Сервисы-проекты (tools/services-api.mjs): api/services/..., s/<slug>/page/... и s/<slug>/output/...
+  return attachServices(server, root, { token, python, timeoutMs });
 }
 
 function tryListen(server, host, port) {

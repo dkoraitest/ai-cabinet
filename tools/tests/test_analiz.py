@@ -1,4 +1,4 @@
-"""Тесты tools/analiz.py («Спроси таблицу»): паспорт, отборы, группировка, меры, сравнение периодов, соединение,
+"""Тесты tools/analiz.py («Аналитик таблиц»): паспорт, отборы, группировка, меры, сравнение периодов, соединение,
 ошибки, история, Excel с графиком, вопрос словами с подменённой моделью, пример (demo).
 
 Кабинет для тестов собирается во временной папке с кириллицей и пробелом в пути («Айгуль Н/ai-cabinet»).
@@ -661,7 +661,7 @@ class Ask(unittest.TestCase):
     def test_unavailable_code_3(self):
         line, j = self.c.fail(3, "ask", self.q, mode="unavailable")
         self.assertEqual(line, "На этом компьютере Claude для страницы недоступен. Задайте вопрос Claude во вкладке Code: "
-                               f"«спроси таблицу: {self.q}»")
+                               f"«проанализируй таблицу: {self.q}»")
         self.assertTrue(j["llm_unavailable"])
 
     def test_blocked_code_4(self):
@@ -693,7 +693,7 @@ class Demo(unittest.TestCase):
         for _ in range(2):
             code, out, err = self.c.run("demo")
             self.assertEqual(code, 0, err)
-            self.assertIn("Готово: пример ответа на странице «Спроси таблицу».", out)
+            self.assertIn("Готово: пример ответа на странице «Аналитик таблиц».", out)
             self.assertIn("Литры: A (07.09.2026-13.09.2026)", out)
         self.assertEqual([p.name for p in self.c.inp.iterdir()], [SALES.name])
         h = self.c.history()

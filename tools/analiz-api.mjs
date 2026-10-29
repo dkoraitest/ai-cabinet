@@ -1,4 +1,4 @@
-// API сервиса «Спроси таблицу» под /<token>/api/analiz/ (страница site/analiz.html). Без зависимостей.
+// API сервиса «Аналитик таблиц» под /<token>/api/analiz/ (страница site/analiz.html). Без зависимостей.
 // Считает движок tools/analiz.py (подкоманды passport, ask, excel): он запускается своим Python кабинета
 // (абсолютный путь вне кабинета, как у процессов), из корня кабинета, без оболочки, аргументы отдельными строками.
 // Ответ движка: JSON в stdout. Коды выхода: 0 готово, 3 на компьютере нет claude, 4 данные не прошли проверку
@@ -10,12 +10,16 @@
 //   GET  api/analiz/history           история ответов из output/analiz/history.json, новые сверху
 //   POST api/analiz/excel {id}         Excel с графиком в output/analiz/, ответ: ссылка на скачивание
 //   POST api/analiz/open-folder       создаёт input/analiz/ и открывает её в Проводнике (Finder на Mac)
+//   POST api/analiz/upload            файл со страницы в input/analiz/: тело файла как есть
+//                                     (application/octet-stream), имя в заголовке X-File-Name (encodeURIComponent)
 //
 // Защита как у кнопки «Запустить»: токен в адресе (проверяет serve.mjs), заголовок X-Cabinet: 1 на всех
-// запросах, у POST ещё тип JSON. Чужая страница или ссылка без разрешения браузера такой запрос не пришлёт.
+// запросах, у POST ещё тип JSON (у upload application/octet-stream). Чужая страница или ссылка без разрешения
+// браузера такой запрос не пришлёт.
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { constants, copyFileSync, createWriteStream, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { findPython, isInside, killTree, openFolder as openInExplorer } from './processes.mjs';
 
 export const ANALIZ = 'analiz';
@@ -23,6 +27,11 @@ export const ASK_TIMEOUT_MS = 3 * 60 * 1000;
 export const ENGINE_TIMEOUT_MS = 2 * 60 * 1000;
 export const QUESTION_MAX = 1000;
 export const HISTORY_SHOW = 50;
+// Загрузка со страницы: таблицы, которые читает движок, до 50 МБ на файл.
+export const UPLOAD_MAX = 50 * 1024 * 1024;
+export const UPLOAD_EXT = ['.xlsx', '.xlsm', '.csv', '.txt'];
+const NAME_MAX = 150;
+const WIN_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 const BODY_LIMIT = 16 * 1024;
 const STDOUT_LIMIT = 20 * 1024 * 1024;
 const STDERR_LIMIT = 256 * 1024;
@@ -62,6 +71,103 @@ const clip = (s, n = MESSAGE_MAX) => {
 
 const hasHeader = (req) => req.headers['x-cabinet'] === '1';
 const isJson = (req) => /^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '');
+const isOctets = (req) => /^application\/octet-stream\s*(;|$)/i.test(req.headers['content-type'] ?? '');
+
+// Имя загруженного файла: только последняя часть пути (без папок и «..»), без управляющих знаков и знаков,
+// запрещённых в именах Windows (заменяются на «_»), без точек и пробелов по краям, не скрытый (точка в начале)
+// и не временный файл Excel («~$»). Кириллица и пробелы остаются. Не больше NAME_MAX знаков. Пусто: ''.
+export function cleanFileName(value) {
+  if (typeof value !== 'string') return '';
+  let name = typeof value.toWellFormed === 'function' ? value.toWellFormed() : value;
+  name = name.normalize('NFC').split(/[\\/]/).pop();
+  name = name.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '');
+  name = name.replace(/[<>:"|?*]/g, '_').replace(/\s+/g, ' ').replace(/\.{2,}/g, '.');
+  name = name.replace(/^(?:[\s.]|~\$)+/, '').replace(/[\s.]+$/, '');
+  const ext = extname(name);
+  let stem = name.slice(0, name.length - ext.length).trim();
+  if (!stem) return '';
+  if (name.length > NAME_MAX) stem = stem.slice(0, Math.max(1, NAME_MAX - ext.length)).trim();
+  if (WIN_RESERVED.test(stem.split('.')[0])) stem = `_${stem}`;
+  return stem + ext;
+}
+
+// «Продажи.xlsx», «Продажи (2).xlsx», «Продажи (3).xlsx»...
+const numbered = (name, n) => {
+  if (n === 1) return name;
+  const ext = extname(name);
+  return `${name.slice(0, name.length - ext.length)} (${n})${ext}`;
+};
+
+// Временный файл под постоянным именем: ссылкой (link) или копией с запретом перезаписи. Файл с таким именем уже
+// есть (и на Windows и Mac без учёта регистра букв): следующий номер. Ответ: итоговое имя.
+function placeFile(tmp, dir, name) {
+  for (let n = 1; n <= 999; n++) {
+    const target = join(dir, numbered(name, n));
+    try {
+      linkSync(tmp, target);
+      return numbered(name, n);
+    } catch (e) {
+      if (e.code === 'EEXIST') continue;
+    }
+    try {
+      copyFileSync(tmp, target, constants.COPYFILE_EXCL);
+      return numbered(name, n);
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+  }
+  throw Object.assign(new Error('слишком много файлов с таким именем'), { code: 'EMANY' });
+}
+
+const removeQuietly = (p) => {
+  try {
+    unlinkSync(p);
+  } catch {
+    // файла уже нет
+  }
+};
+
+// Тело запроса во временный файл, не больше limit байт: { size } или { over } или { error }. Тело больше limit
+// дочитывается без записи, чтобы страница получила ответ, а не оборванное соединение.
+function receiveFile(req, tmp, limit) {
+  return new Promise((done) => {
+    let size = 0;
+    let over = false;
+    let ended = false;
+    const out = createWriteStream(tmp, { flags: 'wx' });
+    out.on('error', (e) => {
+      req.resume();
+      done({ error: e });
+    });
+    req.on('data', (c) => {
+      if (over) return;
+      size += c.length;
+      if (size > limit) {
+        over = true;
+        out.destroy();
+        return;
+      }
+      if (!out.write(c)) {
+        req.pause();
+        out.once('drain', () => req.resume());
+      }
+    });
+    req.on('end', () => {
+      ended = true;
+      if (over) return done({ over: true });
+      out.end(() => done({ size }));
+    });
+    req.on('error', (e) => {
+      out.destroy();
+      done({ error: e });
+    });
+    req.on('close', () => {
+      if (ended) return;
+      out.destroy();
+      done({ error: new Error('соединение оборвалось') });
+    });
+  });
+}
 
 // Вопрос для движка: одна строка, без управляющих знаков, без «-» и пробелов в начале (иначе движок примет вопрос
 // за параметр), не длиннее QUESTION_MAX. Пустая строка: вопроса нет.
@@ -72,7 +178,7 @@ export function cleanQuestion(value) {
   return q.replace(/^[\s\-]+/, '').trim();
 }
 
-export const codePhrase = (question) => `спроси таблицу: ${question}`;
+export const codePhrase = (question) => `проанализируй таблицу: ${question}`;
 
 // JSON из вывода движка: весь вывод, иначе последняя строка JSON, иначе от первой «{» до последней «}».
 export function parseEngineJson(text) {
@@ -276,9 +382,9 @@ const notAllowed = (res, allow) => {
   res.end(JSON.stringify({ error: 'Так обратиться к странице нельзя.' }));
 };
 
-const ONLY_PAGE = 'Сервис «Спроси таблицу» работает только со своей страницы кабинета.';
+const ONLY_PAGE = 'Сервис «Аналитик таблиц» работает только со своей страницы кабинета.';
 const NO_PYTHON = 'Python не найден. Скажите Claude «проверь сетап».';
-const NO_ENGINE = 'Сервис «Спроси таблицу» в этом кабинете ещё не установлен. Скажите Claude «обнови кабинет».';
+const NO_ENGINE = 'Сервис «Аналитик таблиц» в этом кабинете ещё не установлен. Скажите Claude «обнови кабинет».';
 const BUSY = 'Предыдущий вопрос ещё считается. Дождитесь ответа и спросите снова.';
 const NO_CLAUDE =
   'На этом компьютере не найден Claude Code командной строки, поэтому страница не может спросить модель. Задайте вопрос Claude во вкладке Code.';
@@ -286,9 +392,12 @@ const PERSONAL = 'Вопрос не отправлен: в описании да
 const NEED_ROWS =
   'Этот вопрос требует строк с текстом или данных о людях: обезличьте файл анонимайзером с воркшопа 2 и положите копию в input/analiz.';
 
+const BAD_TYPE = 'Подходят файлы Excel (.xlsx, .xlsm) и CSV (.csv, .txt). Старый файл Excel (.xls) откройте в Excel и сохраните как .xlsx.';
+const TOO_BIG = `Файл больше ${UPLOAD_MAX / 1024 / 1024} МБ. Оставьте в нём нужные листы и строки или положите его в папку с данными сами.`;
+
 // API сервиса. Параметры для тестов: python (путь к интерпретатору), openFolder(dir) вместо Проводника,
-// askTimeoutMs и engineTimeoutMs, stopTree.
-export function createAnalizApi(root, { python, openFolder = openInExplorer, askTimeoutMs = ASK_TIMEOUT_MS, engineTimeoutMs = ENGINE_TIMEOUT_MS, stopTree } = {}) {
+// askTimeoutMs и engineTimeoutMs, stopTree, uploadMax (наибольший загружаемый файл, байт).
+export function createAnalizApi(root, { python, openFolder = openInExplorer, askTimeoutMs = ASK_TIMEOUT_MS, engineTimeoutMs = ENGINE_TIMEOUT_MS, stopTree, uploadMax = UPLOAD_MAX } = {}) {
   const script = join(root, 'tools', 'analiz.py');
   const outDir = join(root, 'output', ANALIZ);
   let asking = false;
@@ -415,6 +524,58 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
     return sendJson(res, 200, { ok: true, file: name, url: `output/${ANALIZ}/${encodeURIComponent(name)}` });
   }
 
+  // Папка с данными input/analiz/: создаётся, если нет; должна быть папкой внутри кабинета. Ответ: путь или null.
+  function dataFolder() {
+    const dir = join(root, 'input', ANALIZ);
+    try {
+      mkdirSync(dir, { recursive: true });
+      const real = realpathSync(dir);
+      return isDir(real) && isInside(real, realpathSync(root)) ? real : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Файл со страницы в input/analiz/: имя чистится, тип по расширению, запись через временный скрытый файл
+  // (движок такие не читает), существующий файл не перезаписывается: новый получает номер « (2)».
+  async function upload(req, res) {
+    const header = req.headers['x-file-name'];
+    let raw = '';
+    try {
+      raw = typeof header === 'string' ? decodeURIComponent(header) : '';
+    } catch {
+      raw = '';
+    }
+    const name = cleanFileName(raw);
+    const refuse = (status, body) => {
+      req.resume();
+      return sendJson(res, status, body);
+    };
+    if (!name) return refuse(400, { code: 'ENAME', error: 'Не получилось прочитать имя файла. Переименуйте файл и загрузите снова.' });
+    if (!UPLOAD_EXT.includes(extname(name).toLowerCase())) return refuse(415, { code: 'ETYPE', error: `Файл «${name}» не загружен. ${BAD_TYPE}`, file: name });
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > uploadMax) return refuse(413, { code: 'EBIG', error: `Файл «${name}» не загружен. ${TOO_BIG}`, file: name });
+    const dir = dataFolder();
+    if (!dir) return refuse(500, { code: 'EFOLDER', error: 'Не получилось открыть папку input/analiz в кабинете.' });
+    const tmp = join(dir, `.upload-${randomBytes(8).toString('hex')}.part`);
+    const got = await receiveFile(req, tmp, uploadMax);
+    if (got.over || got.error || !got.size) {
+      removeQuietly(tmp);
+      if (got.over) return sendJson(res, 413, { code: 'EBIG', error: `Файл «${name}» не загружен. ${TOO_BIG}`, file: name });
+      if (got.error) return sendJson(res, 500, { code: 'EWRITE', error: `Файл «${name}» не сохранился (${got.error.code ?? got.error.message}).`, file: name });
+      return sendJson(res, 400, { code: 'EEMPTY', error: `Файл «${name}» пустой.`, file: name });
+    }
+    let saved;
+    try {
+      saved = placeFile(tmp, dir, name);
+    } catch (e) {
+      return sendJson(res, 500, { code: 'EWRITE', error: `Файл «${name}» не сохранился (${e.code ?? e.message}).`, file: name });
+    } finally {
+      removeQuietly(tmp);
+    }
+    return sendJson(res, 200, { ok: true, file: saved, renamed: saved !== name, size: got.size });
+  }
+
   function openDataFolder(res) {
     const dir = join(root, 'input', ANALIZ);
     try {
@@ -435,7 +596,7 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
   async function handle(req, res, sub) {
     const route = sub.replace(/\/+$/, '');
     const reads = { passport: true, history: true };
-    const posts = { ask: true, excel: true, 'open-folder': true };
+    const posts = { ask: true, excel: true, 'open-folder': true, upload: true };
     if (!reads[route] && !posts[route]) {
       req.resume();
       return sendJson(res, 404, { error: 'Такого адреса у страницы нет.' });
@@ -450,10 +611,11 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
       req.resume();
       return notAllowed(res, 'POST');
     }
-    if (!hasHeader(req) || !isJson(req)) {
+    if (!hasHeader(req) || !(route === 'upload' ? isOctets(req) : isJson(req))) {
       req.resume();
       return sendJson(res, 403, { error: ONLY_PAGE });
     }
+    if (route === 'upload') return upload(req, res);
     if (route === 'ask') return ask(req, res);
     if (route === 'excel') return excel(req, res);
     req.resume();
@@ -463,7 +625,7 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
   // Ответ отправлен всегда, даже если обработчик упал.
   return (req, res, sub) => {
     handle(req, res, sub).catch(() => {
-      if (!res.headersSent) sendJson(res, 500, { error: 'Сервис «Спроси таблицу» не ответил. Попробуйте ещё раз.' });
+      if (!res.headersSent) sendJson(res, 500, { error: 'Сервис «Аналитик таблиц» не ответил. Попробуйте ещё раз.' });
     });
     return true;
   };

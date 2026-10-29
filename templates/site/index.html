@@ -48,7 +48,8 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  .wrap { max-width: 1240px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
   /* Шапка: полоса цвета компании, логотип, название страницы. */
   .top {
@@ -62,9 +63,73 @@
   h1 { font-size: 22px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   .top.branded h1 { padding-left: 22px; border-left: 1px solid var(--line-strong); color: var(--muted); }
 
-  main { padding-top: 28px; padding-bottom: 56px; }
-  .lead { margin: 0 0 22px; color: var(--muted); font-size: 17px; }
-  .empty, .loading {
+  /* Каркас: меню слева, сервисы справа. Каркас и меню такие же на странице «Аналитик таблиц» (analiz.html). */
+  .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 28px; align-items: start; padding-top: 28px; padding-bottom: 56px; }
+  main { min-width: 0; }
+  .side { position: sticky; top: 20px; }
+  .nav-toggle { display: none; }
+  .nav-body {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 10px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.3;
+    cursor: pointer;
+  }
+  .nav-item + .nav-item { margin-top: 2px; }
+  .nav-item:hover { background: var(--th-bg); }
+  .nav-item:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: -2px; }
+  .nav-item[aria-current="page"] {
+    background: var(--th-bg);
+    background: color-mix(in srgb, var(--accent) 11%, var(--card));
+    font-weight: 650;
+  }
+  .nav-icon { flex: none; display: grid; place-items: center; width: 22px; height: 22px; color: var(--muted); }
+  .nav-item[aria-current="page"] .nav-icon { color: var(--accent-dark); }
+  .nav-label { min-width: 0; overflow-wrap: anywhere; }
+  .nav-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .nav-title { margin: 4px 12px 6px; font-size: 13px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  /* Точка статуса процесса в меню: 22px по ширине, как значки пунктов выше. */
+  .dot { flex: none; width: 10px; height: 10px; margin: 0 6px; border-radius: 50%; background: var(--card); box-shadow: inset 0 0 0 2px #9aa3b2; }
+  .dot-red { background: #d92d20; box-shadow: none; }
+  .dot-yellow { background: #e9a800; box-shadow: none; }
+  .dot-green { background: #2e9e50; box-shadow: none; }
+  .dot-run { background: var(--accent); box-shadow: none; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .nav-help { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .nav-help > summary { list-style: none; }
+  .nav-help > summary::-webkit-details-marker { display: none; }
+  .nav-help > summary::after {
+    content: "";
+    flex: none;
+    width: 7px;
+    height: 7px;
+    margin: 0 4px 3px auto;
+    border-right: 2px solid var(--muted);
+    border-bottom: 2px solid var(--muted);
+    transform: rotate(45deg);
+    transition: transform 0.15s ease;
+  }
+  .nav-help[open] > summary::after { transform: rotate(-135deg); margin-bottom: -3px; }
+  .help { margin: 4px 12px 8px 46px; font-size: 15px; line-height: 1.5; color: var(--muted); }
+  .help b { color: var(--text); font-weight: 600; }
+
+  .loading, .empty {
     background: var(--card);
     border: 1px dashed var(--line-strong);
     border-radius: var(--radius);
@@ -75,38 +140,92 @@
     margin: 0;
   }
 
-  /* Карточка-ссылка на сервис «Спроси таблицу» (страница analiz.html): видна всегда, над карточками процессов. */
-  .service {
+  /* Сетка карточек сервисов: «Аналитик таблиц» и процессы, по 2-3 в ряд. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 20px; }
+  .tile {
     display: flex;
-    align-items: center;
-    gap: 18px;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 236px;
     background: var(--card);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    padding: 18px 24px;
-    margin-bottom: 28px;
+    padding: 20px 22px 22px;
     box-shadow: var(--shadow);
     color: var(--text);
     text-decoration: none;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  .service:hover { border-color: var(--accent-dark); box-shadow: 0 2px 4px rgba(16, 24, 40, 0.06), 0 6px 18px rgba(16, 24, 40, 0.08); }
-  .service:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; }
-  .service-icon {
+  .tile:hover { border-color: var(--line-strong); box-shadow: 0 2px 4px rgba(16, 24, 40, 0.06), 0 6px 18px rgba(16, 24, 40, 0.08); }
+  a.tile:hover { border-color: var(--accent-dark); }
+  a.tile:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; }
+  .tile-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .tile-icon {
     flex: none;
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
+    width: 46px;
+    height: 46px;
     border-radius: 12px;
     background: var(--th-bg);
     box-shadow: inset 0 0 0 1px var(--line);
     color: var(--accent-dark);
   }
-  .service-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-  .service-title { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.3; }
-  .service-desc { color: var(--muted); font-size: 16px; }
-  .service-go { flex: none; color: var(--link); font-weight: 600; font-size: 16px; white-space: nowrap; }
+  .tile-icon-red { color: var(--red); background: var(--red-bg); box-shadow: inset 0 0 0 1px rgba(180, 35, 24, 0.14); }
+  .tile-icon-yellow { color: var(--yellow); background: var(--yellow-bg); box-shadow: inset 0 0 0 1px rgba(138, 83, 0, 0.14); }
+  .tile-icon-green { color: var(--green); background: var(--green-bg); box-shadow: inset 0 0 0 1px rgba(31, 122, 58, 0.14); }
+  .tile-icon-none { color: var(--grey); }
+  .tile-title { display: block; margin: 0; font-size: 19px; line-height: 1.3; font-weight: 650; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+  .tile-title a { color: inherit; text-decoration: none; }
+  .tile-title a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .tile-title a:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 2px; border-radius: 4px; }
+  .tile-desc, .tile-when { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.45; }
+  .tile-sum, .tile-error {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .tile-error { color: var(--red); }
+  .tile-about { color: var(--muted); }
+  .tile .run-error { margin: 2px 0 0; padding: 8px 12px; font-size: 14px; }
+  .tile-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: auto; padding-top: 14px; }
+  .tile-actions > .run, .tile-actions > .btn { flex: 1 1 auto; }
+  .tile-hint { margin: 0; flex: 1 1 100%; font-size: 14px; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 8px 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+  .btn:hover, a.tile:hover .btn { border-color: var(--accent-dark); color: var(--accent-dark); }
+  .btn:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; }
+  /* «Открыть» у сервиса со своей страницей: главная кнопка, если «Запустить» нет. */
+  .btn.open:first-child { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn.open:first-child:hover { background: var(--accent-dark); color: var(--accent-dark-ink); }
+  .card .btn.open { min-height: 46px; padding: 10px 20px; font-size: 16px; }
+  .tile button.run { min-height: 42px; font-size: 15px; gap: 8px; padding: 8px 16px 8px 14px; }
+
+  /* Подробный вид процесса (#p=<slug> в адресе): ссылка «← Все сервисы» и полная карточка. */
+  .crumbs { margin: 0 0 14px; }
+  .back { color: var(--link); font-weight: 600; font-size: 16px; text-decoration: none; padding: 4px 2px; }
+  .back:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .back:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; border-radius: 4px; }
 
   /* Карточка процесса. */
   .card {
@@ -185,7 +304,7 @@
   .files a:hover { text-decoration-thickness: 2px; }
 
   /* Кнопка «Запустить»: треугольник «пуск», во время расчёта крутится значок. */
-  .actions { display: flex; align-items: center; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .actions p { margin: 0; }
   button.run {
     display: inline-flex;
@@ -233,6 +352,46 @@
   .error { margin: 12px 0 0; }
   .run-error { margin: 12px 0 0; font-weight: 600; padding: 10px 14px; background: var(--red-bg); border-radius: 10px; }
 
+  /* Узкий экран: меню сворачивается наверх, кнопка «Меню» раскрывает его. */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-top: 16px; }
+    .side { position: static; }
+    .nav-toggle {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      min-height: 50px;
+      padding: 10px 16px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 650;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .nav-toggle:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 2px; }
+    .nav-toggle svg { flex: none; color: var(--accent-dark); }
+    .nav-current { flex: 1; min-width: 0; color: var(--muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+    .nav-toggle::after {
+      content: "";
+      flex: none;
+      width: 7px;
+      height: 7px;
+      margin: 0 4px 3px 0;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(45deg);
+    }
+    .side.open .nav-toggle::after { transform: rotate(-135deg); margin-bottom: -3px; }
+    .nav-body { display: none; margin-top: 8px; max-height: none; }
+    .side.open .nav-body { display: block; }
+  }
+
   @media (max-width: 640px) {
     body { font-size: 16px; }
     .wrap { padding-left: 16px; padding-right: 16px; }
@@ -240,14 +399,13 @@
     .brand-logo { height: calc(var(--logo-height) * 0.8); }
     h1 { font-size: 19px; }
     .top.branded h1 { padding-left: 16px; }
-    main { padding-top: 20px; }
     .card { padding: 16px; }
     .card h2 { font-size: 20px; }
     .summary { font-size: 17px; }
     table { font-size: 14px; }
-    .actions, button.run { width: 100%; }
-    .service { padding: 14px 16px; gap: 14px; align-items: flex-start; }
-    .service-go { display: none; }
+    .card .actions, .card button.run { width: 100%; }
+    .grid { gap: 14px; }
+    .tile { min-height: 0; padding: 16px 16px 18px; }
   }
 </style>
 <link rel="stylesheet" href="brand/theme.css">
@@ -260,27 +418,51 @@
     <h1>Мой кабинет</h1>
   </div>
 </header>
-<main class="wrap">
-  <a class="service" href="analiz.html">
-    <span class="service-icon" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 10h20M10 10v12"/><path d="M14.5 18.5v-3M17.5 18.5v-5M20.5 18.5v-2"/></svg></span>
-    <span class="service-text">
-      <span class="service-title">Спроси таблицу</span>
-      <span class="service-desc">Задайте вопрос своим таблицам: считает программа на вашем компьютере, строки никуда не уходят</span>
-    </span>
-    <span class="service-go" aria-hidden="true">Открыть →</span>
-  </a>
-  <div id="processes" aria-live="polite"><p class="loading">Загружаю процессы…</p></div>
-</main>
+<div class="wrap layout">
+  <nav class="side" id="side" aria-label="Меню кабинета">
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="nav-body">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      <span>Меню</span>
+      <span class="nav-current" id="nav-current">Все сервисы</span>
+    </button>
+    <div class="nav-body" id="nav-body">
+      <a class="nav-item" id="nav-all" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2.5" y="2.5" width="6" height="6" rx="1.5"/><rect x="11.5" y="2.5" width="6" height="6" rx="1.5"/><rect x="2.5" y="11.5" width="6" height="6" rx="1.5"/><rect x="11.5" y="11.5" width="6" height="6" rx="1.5"/></svg></span><span class="nav-label">Все сервисы</span></a>
+      <a class="nav-item" href="analiz.html"><span class="nav-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 10h20M10 10v12"/></svg></span><span class="nav-label">Аналитик таблиц</span></a>
+      <div class="nav-group" id="nav-mine" hidden>
+        <p class="nav-title">Мои сервисы</p>
+        <div id="nav-list"></div>
+      </div>
+      <details class="nav-help">
+        <summary class="nav-item"><span class="nav-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="10" r="7.5"/><path d="M10 6.5v7M6.5 10h7"/></svg></span><span class="nav-label">Как добавить сервис</span></summary>
+        <p class="help">Откройте Claude во вкладке <b>Code</b> в новой папке и скажите <b>«новый сервис»</b>: Claude создаст проект. Когда сервис готов, скажите <b>«добавь в кабинет»</b>.</p>
+      </details>
+    </div>
+  </nav>
+  <main id="main">
+    <div id="processes" aria-live="polite"><p class="loading">Загружаю сервисы…</p></div>
+  </main>
+</div>
 <script src="render.js"></script>
 <script>
 (function () {
   'use strict';
-  var box = document.getElementById('processes');
+  var R = window.CabinetRender;
+  var byId = function (id) { return document.getElementById(id); };
+  var box = byId('processes');
+  var navAll = byId('nav-all');
+  var navMine = byId('nav-mine');
+  var navList = byId('nav-list');
+  var navCurrent = byId('nav-current');
+  // Карточки из двух источников: процессы кабинета (api/processes) и встроенные проекты сервисов (api/services).
+  // Ключ карточки 'p:<slug>' или 's:<slug>' (R.itemKey): по нему сообщения, запуск и адрес подробного вида.
   var list = [];
+  var loaded = false;
   var messages = {};
+  var pending = {};
   var POLL_MS = 2000;
   var REFRESH_MS = 10000;
   var shown = '';
+  var shownNav = '';
   var OFFLINE = 'Страница не отвечает. Скажите Claude «открой страницу».';
   var STOPPED = 'Страница остановлена. Скажите Claude «открой страницу».';
   // После трёх неудачных запросов подряд вкладка больше ничего не спрашивает: страница остановлена,
@@ -289,6 +471,9 @@
   var fails = 0;
   var stopped = false;
   var timer = null;
+  // Маршрута api/services нет (ответ 404, кабинет до встроенных проектов): больше не спрашиваем.
+  var servicesOff = false;
+  var servicePoll = null;
 
   // true: запросов больше не будет.
   function failed() {
@@ -305,38 +490,89 @@
     fails = 0;
   }
 
+  function find(key) {
+    return R.findItem(list, key);
+  }
+
+  // Карточка, открытая справа (#p=<slug> или #s=<slug> в адресе); такой нет: сетка всех сервисов.
+  function openKey() {
+    var key = R.keyFromHash(location.hash);
+    return key && find(key) ? key : null;
+  }
+
+  // Меню слева: подсветка пункта, «Мои сервисы» с точками статуса (своих сервисов нет: раздела нет).
+  function drawNav(key) {
+    if (navAll) {
+      if (key) navAll.removeAttribute('aria-current');
+      else navAll.setAttribute('aria-current', 'page');
+    }
+    if (navMine) navMine.hidden = !list.length;
+    if (navList) {
+      var html = R.renderNav(list, key, '');
+      if (html !== shownNav) {
+        shownNav = html;
+        navList.innerHTML = html;
+      }
+    }
+    if (navCurrent) {
+      var it = key ? find(key) : null;
+      navCurrent.textContent = it ? it.title || it.name || it.slug : 'Все сервисы';
+    }
+  }
+
   // Перерисовываем, только если что-то поменялось: иначе прокрутка таблиц сбрасывалась бы раз в 10 секунд.
   function draw() {
-    if (stopped) return;
-    var html = window.CabinetRender.renderPage(list, messages);
+    if (stopped || !loaded) return;
+    var key = openKey();
+    drawNav(key);
+    var html = R.renderPage(list, messages, { key: key });
     if (html === shown) return;
     shown = html;
     box.innerHTML = html;
   }
 
-  function find(slug) {
-    for (var i = 0; i < list.length; i++) if (list[i].slug === slug) return list[i];
-    return null;
+  function setRunning(key, running) {
+    var p = find(key);
+    if (p) p.running = running;
   }
 
-  function setRunning(slug, running) {
-    var p = find(slug);
-    if (p) p.running = running;
+  // Встроенные проекты: список или [] (маршрута нет, ошибка): тогда их просто не видно. Счёт неудач не трогает.
+  function loadServices() {
+    if (servicesOff) return Promise.resolve([]);
+    return fetch('api/services', { cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 404) {
+          servicesOff = true;
+          return [];
+        }
+        if (!r.ok) return [];
+        return r.json().then(R.servicesFrom, function () { return []; });
+      })
+      .catch(function () { return []; });
   }
 
   function load() {
     if (stopped) return;
-    return fetch('api/processes', { cache: 'no-store' })
-      .then(function (r) {
-        if (!r.ok) throw new Error(String(r.status));
-        return r.json();
-      })
-      .then(function (data) {
+    var processes = fetch('api/processes', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    });
+    return Promise.all([processes, loadServices()])
+      .then(function (both) {
+        var data = both[0];
         if (!Array.isArray(data)) throw new Error('не список');
         answered();
-        list = data;
-        draw();
+        list = data.concat(both[1]);
+        // Запуск, на который сервер ещё не ответил: кнопка остаётся «идёт расчёт…».
         list.forEach(function (p) {
+          if (pending[R.itemKey(p)]) p.running = true;
+        });
+        loaded = true;
+        draw();
+        both[1].forEach(function (s) {
+          if (s.running) pollServices();
+        });
+        data.forEach(function (p) {
           if (p.running) poll(p.slug);
         });
       })
@@ -349,10 +585,11 @@
 
   var polling = {};
 
-  // Раз в 2 секунды спрашиваем, идёт ли расчёт; по окончании перерисовываем карточки.
+  // Раз в 2 секунды спрашиваем, идёт ли расчёт процесса; по окончании перерисовываем карточки.
   function poll(slug) {
     if (stopped || polling[slug]) return;
     polling[slug] = true;
+    var key = 'p:' + slug;
     setTimeout(function () {
       if (stopped) return;
       fetch('api/status/' + encodeURIComponent(slug), { cache: 'no-store' })
@@ -365,26 +602,36 @@
           polling[slug] = false;
           if (s.running) return poll(slug);
           if (s.lastRun && !s.lastRun.ok) {
-            messages[slug] = 'Расчёт не удался. Подробности в output/' + slug + '/last-run.log';
+            messages[key] = 'Расчёт не удался. Подробности в output/' + slug + '/last-run.log';
           } else {
-            delete messages[slug];
+            delete messages[key];
           }
           return load();
         })
         .catch(function () {
           polling[slug] = false;
           if (failed()) return;
-          messages[slug] = OFFLINE;
-          setRunning(slug, false);
+          messages[key] = OFFLINE;
+          setRunning(key, false);
           draw();
         });
     }, POLL_MS);
   }
 
+  // Встроенный проект считается: список перечитывается раз в 2 секунды, пока у проекта стоит running.
+  function pollServices() {
+    if (stopped || servicePoll !== null) return;
+    servicePoll = setTimeout(function () {
+      servicePoll = null;
+      load();
+    }, POLL_MS);
+  }
+
   function run(slug) {
     if (stopped) return;
-    delete messages[slug];
-    setRunning(slug, true);
+    var key = 'p:' + slug;
+    delete messages[key];
+    setRunning(key, true);
     draw();
     fetch('api/run/' + encodeURIComponent(slug), {
       method: 'POST',
@@ -400,7 +647,7 @@
           // 403 без текста ошибки: адрес с этим токеном уже не страница кабинета.
           if (r.status === 403 && !j.error) throw new Error('403');
           answered();
-          messages[slug] = j.error || 'Не получилось запустить расчёт.';
+          messages[key] = j.error || 'Не получилось запустить расчёт.';
           // 409 ERUNNING: этот процесс уже идёт, ждём его; успел закончиться, показываем свежую карточку.
           // 409 ELIMIT (идут два других расчёта) и прочие ошибки: текст остаётся, кнопка снова доступна.
           if (r.status === 409 && j.code === 'ERUNNING') {
@@ -411,25 +658,70 @@
                   draw();
                   return poll(slug);
                 }
-                delete messages[slug];
+                delete messages[key];
                 return load();
               });
           }
-          setRunning(slug, false);
+          setRunning(key, false);
           draw();
         });
       })
       .catch(function () {
         if (failed()) return;
-        messages[slug] = OFFLINE;
-        setRunning(slug, false);
+        messages[key] = OFFLINE;
+        setRunning(key, false);
+        draw();
+      });
+  }
+
+  // «Запустить» у встроенного проекта: POST api/services/run {slug}. Ответ 202: расчёт идёт, список опрашивается;
+  // 200: готово, свежий список; 409 ERUNNING: уже идёт; другая ошибка: её текст на карточке.
+  function runService(slug) {
+    if (stopped) return;
+    var key = 's:' + slug;
+    delete messages[key];
+    pending[key] = true;
+    setRunning(key, true);
+    draw();
+    fetch('api/services/run', {
+      method: 'POST',
+      headers: { 'X-Cabinet': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: slug }),
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          delete pending[key];
+          if (r.status === 403 && !j.error) throw new Error('403');
+          answered();
+          if (r.ok || (r.status === 409 && j.code === 'ERUNNING')) {
+            if (j && j.ok === false && j.error) messages[key] = j.error;
+            return r.status === 200 ? load() : pollServices();
+          }
+          messages[key] = r.status === 404 && !j.error ? 'Сервис не найден в кабинете. Скажите Claude «открой страницу».' : j.error || 'Не получилось запустить сервис.';
+          setRunning(key, false);
+          draw();
+        });
+      })
+      .catch(function () {
+        delete pending[key];
+        if (failed()) return;
+        messages[key] = OFFLINE;
+        setRunning(key, false);
         draw();
       });
   }
 
   box.addEventListener('click', function (e) {
+    if (stopped) return;
     var b = e.target.closest('button[data-run]');
-    if (b && !b.disabled && !stopped) run(b.getAttribute('data-run'));
+    if (b && !b.disabled) return run(b.getAttribute('data-run'));
+    b = e.target.closest('button[data-run-service]');
+    if (b && !b.disabled) runService(b.getAttribute('data-run-service'));
+  });
+  // «Подробнее», пункт меню, «← Все сервисы»: меняется только хеш адреса, страница не перезагружается.
+  window.addEventListener('hashchange', function () {
+    draw();
+    if (window.scrollTo) window.scrollTo(0, 0);
   });
   // Вернулись на страницу (например, после запуска фразой в Claude): показываем свежие карточки.
   window.addEventListener('focus', load);
@@ -442,6 +734,25 @@
     if (document.visibilityState === 'visible') load();
   });
   load();
+})();
+</script>
+<script>
+// Меню на узком экране: кнопка «Меню» раскрывает и сворачивает список, выбор пункта его сворачивает.
+(function () {
+  'use strict';
+  var side = document.getElementById('side');
+  var button = document.getElementById('nav-toggle');
+  if (!side || !button || typeof button.addEventListener !== 'function') return;
+  function set(open) {
+    side.className = open ? 'side open' : 'side';
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  button.addEventListener('click', function () {
+    set(button.getAttribute('aria-expanded') !== 'true');
+  });
+  window.addEventListener('hashchange', function () {
+    set(false);
+  });
 })();
 </script>
 <script>

@@ -493,3 +493,30 @@ class CaseFilesSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BadColors(unittest.TestCase):
+    """Выгрузка с цветом не по стандарту (бывает у 1С и Google Таблиц): файл всё равно читается."""
+
+    def test_xlsx_with_invalid_rgb_is_read(self):
+        import shutil
+        import zipfile
+        from openpyxl.styles import PatternFill
+        with tempfile.TemporaryDirectory() as d:
+            good = Path(d) / "good.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["АЗС", "Литры"])
+            ws.append(["АЗС-01", 10])
+            ws["A1"].fill = PatternFill("solid", fgColor="FFFF0000")
+            wb.save(good)
+            bad = Path(d) / "Выгрузка с цветом.xlsx"
+            with zipfile.ZipFile(good) as zin, zipfile.ZipFile(bad, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    data = zin.read(item.filename)
+                    if item.filename == "xl/styles.xml":
+                        data = data.replace(b'rgb="FFFF0000"', b'rgb="#FF00"')
+                    zout.writestr(item, data)
+            r = subprocess.run([sys.executable, str(SCRIPT), str(bad), "--json"], capture_output=True, encoding="utf-8")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("АЗС-01", r.stdout)

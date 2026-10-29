@@ -322,8 +322,28 @@ def sheet_merges(path, sheet_index):
         return [], f"не удалось прочитать объединённые ячейки ({type(e).__name__}: {e}), шапка может быть разобрана неточно"
 
 
+def tolerate_bad_colors():
+    """Выгрузки 1С и Google Таблиц бывают с цветом в оформлении не по стандарту («Colors must be aRGB hex
+    values»): openpyxl тогда не открывает файл целиком. Цвет для чтения данных не нужен: такой цвет
+    читаем как белый. Один раз на процесс."""
+    from openpyxl.styles import colors
+    if getattr(colors.RGB, "_cabinet_tolerant", False):
+        return
+    original = colors.RGB.__set__
+
+    def tolerant(self, instance, value):
+        try:
+            original(self, instance, value)
+        except ValueError:
+            original(self, instance, "00FFFFFF")
+
+    colors.RGB.__set__ = tolerant
+    colors.RGB._cabinet_tolerant = True
+
+
 def open_book(path):
     import openpyxl
+    tolerate_bad_colors()
     try:
         return openpyxl.load_workbook(path, read_only=True, data_only=True)
     except zipfile.BadZipFile:

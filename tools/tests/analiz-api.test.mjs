@@ -1,16 +1,16 @@
-// API сервиса «Спроси таблицу» (tools/analiz-api.mjs) через сервер кабинета. Движок tools/analiz.py подменён:
+// API сервиса «Аналитик таблиц» (tools/analiz-api.mjs) через сервер кабинета. Движок tools/analiz.py подменён:
 // во временном кабинете (путь с кириллицей и пробелом) лежит маленькая программа на Python, она отвечает по
 // контракту и записывает, с какими аргументами её позвали. Python настоящий, как у кнопки «Запустить».
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyDir } from './copy-dir.mjs';
 import { createCabinetServer, listenFirstFree } from '../serve.mjs';
-import { QUESTION_MAX, cleanQuestion, codePhrase, engineMessage, normalizeHistory, parseEngineJson } from '../analiz-api.mjs';
+import { QUESTION_MAX, UPLOAD_MAX, cleanFileName, cleanQuestion, codePhrase, engineMessage, normalizeHistory, parseEngineJson } from '../analiz-api.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -84,8 +84,9 @@ before(async () => {
   writeFileSync(join(cab, 'CLAUDE.md'), 'секретные правила кабинета');
   server = createCabinetServer(cab, { token: TOKEN, analiz: { openFolder: (dir) => opened.push(dir) } });
   port = await listenFirstFree(server, { from: 19100, to: 19149 });
-  // Второй сервер того же кабинета с коротким ограничением времени: для проверки остановки долгого вопроса.
-  quick = createCabinetServer(cab, { token: TOKEN, analiz: { askTimeoutMs: 1500, openFolder: () => true } });
+  // Второй сервер того же кабинета с коротким ограничением времени: для проверки остановки долгого вопроса;
+  // у него же загрузка до 1 КБ (проверка ответа 413 без файла в 50 МБ).
+  quick = createCabinetServer(cab, { token: TOKEN, analiz: { askTimeoutMs: 1500, openFolder: () => true, uploadMax: 1024 } });
   quickPort = await listenFirstFree(quick, { from: 19150, to: 19199 });
 });
 
@@ -221,7 +222,7 @@ test('ask: код 3 (нет claude) → 503 ENOCLAUDE с фразой для в�
   const r = await ask('нет claude: продажи по АЗС');
   assert.equal(r.status, 503);
   assert.equal(r.json.code, 'ENOCLAUDE');
-  assert.equal(r.json.phrase, 'спроси таблицу: нет claude: продажи по АЗС');
+  assert.equal(r.json.phrase, 'проанализируй таблицу: нет claude: продажи по АЗС');
   assert.equal(r.json.phrase, codePhrase('нет claude: продажи по АЗС'));
   assert.match(r.json.error, /вкладке Code/);
 });
@@ -261,7 +262,7 @@ test('ask: дольше ограничения → 504 и движок оста�
   const r = await slow;
   assert.equal(r.status, 504);
   assert.equal(r.json.code, 'ETIMEOUT');
-  assert.equal(r.json.phrase, 'спроси таблицу: долго считать');
+  assert.equal(r.json.phrase, 'проанализируй таблицу: долго считать');
   assert.ok(Date.now() - started < 15000, 'ответ не ждал 30 с');
   // После остановки вопросы снова принимаются.
   assert.equal((await ask('после долгого', quickPort)).status, 200);
@@ -332,7 +333,7 @@ test('страница сервиса и её скрипт отдаются по
   const page = await get(`${T}/analiz.html`, {});
   assert.equal(page.status, 200);
   assert.match(page.headers['content-type'], /^text\/html/);
-  assert.match(page.body, /<h1>Спроси таблицу<\/h1>/);
+  assert.match(page.body, /<h1>Аналитик таблиц<\/h1>/);
   const js = await get(`${T}/analiz.js`, {});
   assert.equal(js.status, 200);
   assert.match(js.headers['content-type'], /^text\/javascript/);
@@ -340,7 +341,9 @@ test('страница сервиса и её скрипт отдаются по
   assert.equal((await get('/analiz.html', {})).status, 403);
   assert.equal((await request('POST', `${T}/analiz.html`, WRITE, '{}')).status, 405);
   const main = await get(`${T}/`, {});
-  assert.match(main.body, /<a class="service" href="analiz\.html">/);
+  assert.match(main.body, /<a class="nav-item" href="analiz\.html">/);
+  assert.match(page.body, /<script src="render\.js"><\/script>/);
+  assert.equal((await get(`${T}/render.js`, {})).status, 200);
 });
 
 test('движка нет в кабинете: понятный ответ «обнови кабинет», Python не ищется', async () => {
@@ -432,4 +435,128 @@ test('normalizeHistory: список, объект со списком, без �
     ['a', '2026-10-29 09:00:00'],
   ]);
   assert.equal(normalizeHistory(Array.from({ length: 80 }, (_, i) => ({ id: i }))).length, 50);
+});
+
+// ---------- загрузка файлов со страницы ----------
+
+const UP = { 'X-Cabinet': '1', 'Content-Type': 'application/octet-stream' };
+const upload = (name, body, headers = UP, onPort) =>
+  request('POST', `${T}/api/analiz/upload`, { ...headers, ...(name === null ? {} : { 'X-File-Name': encodeURIComponent(name) }) }, body, onPort);
+const dataDir = () => join(cab, 'input', 'analiz');
+const dataFiles = () => (existsSync(dataDir()) ? readdirSync(dataDir()).sort() : []);
+
+test('upload: файл ложится в input/analiz как есть, кириллица и пробелы в имени; тот же файл ещё раз → « (2)», без перезаписи', async () => {
+  const csv = Buffer.from('АЗС;Литры\nАЗС-01;1,5\n', 'utf8');
+  const r = await upload('Продажи АЗС октябрь.csv', csv);
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(r.json, { ok: true, file: 'Продажи АЗС октябрь.csv', renamed: false, size: csv.length });
+  assert.deepEqual(readFileSync(join(dataDir(), 'Продажи АЗС октябрь.csv')), csv);
+  const xlsx = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1, 2, 3, 0xff]);
+  const again = await upload('Продажи АЗС октябрь.csv', xlsx);
+  assert.equal(again.status, 200);
+  assert.equal(again.json.file, 'Продажи АЗС октябрь (2).csv');
+  assert.equal(again.json.renamed, true);
+  assert.deepEqual(readFileSync(join(dataDir(), 'Продажи АЗС октябрь.csv')), csv, 'первый файл не перезаписан');
+  assert.deepEqual(readFileSync(join(dataDir(), 'Продажи АЗС октябрь (2).csv')), xlsx, 'двоичный файл без изменений');
+  assert.equal((await upload('Продажи АЗС октябрь.csv', csv)).json.file, 'Продажи АЗС октябрь (3).csv');
+  assert.equal((await upload('Книга.XLSX', xlsx)).json.file, 'Книга.XLSX', 'расширение без учёта регистра');
+  assert.equal((await upload('макрос.xlsm', xlsx)).status, 200);
+  assert.equal((await upload('выгрузка.txt', csv)).status, 200);
+  assert.ok(!dataFiles().some((f) => f.startsWith('.')), 'временных файлов не осталось');
+  // Паспорт видит загруженный файл.
+  const pass = await get(`${T}/api/analiz/passport`);
+  assert.ok(pass.json.passport.files.some((f) => f.file === 'Продажи АЗС октябрь (2).csv'));
+});
+
+test('upload: путь в имени отбрасывается, файл только в input/analiz; управляющие знаки и скрытое имя чистятся', async () => {
+  const body = Buffer.from('a;b\n1;2\n');
+  const claude = readFileSync(join(cab, 'CLAUDE.md'), 'utf8');
+  for (const [name, saved] of [
+    ['../../CLAUDE.md.csv', 'CLAUDE.md.csv'],
+    ['..\\..\\..\\zlo.csv', 'zlo.csv'],
+    ['/etc/passwd.csv', 'passwd.csv'],
+    ['C:\\Users\\Айгуль\\Desktop\\отчёт.xlsx', 'отчёт.xlsx'],
+    ['.skrytyi.csv', 'skrytyi.csv'],
+    ['~$vremennyi.xlsx', 'vremennyi.xlsx'],
+    ['a\u0000b\u0007c\nd.csv', 'abcd.csv'],
+    ['что?где:когда*.csv', 'что_где_когда_.csv'],
+  ]) {
+    const r = await upload(name, body);
+    assert.equal(r.status, 200, `${name}: ${r.body}`);
+    assert.equal(r.json.file, saved, name);
+    assert.ok(existsSync(join(dataDir(), saved)), saved);
+  }
+  assert.equal(readFileSync(join(cab, 'CLAUDE.md'), 'utf8'), claude, 'файл вне папки не тронут');
+  assert.ok(!existsSync(join(cab, 'CLAUDE.md.csv')) && !existsSync(join(base, 'zlo.csv')));
+  for (const bad of ['..', '.', '', '   ', '/', '%E0%A4%A']) {
+    const r = await request('POST', `${T}/api/analiz/upload`, { ...UP, 'X-File-Name': bad === '%E0%A4%A' ? bad : encodeURIComponent(bad) }, body);
+    assert.equal(r.status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await upload(null, body)).status, 400, 'без имени');
+});
+
+test('upload: не та таблица → 415, больше ограничения → 413, пустой → 400; файла нет', async () => {
+  const before = dataFiles();
+  for (const name of ['virus.exe', 'staryi.xls', 'otchet.pdf', 'bez-rasshireniya', 'skript.csv.js', '.csv']) {
+    const r = await upload(name, Buffer.from('x'));
+    assert.equal(r.status, 415, name);
+    assert.equal(r.json.code, 'ETYPE', name);
+    assert.match(r.json.error, /Подходят файлы Excel \(\.xlsx, \.xlsm\) и CSV \(\.csv, \.txt\)/);
+  }
+  assert.equal(UPLOAD_MAX, 50 * 1024 * 1024);
+  // Ограничение 1 КБ на втором сервере: длина в заголовке больше → сразу 413; тело кусками без длины → тоже 413.
+  const big = await upload('bolshoi.csv', Buffer.alloc(2048, 0x41), UP, quickPort);
+  assert.equal(big.status, 413);
+  assert.equal(big.json.code, 'EBIG');
+  assert.match(big.json.error, /больше 50 МБ/);
+  const chunked = await new Promise((res, rej) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: quickPort, path: `${T}/api/analiz/upload`, method: 'POST', agent: false, headers: { ...UP, 'X-File-Name': 'kuskami.csv', 'Transfer-Encoding': 'chunked' } },
+      (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => res({ status: r.statusCode, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+      },
+    );
+    req.on('error', rej);
+    for (let i = 0; i < 4; i++) req.write(Buffer.alloc(600, 0x42));
+    req.end();
+  });
+  assert.equal(chunked.status, 413);
+  assert.equal((await upload('malenkii.csv', Buffer.alloc(1000, 0x41), UP, quickPort)).status, 200, 'до ограничения можно');
+  const empty = await upload('pustoi.csv', Buffer.alloc(0));
+  assert.equal(empty.status, 400);
+  assert.equal(empty.json.code, 'EEMPTY');
+  assert.deepEqual(dataFiles(), [...before, 'malenkii.csv'].sort(), 'лишних файлов (и временных) нет');
+});
+
+test('upload: без токена и с чужим токеном 403, без X-Cabinet или не тот тип тела 403, GET 405', async () => {
+  const before = dataFiles();
+  const body = Buffer.from('a;b\n');
+  const name = encodeURIComponent('chuzhoi.csv');
+  assert.equal((await request('POST', '/api/analiz/upload', { ...UP, 'X-File-Name': name }, body)).status, 403);
+  assert.equal((await request('POST', '/0000000000000000/api/analiz/upload', { ...UP, 'X-File-Name': name }, body)).status, 403);
+  const noHeader = await request('POST', `${T}/api/analiz/upload`, { 'Content-Type': 'application/octet-stream', 'X-File-Name': name }, body);
+  assert.equal(noHeader.status, 403);
+  assert.match(noHeader.json.error, /только со своей страницы/);
+  for (const type of ['application/json', 'multipart/form-data; boundary=x', 'text/plain']) {
+    assert.equal((await request('POST', `${T}/api/analiz/upload`, { 'X-Cabinet': '1', 'Content-Type': type, 'X-File-Name': name }, body)).status, 403, type);
+  }
+  const g = await get(`${T}/api/analiz/upload`);
+  assert.equal(g.status, 405);
+  assert.equal(g.headers.allow, 'POST');
+  assert.deepEqual(dataFiles(), before, 'ничего не записано');
+});
+
+test('cleanFileName: последняя часть пути, без управляющих знаков, «..», скрытого и временного имени, кириллица остаётся', () => {
+  assert.equal(cleanFileName('Продажи АЗС октябрь.xlsx'), 'Продажи АЗС октябрь.xlsx');
+  assert.equal(cleanFileName('../../a.csv'), 'a.csv');
+  assert.equal(cleanFileName('a/b\\c.csv'), 'c.csv');
+  assert.equal(cleanFileName('отчёт..итог.csv'), 'отчёт.итог.csv');
+  assert.equal(cleanFileName('  x  .csv  '), 'x.csv');
+  assert.equal(cleanFileName('con.csv'), '_con.csv');
+  assert.equal(cleanFileName('a\u202eb.csv'), 'ab.csv');
+  assert.equal(cleanFileName('я'.repeat(300) + '.xlsx').length, 150);
+  assert.ok(cleanFileName('я'.repeat(300) + '.xlsx').endsWith('.xlsx'));
+  for (const bad of ['', '..', '.', '/', '~$', '.csv', null, 5]) assert.equal(cleanFileName(bad), bad === '.csv' ? 'csv' : '', String(bad));
 });

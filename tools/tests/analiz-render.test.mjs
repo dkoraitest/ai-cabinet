@@ -1,4 +1,4 @@
-// Страница сервиса «Спроси таблицу»: analiz.js (паспорт, ответы, график SVG) в песочнице, как render.js,
+// Страница сервиса «Аналитик таблиц»: analiz.js (паспорт, ответы, график SVG) в песочнице, как render.js,
 // разметка analiz.html и карточка-ссылка на главной странице.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -106,11 +106,32 @@ test('паспорт в виде движка analiz.py: размер, стро�
   assert.match(html, /разных значений: 900/);
   assert.match(html, /Лист «Лист1»/);
   assert.match(html, /<p class="hint">нет данных<\/p>/);
-  assert.match(html, /<li>Пропущен файл bityi\.xlsx: файл не читается \(BadZipFile\)\.<\/li>/);
+  assert.match(html, /<li>Не прочитан файл bityi\.xlsx: файл не читается \(BadZipFile\)\. Откройте его в Excel и сохраните как \.xlsx, затем «Обновить»\.<\/li>/);
+  assert.doesNotMatch(html, /Папка с данными пока пустая|Файлы есть, но не читаются/);
   // Пустая папка в виде движка: своя подсказка страницы, без повтора подсказки движка.
   const empty = R.renderPassport({ files: [], skipped: [], warnings: ['В папке input/analiz пока нет таблиц: положите туда файлы Excel (.xlsx) или CSV.'] });
   assert.match(empty, /Папка с данными пока пустая/);
+  assert.match(empty, /«Загрузить файлы» или перетащите их в этот блок/);
   assert.doesNotMatch(empty, /пока нет таблиц/);
+});
+
+test('паспорт: файлы есть, но ни один не прочитан → имя, причина и что сделать, а не «пустая папка»', () => {
+  // Как отвечает движок: skipped и та же причина строкой в warnings.
+  const html = R.renderPassport({
+    files: [],
+    skipped: [{ file: 'Продажи октябрь.xlsx', reason: 'файл не читается (ValueError).' }, { file: 'старый.csv', reason: 'ссылка на файл вне папки input/analiz, не читается' }],
+    warnings: ['Файл «Продажи октябрь.xlsx» не прочитан: файл не читается (ValueError).', 'Файл «старый.csv» не прочитан: ссылка на файл вне папки input/analiz, не читается'],
+  });
+  assert.doesNotMatch(html, /Папка с данными пока пустая/);
+  assert.match(
+    html,
+    /<p class="empty-title">Файлы есть, но не читаются: Продажи октябрь\.xlsx: файл не читается \(ValueError\); старый\.csv: ссылка на файл вне папки input\/analiz, не читается\.<\/p><p>Откройте файл в Excel и сохраните как \.xlsx, затем «Обновить»\.<\/p>/,
+  );
+  assert.doesNotMatch(html, /не прочитан:/, 'причина не повторяется строкой движка');
+  // Имя из данных экранируется.
+  assert.match(R.renderPassport({ files: [], skipped: [{ file: '<b>.csv', reason: 'x' }] }), /&lt;b&gt;\.csv: x\./);
+  // Строка вместо объекта и пропуск без причины.
+  assert.match(R.renderPassport({ files: [], skipped: ['a.csv'] }), /не читаются: a\.csv\./);
 });
 
 test('паспорт: файлов нет → подсказка, куда положить; другие написания полей тоже понимаются', () => {
@@ -262,11 +283,11 @@ test('график: нет чисел или одна строка → поня�
 // ---------- вопрос не получился ----------
 
 test('нет claude (код 3): подсказка про вкладку Code с готовой фразой и кнопкой «Скопировать»', () => {
-  const html = R.renderAskProblem(503, { code: 'ENOCLAUDE', phrase: 'спроси таблицу: литры по "АЗС"' }, 'литры по "АЗС"');
+  const html = R.renderAskProblem(503, { code: 'ENOCLAUDE', phrase: 'проанализируй таблицу: литры по "АЗС"' }, 'литры по "АЗС"');
   assert.match(html, /вкладке <b>Code<\/b>/);
-  assert.match(html, /value="спроси таблицу: литры по &quot;АЗС&quot;"/);
+  assert.match(html, /value="проанализируй таблицу: литры по &quot;АЗС&quot;"/);
   assert.match(html, /data-copy="phrase">Скопировать</);
-  assert.match(R.renderAskProblem(503, { code: 'ENOCLAUDE' }, 'вопрос'), /value="спроси таблицу: вопрос"/);
+  assert.match(R.renderAskProblem(503, { code: 'ENOCLAUDE' }, 'вопрос'), /value="проанализируй таблицу: вопрос"/);
 });
 
 test('проверка ПД (код 4): причина от движка и подсказка обезличить; прочие ошибки текстом', () => {
@@ -276,7 +297,7 @@ test('проверка ПД (код 4): причина от движка и по
   assert.match(R.renderAskProblem(422, { code: 'EENGINE', error: 'Нет столбца <x>' }, 'q'), /<div class="notice"><p>Нет столбца &lt;x&gt;<\/p>/);
   assert.match(R.renderAskProblem(422, { code: 'EROWS', error: 'Этот вопрос требует строк с текстом' }, 'q'), /<div class="notice"><p>Этот вопрос требует строк/);
   assert.match(R.renderAskProblem(500, { error: 'Python не найден' }, 'q'), /<p class="run-error">Python не найден<\/p>/);
-  assert.match(R.renderAskProblem(504, { code: 'ETIMEOUT', error: 'долго', phrase: 'спроси таблицу: q' }, 'q'), /data-copy="phrase"/);
+  assert.match(R.renderAskProblem(504, { code: 'ETIMEOUT', error: 'долго', phrase: 'проанализируй таблицу: q' }, 'q'), /data-copy="phrase"/);
   assert.match(R.renderAskProblem(404, {}, 'q'), /запущена до обновления/);
 });
 
@@ -284,10 +305,31 @@ test('проверка ПД (код 4): причина от движка и по
 
 test('analiz.html: заголовок, бренд как на главной, ссылка на кабинет, только относительные ссылки, без интернета', () => {
   assert.match(PAGE, /data-cabinet="ok"/);
-  assert.match(PAGE, /<title>Спроси таблицу<\/title>/);
-  assert.match(PAGE, /<h1>Спроси таблицу<\/h1>/);
-  assert.match(PAGE, /<a class="back" href="\.\/">← Мой кабинет<\/a>/);
-  assert.match(PAGE, /<script src="analiz\.js"><\/script>/);
+  assert.match(PAGE, /<title>Аналитик таблиц<\/title>/);
+  assert.match(PAGE, /<h1>Аналитик таблиц<\/h1>/);
+  // Каркас как на главной: меню слева, пункт «Аналитик таблиц» подсвечен, «Все сервисы» ведёт на главную.
+  assert.match(PAGE, /<nav class="side" id="side" aria-label="Меню кабинета">/);
+  assert.match(PAGE, /<a class="nav-item" id="nav-all" href="\.\/">[\s\S]*?Все сервисы<\/span><\/a>/);
+  assert.match(PAGE, /<a class="nav-item" href="analiz\.html" aria-current="page">[\s\S]*?Аналитик таблиц<\/span><\/a>/);
+  assert.match(PAGE, /<div class="nav-group" id="nav-mine" hidden>/);
+  assert.match(PAGE, /Как добавить сервис[\s\S]*Откройте Claude во вкладке <b>Code<\/b> в новой папке и скажите <b>«новый сервис»<\/b>: Claude создаст проект\. Когда сервис готов, скажите <b>«добавь в кабинет»<\/b>\./);
+  assert.match(PAGE, /<span class="nav-current" id="nav-current">Аналитик таблиц<\/span>/);
+  assert.doesNotMatch(PAGE, /class="back"/);
+  assert.ok(PAGE.indexOf('id="side"') < PAGE.indexOf('id="data-card"'), 'меню слева от содержимого');
+  // Меню и раскладка такие же, как на главной: одни и те же правила CSS.
+  const index = readFileSync(join(SITE, 'index.html'), 'utf8');
+  const block = (html, from, to) => html.slice(html.indexOf(from), html.indexOf(to, html.indexOf(from)));
+  assert.equal(block(PAGE, '  /* Каркас', '  .help b'), block(index, '  /* Каркас', '  .help b'));
+  assert.equal(block(PAGE, '  /* Узкий экран', '  @media (max-width: 640px)'), block(index, '  /* Узкий экран', '  @media (max-width: 640px)'));
+  assert.match(PAGE, /<script src="render\.js"><\/script>\s*<script src="analiz\.js"><\/script>/);
+  // Загрузка файлов: кнопка, выбор нескольких файлов нужных типов, блок принимает перетаскивание.
+  assert.match(PAGE, /<button type="button" class="btn btn-accent" id="upload">Загрузить файлы<\/button>/);
+  assert.match(PAGE, /<input type="file" id="file-input" multiple accept="\.xlsx,\.xlsm,\.csv,\.txt" hidden>/);
+  assert.match(PAGE, /<section class="card drop-zone" id="data-card"/);
+  for (const needle of ["fetch('api/analiz/upload'", "'Content-Type': 'application/octet-stream'", "'X-File-Name': encodeURIComponent(name)", "'drop'", "'dragover'"]) {
+    assert.ok(PAGE.includes(needle), needle);
+  }
+  assert.doesNotMatch(PAGE, /[\u2012-\u2015]/);
   assert.match(PAGE, /<\/style>\s*<link rel="stylesheet" href="brand\/theme\.css">/);
   assert.match(PAGE, /<img class="brand-logo" id="brand-logo" alt="" hidden>/);
   for (const needle of ["'brand/logo.svg'", "'brand/logo.png'", "fetch('brand/brand.json'"]) assert.ok(PAGE.includes(needle), needle);
@@ -308,16 +350,15 @@ test('analiz.html: заголовок, бренд как на главной, с
   assert.doesNotMatch(js, /https?:\/\/|fetch\(|import\s/);
 });
 
-test('главная: карточка-ссылка «Спроси таблицу» над карточками процессов, ссылка относительная', () => {
+test('главная: «Аналитик таблиц» в меню и первой карточкой в сетке, ссылки относительные', () => {
   const html = readFileSync(join(SITE, 'index.html'), 'utf8');
-  const card = html.indexOf('<a class="service" href="analiz.html">');
-  assert.ok(card !== -1, 'нет карточки-ссылки');
-  assert.ok(card < html.indexOf('id="processes"'), 'карточка над процессами');
-  assert.ok(html.includes('<span class="service-title">Спроси таблицу</span>'));
-  assert.ok(
-    html.includes('<span class="service-desc">Задайте вопрос своим таблицам: считает программа на вашем компьютере, строки никуда не уходят</span>'),
-  );
-  assert.doesNotMatch(html, /(src|href)="(\/|https?:|\/\/)/);
+  assert.match(html, /<a class="nav-item" href="analiz\.html">/);
+  const w = {};
+  runInNewContext(readFileSync(join(SITE, 'render.js'), 'utf8'), { window: w });
+  const grid = w.CabinetRender.renderPage([{ slug: 'a', title: 'А', kind: 'script', result: null }]);
+  assert.ok(grid.indexOf('<a class="tile tile-service" href="analiz.html">') !== -1, 'нет карточки-ссылки');
+  assert.ok(grid.indexOf('tile-service') < grid.indexOf('data-slug="a"'), 'карточка перед процессами');
+  assert.doesNotMatch(html + grid, /(src|href)="(\/|https?:|\/\/)/);
 });
 
 // ---------- скрипт страницы в песочнице ----------
@@ -341,12 +382,23 @@ function stub(extra = {}) {
 // Скрипт страницы (первый встроенный <script>) с подставными DOM, fetch и таймерами.
 function pageSandbox(respond) {
   const code = [...PAGE.matchAll(/<script>([\s\S]*?)<\/script>/g)][0][1];
-  const ids = ['passport', 'answers', 'ask-form', 'question', 'ask', 'busy', 'ask-msg', 'folder-msg', 'open-folder', 'refresh'];
+  const ids = ['passport', 'answers', 'ask-form', 'question', 'ask', 'busy', 'ask-msg', 'folder-msg', 'open-folder', 'refresh', 'upload', 'file-input', 'data-card'];
   const el = Object.fromEntries(ids.map((id) => [id, stub()]));
+  const classes = new Set();
+  el['data-card'].classList = { add: (c) => classes.add(c), remove: (c) => classes.delete(c) };
+  el['file-input'].click = () => {
+    el['file-input'].clicked = (el['file-input'].clicked ?? 0) + 1;
+  };
   const calls = [];
+  const winOn = {};
   const document = { getElementById: (id) => el[id] ?? null, visibilityState: 'visible', addEventListener() {} };
   const sandbox = {
-    window: { AnalizRender: R, addEventListener() {} },
+    window: {
+      AnalizRender: R,
+      addEventListener(type, fn) {
+        winOn[type] = fn;
+      },
+    },
     document,
     navigator: {},
     fetch: (url, opts = {}) => {
@@ -364,7 +416,7 @@ function pageSandbox(respond) {
     Array,
   };
   runInNewContext(code, sandbox);
-  return { el, calls };
+  return { el, calls, winOn, classes };
 }
 
 const json = (status, data) => Promise.resolve({ status, ok: status < 300, json: () => Promise.resolve(data) });
@@ -389,7 +441,7 @@ test('страница: «Спросить» шлёт вопрос JSON-ом; к
   const p = pageSandbox((url, opts) => {
     if (url === 'api/analiz/ask') {
       askBody = opts;
-      return json(503, { code: 'ENOCLAUDE', error: 'нет claude', phrase: 'спроси таблицу: литры по АЗС' });
+      return json(503, { code: 'ENOCLAUDE', error: 'нет claude', phrase: 'проанализируй таблицу: литры по АЗС' });
     }
     return url === 'api/analiz/passport' ? json(200, { passport: { files: [] } }) : json(200, { items: [], total: 0 });
   });
@@ -407,7 +459,7 @@ test('страница: «Спросить» шлёт вопрос JSON-ом; к
   assert.equal(askBody.method, 'POST');
   assert.equal(askBody.headers['Content-Type'], 'application/json');
   assert.deepEqual(JSON.parse(askBody.body), { question: 'литры по АЗС' });
-  assert.match(p.el['ask-msg'].innerHTML, /value="спроси таблицу: литры по АЗС"/);
+  assert.match(p.el['ask-msg'].innerHTML, /value="проанализируй таблицу: литры по АЗС"/);
   assert.equal(p.el.ask.disabled, false);
   assert.equal(p.el.busy.hidden, true);
   assert.equal(p.el.question.value, 'литры по АЗС', 'вопрос остаётся в поле');
@@ -440,4 +492,129 @@ test('страница: удачный ответ перечитывает ис�
   down.el['ask-form'].on.submit({ preventDefault() {} });
   await settle();
   assert.equal(down.calls.length, n, 'после остановки запросов нет');
+});
+
+// ---------- загрузка файлов со страницы ----------
+
+const fakeFile = (name, size = 10) => ({ name, size });
+const dragEvent = (files) => ({ preventDefault() {}, dataTransfer: { types: ['Files'], files, dropEffect: '' } });
+
+test('загрузка: «Загрузить файлы» открывает выбор; файлы по одному, имя в X-File-Name, тело файла как есть; паспорт перечитывается', async () => {
+  const uploads = [];
+  const p = pageSandbox((url, opts) => {
+    if (url === 'api/analiz/upload') {
+      uploads.push(opts);
+      const name = decodeURIComponent(opts.headers['X-File-Name']);
+      if (name === 'Продажи.xlsx') return json(200, { ok: true, file: 'Продажи (2).xlsx', renamed: true });
+      return json(200, { ok: true, file: name, renamed: false });
+    }
+    return url === 'api/analiz/passport' ? json(200, { passport: { files: [] } }) : json(200, { items: [], total: 0 });
+  });
+  await settle();
+  p.el.upload.on.click();
+  assert.equal(p.el['file-input'].clicked, 1);
+  const a = fakeFile('Продажи.xlsx');
+  const b = fakeFile('АЗС сентябрь.csv');
+  p.el['file-input'].files = [a, b];
+  p.el['file-input'].on.change();
+  assert.equal(p.el.upload.disabled, true, 'кнопка неактивна, пока идёт загрузка');
+  await settle();
+  assert.equal(uploads.length, 2);
+  for (const o of uploads) {
+    assert.equal(o.method, 'POST');
+    assert.equal(o.headers['X-Cabinet'], '1');
+    assert.equal(o.headers['Content-Type'], 'application/octet-stream');
+  }
+  assert.equal(uploads[0].headers['X-File-Name'], encodeURIComponent('Продажи.xlsx'));
+  assert.equal(uploads[0].body, a);
+  assert.equal(uploads[1].body, b);
+  assert.equal(p.el['file-input'].value, '', 'выбор сброшен: тот же файл можно выбрать снова');
+  assert.equal(p.el['folder-msg'].hidden, false);
+  assert.match(p.el['folder-msg'].textContent, /^Загружено: Продажи \(2\)\.xlsx, АЗС сентябрь\.csv\. Файл «Продажи\.xlsx» уже был в папке, новый сохранён как «Продажи \(2\)\.xlsx»\.$/);
+  assert.equal(p.calls.filter((c) => c.url === 'api/analiz/passport').length, 2, 'паспорт перечитан после загрузки');
+  assert.equal(p.el.upload.disabled, false);
+});
+
+test('загрузка: не те файлы и больше 50 МБ не отправляются; ошибка сервера показывается; файлы, брошенные на страницу, загружаются', async () => {
+  const uploads = [];
+  const p = pageSandbox((url, opts) => {
+    if (url === 'api/analiz/upload') {
+      uploads.push(decodeURIComponent(opts.headers['X-File-Name']));
+      return json(413, { code: 'EBIG', error: 'Файл «big.csv» не загружен. Файл больше 50 МБ.' });
+    }
+    return url === 'api/analiz/passport' ? json(200, { passport: { files: [] } }) : json(200, { items: [], total: 0 });
+  });
+  await settle();
+  const drop = p.winOn.drop;
+  assert.equal(typeof drop, 'function', 'страница принимает брошенные файлы');
+  p.winOn.dragenter(dragEvent([]));
+  assert.ok(p.classes.has('dragover'), 'блок «Ваши данные» подсвечен');
+  drop(dragEvent([fakeFile('virus.exe'), fakeFile('staryi.xls'), fakeFile('ogromnyi.xlsx', 50 * 1024 * 1024 + 1), fakeFile('big.csv')]));
+  assert.ok(!p.classes.has('dragover'));
+  await settle();
+  assert.deepEqual(uploads, ['big.csv'], 'на сервер ушёл только подходящий файл');
+  const msg = p.el['folder-msg'].textContent;
+  assert.match(msg, /Файл «virus\.exe» не загружен: подходят Excel \(\.xlsx, \.xlsm\) и CSV \(\.csv, \.txt\)\./);
+  assert.match(msg, /Файл «staryi\.xls» не загружен/);
+  assert.match(msg, /Файл «ogromnyi\.xlsx» не загружен: он больше 50 МБ\./);
+  assert.match(msg, /Файл «big\.csv» не загружен\. Файл больше 50 МБ\./);
+  assert.doesNotMatch(msg, /Загружено/);
+  assert.equal(p.calls.filter((c) => c.url === 'api/analiz/passport').length, 1, 'ничего не загрузилось: паспорт не перечитывается');
+  // Перетаскивают не файлы (текст, ссылку): страница не мешает.
+  let prevented = false;
+  p.winOn.drop({ preventDefault: () => (prevented = true), dataTransfer: { types: ['text/plain'] } });
+  assert.equal(prevented, false);
+});
+
+// ---------- меню на странице «Аналитик таблиц» ----------
+
+const NOT_FOUND = () => json(404, { error: 'Такого адреса у страницы нет.' });
+
+function menuSandbox(respond, services = NOT_FOUND) {
+  const code = [...PAGE.matchAll(/<script>([\s\S]*?)<\/script>/g)][1][1];
+  const w = { addEventListener(type, fn) { w.on[type] = fn; }, on: {} };
+  runInNewContext(readFileSync(join(SITE, 'render.js'), 'utf8'), { window: w });
+  const el = { 'nav-mine': stub({ hidden: true }), 'nav-list': stub(), side: stub({ className: 'side' }), 'nav-toggle': stub() };
+  el['nav-toggle'].attrs = { 'aria-expanded': 'false' };
+  el['nav-toggle'].getAttribute = (k) => el['nav-toggle'].attrs[k];
+  el['nav-toggle'].setAttribute = (k, v) => (el['nav-toggle'].attrs[k] = v);
+  const calls = [];
+  const document = { getElementById: (id) => el[id] ?? null, visibilityState: 'visible' };
+  const fetch = (url, opts) => (calls.push(url), url.startsWith('api/services') ? services(url, opts) : respond(url, opts));
+  runInNewContext(code, { window: w, document, fetch, Error, Array, String, Promise });
+  return { el, calls, w };
+}
+
+test('«Аналитик таблиц»: меню «Мои сервисы» из api/processes, ссылки на главную с подробным видом', async () => {
+  const list = [{ slug: 'svetofor-dogovorov', title: 'Светофор договоров', kind: 'script', result: { status: 'green' } }];
+  const m = menuSandbox(() => json(200, list));
+  await settle();
+  assert.deepEqual(m.calls, ['api/processes', 'api/services']);
+  assert.equal(m.el['nav-mine'].hidden, false);
+  assert.match(m.el['nav-list'].innerHTML, /<a class="nav-item" href="\.\/#p=svetofor-dogovorov"><span class="dot dot-green"/);
+  // Вернулись на вкладку: список перечитан; адреса api/services нет (404), его больше не спрашивают.
+  m.w.on.focus();
+  await settle();
+  assert.deepEqual(m.calls, ['api/processes', 'api/services', 'api/processes']);
+  // Кнопка «Меню» на узком экране.
+  m.el['nav-toggle'].on.click();
+  assert.equal(m.el.side.className, 'side open');
+  m.el['nav-toggle'].on.click();
+  assert.equal(m.el.side.className, 'side');
+
+  const none = menuSandbox(() => json(200, []));
+  await settle();
+  assert.equal(none.el['nav-mine'].hidden, true, 'своих сервисов нет: раздела нет');
+
+  // Встроенные проекты рядом с процессами, ссылка на главную с #s=<slug>.
+  const both = menuSandbox(() => json(200, list), () => json(200, [{ slug: 'karta-azs', name: 'Карта АЗС', kind: 'page' }]));
+  await settle();
+  assert.match(both.el['nav-list'].innerHTML, /href="\.\/#p=svetofor-dogovorov"[\s\S]*<a class="nav-item" href="\.\/#s=karta-azs"><span class="dot dot-none"[\s\S]*Карта АЗС/);
+
+  const down = menuSandbox(() => Promise.reject(new TypeError('Failed to fetch')));
+  await settle();
+  down.w.on.focus();
+  await settle();
+  assert.equal(down.calls.filter((u) => u === 'api/processes').length, 1, 'после неудачи меню больше не спрашивает');
+  assert.equal(down.el['nav-mine'].hidden, true);
 });

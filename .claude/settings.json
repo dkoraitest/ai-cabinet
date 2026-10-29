@@ -5,7 +5,8 @@
   "env": {
     "AI_CABINET": "1",
     "PYTHONUTF8": "1",
-    "PYTHONIOENCODING": "utf-8"
+    "PYTHONIOENCODING": "utf-8",
+    "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1"
   },
   "permissions": {
     "defaultMode": "acceptEdits",
@@ -15,6 +16,7 @@
       "Bash(node tools/check.mjs*)",
       "Bash(node tools/update.mjs*)",
       "Bash(node tools/processes.mjs*)",
+      "Bash(node tools/services.mjs*)",
       "Bash(python tools/read_table.py*)",
       "Bash(py tools/read_table.py*)",
       "Bash(python3 tools/read_table.py*)",
@@ -38,7 +40,8 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./**/.env)",
-      "Read(./**/.env.*)"
+      "Read(./**/.env.*)",
+      "Agent(Explore)"
     ]
   },
   "hooks": {

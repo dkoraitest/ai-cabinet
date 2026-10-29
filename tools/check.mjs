@@ -5,7 +5,7 @@ import { open, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
-import { ensureParticipantFiles } from './init.mjs';
+import { ensureParticipantFiles, installUserSkills } from './init.mjs';
 import { randomBytes } from 'node:crypto';
 import { createSiteServer, describeListenError } from './serve.mjs';
 
@@ -365,11 +365,15 @@ async function main() {
   // Windows не ищет программы (python, py, git) в текущей папке, то есть в кабинете: только в PATH.
   process.env.NoDefaultCurrentDirectoryInExePath = '1';
   const args = process.argv.slice(2);
+  const root = fileURLToPath(new URL('..', import.meta.url));
   try {
-    ensureParticipantFiles(fileURLToPath(new URL('..', import.meta.url)));
+    ensureParticipantFiles(root);
   } catch {
     // Папка только для чтения: это покажет проверка записи ниже.
   }
+  // Скиллы «новый сервис» и «добавь в кабинет» для проектов сервисов (работают в любой папке): молча, проверка
+  // сетапа на первом занятии их ставит. Не вышло: поставит «обнови кабинет» или node tools/init.mjs.
+  installUserSkills(root);
   const results = await runChecks({ net: args.includes('--net') });
   console.log(args.includes('--json') ? JSON.stringify(results, null, 2) : formatReport(results));
   process.exitCode = exitCodeFor(results);

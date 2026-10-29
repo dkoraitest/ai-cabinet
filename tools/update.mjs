@@ -52,23 +52,29 @@ function blockingPaths(r) {
   return r.stderr.split('\n').filter((l) => l.startsWith('\t')).map((l) => l.trim()).filter(Boolean);
 }
 
-// Недостающие файлы участника из шаблонов. init.mjs запускается отдельным процессом: он читает MANIFEST
-// уже новой версии, а в памяти этого процесса остался старый. Не вышло: старый MANIFEST лучше, чем ничего.
+// Недостающие файлы участника из шаблонов и скиллы kabinet-* в папке скиллов Claude. init.mjs запускается
+// отдельным процессом: он читает MANIFEST и шаблоны уже новой версии, а в памяти этого процесса осталась старая.
+// Не вышло: создаём файлы старым MANIFEST (лучше, чем ничего), скиллы поставит следующая проверка сетапа.
+// Возвращает { created: [...], skills: строка человеку или '' }.
 async function createFromTemplates(root) {
-  const r = await defaultExec(process.execPath, [join(root, 'tools', 'init.mjs'), '--json'], { cwd: root, shell: false, timeout: 30000 });
+  const r = await defaultExec(process.execPath, [join(root, 'tools', 'init.mjs'), '--report'], { cwd: root, shell: false, timeout: 30000 });
   if (r.code === 0) {
     try {
-      const created = JSON.parse(r.stdout);
-      if (Array.isArray(created)) return created;
+      const out = JSON.parse(r.stdout);
+      if (Array.isArray(out?.created)) {
+        const s = out.skills;
+        const line = ['installed', 'updated', 'error'].includes(s?.status) && typeof s.message === 'string' ? s.message : '';
+        return { created: out.created, skills: line };
+      }
     } catch {
       // Вывод не JSON: ниже создаём сами.
     }
   }
   try {
-    return ensureParticipantFiles(root);
+    return { created: ensureParticipantFiles(root), skills: '' };
   } catch {
     // Не страшно: check.mjs и serve.mjs создадут недостающее при следующем запуске.
-    return [];
+    return { created: [], skills: '' };
   }
 }
 
@@ -114,8 +120,8 @@ export async function updateCabinet({
     ? 'Сеть компании подменяет сертификаты, поэтому обновление прошло через сертификаты Windows. Чтобы так было всегда, тренер или ИТ могут выполнить: git config --global http.sslBackend schannel'
     : '';
   const finish = async (status, lines) => {
-    const created = await createFromTemplates(root);
-    return result(status, [...lines, created.length ? `Созданы из шаблонов: ${created.join(', ')}.` : '', schannelTip]);
+    const { created, skills } = await createFromTemplates(root);
+    return result(status, [...lines, created.length ? `Созданы из шаблонов: ${created.join(', ')}.` : '', skills, schannelTip]);
   };
 
   // 2. Нового нет: ничего не трогаем.

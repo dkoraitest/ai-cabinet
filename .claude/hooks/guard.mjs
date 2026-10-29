@@ -72,7 +72,7 @@ function guarded(mode, reason) {
 // (‘ ’ ‚ ‛). Иначе скобки, которые проверка видит в кавычках, PowerShell выполнил бы как выражение. По той же
 // причине вне кавычек нет \" и \': для bash это обычный знак, кавычку он не открывает.
 const COURSE =
-  /^\s*(node\s+(\.[\\/])?tools[\\/](serve|check|update|processes)\.mjs|py(thon3?)?\s+(\.[\\/])?tools[\\/](read_table|analiz|llm)\.py)(\s+(?:(?!\\["'])[^;&|<>$()`\r\n"“”„'‘’‚‛]|"[^;&|<>$`\r\n"“”„]*"|'[^;&|<>$`\r\n'‘’‚‛]*')*)?$/;
+  /^\s*(node\s+(\.[\\/])?tools[\\/](serve|check|update|processes|services)\.mjs|py(thon3?)?\s+(\.[\\/])?tools[\\/](read_table|analiz|llm)\.py)(\s+(?:(?!\\["'])[^;&|<>$()`\r\n"“”„'‘’‚‛]|"[^;&|<>$`\r\n"“”„]*"|'[^;&|<>$`\r\n'‘’‚‛]*')*)?$/;
 
 const NAMES = ['processes', '.claude'];
 

@@ -19,6 +19,16 @@ process.env.GIT_CONFIG_GLOBAL = join(CFG, 'config');
 process.env.GIT_CONFIG_NOSYSTEM = '1';
 after(() => rmSync(CFG, { recursive: true, force: true }));
 
+// Обновление ставит скиллы kabinet-* в папку скиллов Claude (init.mjs --report): в тестах это временная домашняя
+// папка, не настоящая папка разработчика.
+const HOME = mkdtempSync(join(tmpdir(), 'home-'));
+process.env.HOME = HOME;
+process.env.USERPROFILE = HOME;
+delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.AI_CABINET_NO_USER_SKILLS;
+after(() => rmSync(HOME, { recursive: true, force: true }));
+const SKILLS_DIR = join(HOME, '.claude', 'skills');
+
 const ID = ['-c', 'user.name=Тренер', '-c', 'user.email=trainer@example.com', '-c', 'commit.gpgsign=false'];
 const git = (cwd, ...args) =>
   execFileSync('git', [...ID, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -306,6 +316,31 @@ test('update: ошибка проверки отзыва сертификата 
     assert.equal(r.status, 'error');
     assert.match(r.message, /CRL\/OCSP/);
     assert.match(r.message, /schannelCheckRevoke false/);
+  } finally {
+    rmSync(w.base, { recursive: true, force: true });
+  }
+});
+
+test('update: после обновления скиллы «новый сервис» и «добавь в кабинет» в папке Claude, строка об этом одна; чужой скилл цел', async () => {
+  const w = makeWorld();
+  try {
+    rmSync(SKILLS_DIR, { recursive: true, force: true });
+    mkdirSync(join(SKILLS_DIR, 'moy-skill'), { recursive: true });
+    writeFileSync(join(SKILLS_DIR, 'moy-skill', 'SKILL.md'), 'мой скилл');
+    w.publish({ 'START.md': '# Ваш кабинет\nверсия 2\n' });
+    let r = await updateCabinet({ root: w.cabinet });
+    assert.equal(r.status, 'updated', r.message);
+    assert.equal(r.message.split('\n').filter((l) => l.includes('«новый сервис»')).length, 1, r.message);
+    assert.match(r.message, /поставлены в папку Claude/);
+    for (const name of ['kabinet-novyi-servis', 'kabinet-dobav-v-kabinet']) {
+      const text = read(SKILLS_DIR, name, 'SKILL.md');
+      assert.ok(text.includes(w.cabinet) && !text.includes('{{KABINET}}'), name);
+    }
+    assert.equal(read(SKILLS_DIR, 'moy-skill', 'SKILL.md'), 'мой скилл');
+    // Ничего нового и скиллы на месте: лишней строки нет.
+    r = await updateCabinet({ root: w.cabinet });
+    assert.equal(r.status, 'up-to-date', r.message);
+    assert.doesNotMatch(r.message, /новый сервис/);
   } finally {
     rmSync(w.base, { recursive: true, force: true });
   }

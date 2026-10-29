@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Спроси таблицу</title>
+<title>Аналитик таблиц</title>
 <style>
-  /* Страница сервиса «Спроси таблицу». Цвета и размеры как на главной странице кабинета (index.html);
+  /* Страница сервиса «Аналитик таблиц». Цвета и размеры как на главной странице кабинета (index.html);
      папка бренда (brand/theme.css, подключена ниже) переопределяет переменные --accent, --link, --stripe и другие. */
   :root {
     color-scheme: light;
@@ -46,10 +46,10 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  .wrap { max-width: 1240px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-  /* Шапка: полоса цвета компании, логотип, название страницы, ссылка на главную. */
+  /* Шапка: полоса цвета компании, логотип, название страницы. */
   .top {
     background: var(--header-bg);
     border-bottom: 1px solid var(--line);
@@ -60,18 +60,72 @@
   .brand-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
   h1 { font-size: 22px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   .top.branded h1 { padding-left: 22px; border-left: 1px solid var(--line-strong); color: var(--muted); }
-  .back {
-    margin-left: auto;
-    color: var(--link);
-    font-weight: 600;
-    font-size: 16px;
-    text-decoration: none;
-    padding: 8px 2px;
+  /* Каркас: меню слева, сервисы справа. Каркас и меню такие же на странице «Аналитик таблиц» (analiz.html). */
+  .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 28px; align-items: start; padding-top: 28px; padding-bottom: 56px; }
+  main { min-width: 0; }
+  .side { position: sticky; top: 20px; }
+  .nav-toggle { display: none; }
+  .nav-body {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 10px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
   }
-  .back:hover { text-decoration: underline; text-underline-offset: 3px; }
-  .back:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 3px; border-radius: 4px; }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.3;
+    cursor: pointer;
+  }
+  .nav-item + .nav-item { margin-top: 2px; }
+  .nav-item:hover { background: var(--th-bg); }
+  .nav-item:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: -2px; }
+  .nav-item[aria-current="page"] {
+    background: var(--th-bg);
+    background: color-mix(in srgb, var(--accent) 11%, var(--card));
+    font-weight: 650;
+  }
+  .nav-icon { flex: none; display: grid; place-items: center; width: 22px; height: 22px; color: var(--muted); }
+  .nav-item[aria-current="page"] .nav-icon { color: var(--accent-dark); }
+  .nav-label { min-width: 0; overflow-wrap: anywhere; }
+  .nav-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .nav-title { margin: 4px 12px 6px; font-size: 13px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  /* Точка статуса процесса в меню: 22px по ширине, как значки пунктов выше. */
+  .dot { flex: none; width: 10px; height: 10px; margin: 0 6px; border-radius: 50%; background: var(--card); box-shadow: inset 0 0 0 2px #9aa3b2; }
+  .dot-red { background: #d92d20; box-shadow: none; }
+  .dot-yellow { background: #e9a800; box-shadow: none; }
+  .dot-green { background: #2e9e50; box-shadow: none; }
+  .dot-run { background: var(--accent); box-shadow: none; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .nav-help { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .nav-help > summary { list-style: none; }
+  .nav-help > summary::-webkit-details-marker { display: none; }
+  .nav-help > summary::after {
+    content: "";
+    flex: none;
+    width: 7px;
+    height: 7px;
+    margin: 0 4px 3px auto;
+    border-right: 2px solid var(--muted);
+    border-bottom: 2px solid var(--muted);
+    transform: rotate(45deg);
+    transition: transform 0.15s ease;
+  }
+  .nav-help[open] > summary::after { transform: rotate(-135deg); margin-bottom: -3px; }
+  .help { margin: 4px 12px 8px 46px; font-size: 15px; line-height: 1.5; color: var(--muted); }
+  .help b { color: var(--text); font-weight: 600; }
 
-  main { padding-top: 28px; padding-bottom: 56px; }
   .lead { margin: 0 0 22px; color: var(--muted); font-size: 17px; max-width: 900px; }
   .loading, .empty {
     background: var(--card);
@@ -132,6 +186,27 @@
   .btn:focus-visible, .btn-primary:focus-visible, textarea:focus-visible, select:focus-visible, .phrase-input:focus-visible, summary:focus-visible {
     outline: 3px solid var(--accent-dark);
     outline-offset: 2px;
+  }
+
+  /* Загрузка файлов: кнопка «Загрузить файлы» и перетаскивание файлов на страницу (блок «Ваши данные» подсвечен). */
+  .btn-accent { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn-accent:hover:not(:disabled) { background: var(--accent-dark); color: var(--accent-dark-ink); border-color: transparent; }
+  .btn-accent:disabled { background: #e6e9ef; color: #4a5363; }
+  .drop-zone { position: relative; }
+  .drop-zone.dragover { border-color: var(--accent-dark); box-shadow: 0 0 0 3px var(--accent), var(--shadow); }
+  .drop-zone.dragover::after {
+    content: "Отпустите файлы, чтобы загрузить";
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--text);
+    font-size: 20px;
+    font-weight: 650;
+    pointer-events: none;
   }
 
   /* Паспорт данных. */
@@ -289,6 +364,46 @@
   .chart-svg .cat { fill: var(--text); }
   .chart-svg .value { fill: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+  /* Узкий экран: меню сворачивается наверх, кнопка «Меню» раскрывает его. */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-top: 16px; }
+    .side { position: static; }
+    .nav-toggle {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      min-height: 50px;
+      padding: 10px 16px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 650;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .nav-toggle:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 2px; }
+    .nav-toggle svg { flex: none; color: var(--accent-dark); }
+    .nav-current { flex: 1; min-width: 0; color: var(--muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+    .nav-toggle::after {
+      content: "";
+      flex: none;
+      width: 7px;
+      height: 7px;
+      margin: 0 4px 3px 0;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(45deg);
+    }
+    .side.open .nav-toggle::after { transform: rotate(-135deg); margin-bottom: -3px; }
+    .nav-body { display: none; margin-top: 8px; max-height: none; }
+    .side.open .nav-body { display: block; }
+  }
+
   @media (max-width: 640px) {
     body { font-size: 16px; }
     .wrap { padding-left: 16px; padding-right: 16px; }
@@ -296,14 +411,14 @@
     .brand-logo { height: calc(var(--logo-height) * 0.8); }
     h1 { font-size: 19px; }
     .top.branded h1 { padding-left: 16px; }
-    .back { margin-left: 0; }
-    main { padding-top: 20px; }
     .card { padding: 16px; }
     .card h2, .section-title { font-size: 20px; }
     .question { font-size: 18px; }
     .summary { font-size: 17px; }
     table { font-size: 14px; }
     .btn-primary { width: 100%; }
+    .head-actions { width: 100%; }
+    .head-actions > .btn { flex: 1 1 auto; }
   }
 </style>
 <link rel="stylesheet" href="brand/theme.css">
@@ -313,21 +428,42 @@
   <div class="wrap top-inner">
     <img class="brand-logo" id="brand-logo" alt="" hidden>
     <span class="brand-name" id="brand-name" hidden></span>
-    <h1>Спроси таблицу</h1>
-    <a class="back" href="./">← Мой кабинет</a>
+    <h1>Аналитик таблиц</h1>
   </div>
 </header>
-<main class="wrap">
+<div class="wrap layout">
+  <nav class="side" id="side" aria-label="Меню кабинета">
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="nav-body">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+      <span>Меню</span>
+      <span class="nav-current" id="nav-current">Аналитик таблиц</span>
+    </button>
+    <div class="nav-body" id="nav-body">
+      <a class="nav-item" id="nav-all" href="./"><span class="nav-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2.5" y="2.5" width="6" height="6" rx="1.5"/><rect x="11.5" y="2.5" width="6" height="6" rx="1.5"/><rect x="2.5" y="11.5" width="6" height="6" rx="1.5"/><rect x="11.5" y="11.5" width="6" height="6" rx="1.5"/></svg></span><span class="nav-label">Все сервисы</span></a>
+      <a class="nav-item" href="analiz.html" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 10h20M10 10v12"/></svg></span><span class="nav-label">Аналитик таблиц</span></a>
+      <div class="nav-group" id="nav-mine" hidden>
+        <p class="nav-title">Мои сервисы</p>
+        <div id="nav-list"></div>
+      </div>
+      <details class="nav-help">
+        <summary class="nav-item"><span class="nav-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="10" r="7.5"/><path d="M10 6.5v7M6.5 10h7"/></svg></span><span class="nav-label">Как добавить сервис</span></summary>
+        <p class="help">Откройте Claude во вкладке <b>Code</b> в новой папке и скажите <b>«новый сервис»</b>: Claude создаст проект. Когда сервис готов, скажите <b>«добавь в кабинет»</b>.</p>
+      </details>
+    </div>
+  </nav>
+  <main id="main">
   <p class="lead">Задайте вопрос своим таблицам словами. Считает программа на вашем компьютере: в модель уходят только описание таблиц (названия столбцов и их типы) и ваш вопрос, строки файлов никуда не уходят.</p>
 
-  <section class="card" aria-labelledby="data-title">
+  <section class="card drop-zone" id="data-card" aria-labelledby="data-title">
     <div class="card-head">
       <h2 id="data-title">Ваши данные</h2>
       <div class="head-actions">
-        <button type="button" class="btn" id="refresh">Обновить</button>
+        <button type="button" class="btn btn-accent" id="upload">Загрузить файлы</button>
         <button type="button" class="btn" id="open-folder">Открыть папку с данными</button>
+        <button type="button" class="btn" id="refresh">Обновить</button>
       </div>
     </div>
+    <input type="file" id="file-input" multiple accept=".xlsx,.xlsm,.csv,.txt" hidden>
     <p class="folder-msg" id="folder-msg" hidden></p>
     <div id="passport" aria-live="polite"><p class="loading">Смотрю файлы…</p></div>
   </section>
@@ -342,13 +478,15 @@
         <span class="busy" id="busy" role="status" hidden>Считаю…</span>
       </div>
     </form>
-    <p class="ask-note">Ответ появится ниже, в «Ответах», обычно за минуту. Вопрос можно задать и Claude во вкладке Code: «спроси таблицу: ваш вопрос».</p>
+    <p class="ask-note">Ответ появится ниже, в «Ответах», обычно за минуту. Вопрос можно задать и Claude во вкладке Code: «проанализируй таблицу: ваш вопрос».</p>
     <div id="ask-msg" aria-live="polite"></div>
   </section>
 
   <h2 class="section-title" id="answers-title">Ответы</h2>
   <div id="answers" aria-live="polite" aria-labelledby="answers-title"><p class="loading">Загружаю ответы…</p></div>
-</main>
+  </main>
+</div>
+<script src="render.js"></script>
 <script src="analiz.js"></script>
 <script>
 (function () {
@@ -365,6 +503,9 @@
   var folderMsg = byId('folder-msg');
   var openBtn = byId('open-folder');
   var refreshBtn = byId('refresh');
+  var uploadBtn = byId('upload');
+  var fileInput = byId('file-input');
+  var dataCard = byId('data-card');
   var READ = { 'X-Cabinet': '1' };
   var WRITE = { 'X-Cabinet': '1', 'Content-Type': 'application/json' };
   var OFFLINE = 'Страница не отвечает. Скажите Claude «открой страницу».';
@@ -384,6 +525,9 @@
   var asking = false;
   var clock = null;
   var passportOnFocus = false;
+  var UPLOAD_MAX = 50 * 1024 * 1024;
+  var UPLOAD_EXT = /\.(xlsx|xlsm|csv|txt)$/i;
+  var uploading = false;
 
   function stop() {
     stopped = true;
@@ -395,6 +539,7 @@
     askBtn.disabled = true;
     openBtn.disabled = true;
     refreshBtn.disabled = true;
+    if (uploadBtn) uploadBtn.disabled = true;
   }
 
   // true: запросов больше не будет.
@@ -586,6 +731,120 @@
     else manual();
   }
 
+  function say(text) {
+    folderMsg.hidden = !text;
+    folderMsg.textContent = text;
+  }
+
+  // Загрузка со страницы: файлы по одному, имя в заголовке X-File-Name, тело файла как есть. Сервер кладёт их
+  // в input/analiz и не перезаписывает файл с тем же именем. После загрузки паспорт перечитывается сам.
+  function upload(files) {
+    if (stopped || uploading || !files) return;
+    var list = [];
+    for (var i = 0; i < files.length; i++) list.push(files[i]);
+    if (!list.length) return;
+    uploading = true;
+    if (uploadBtn) uploadBtn.disabled = true;
+    var saved = [];
+    var notes = [];
+    var chain = Promise.resolve();
+    list.forEach(function (f, i) {
+      chain = chain.then(function () {
+        if (stopped) return;
+        var name = String(f.name || '');
+        if (!UPLOAD_EXT.test(name)) {
+          notes.push('Файл «' + name + '» не загружен: подходят Excel (.xlsx, .xlsm) и CSV (.csv, .txt).');
+          return;
+        }
+        if (f.size > UPLOAD_MAX) {
+          notes.push('Файл «' + name + '» не загружен: он больше 50 МБ.');
+          return;
+        }
+        say('Загружаю ' + (list.length > 1 ? (i + 1) + ' из ' + list.length + ': ' : '') + name + '…');
+        return fetch('api/analiz/upload', {
+          method: 'POST',
+          headers: { 'X-Cabinet': '1', 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(name) },
+          body: f,
+        })
+          .then(function (r) {
+            return r.json().catch(function () { return {}; }).then(function (j) {
+              var data = j && typeof j === 'object' ? j : {};
+              if (r.status === 403 && !data.error) throw new Error('403');
+              fails = 0;
+              if (r.status === 200 && data.file) {
+                saved.push(data.file);
+                if (data.renamed) notes.push('Файл «' + name + '» уже был в папке, новый сохранён как «' + data.file + '».');
+              } else {
+                notes.push(r.status === 404 ? OLD_SERVER : data.error || 'Файл «' + name + '» не загрузился.');
+              }
+            });
+          })
+          .catch(function () {
+            if (failed()) return;
+            notes.push('Файл «' + name + '» не загрузился. ' + OFFLINE);
+          });
+      });
+    });
+    return chain.then(function () {
+      uploading = false;
+      if (uploadBtn) uploadBtn.disabled = stopped;
+      if (stopped) return;
+      say((saved.length ? 'Загружено: ' + saved.join(', ') + '. ' : '') + notes.join(' '));
+      if (!saved.length) return;
+      passportBox.innerHTML = '<p class="loading">Смотрю файлы…</p>';
+      return loadPassport();
+    });
+  }
+
+  if (uploadBtn && fileInput) {
+    uploadBtn.addEventListener('click', function () {
+      if (!stopped && !uploading && fileInput.click) fileInput.click();
+    });
+    fileInput.addEventListener('change', function () {
+      var picked = fileInput.files;
+      var p = upload(picked);
+      fileInput.value = '';
+      return p;
+    });
+  }
+
+  // Перетаскивание: файлы можно бросить на блок «Ваши данные» (он подсвечивается) и в любое место страницы:
+  // иначе браузер открыл бы файл вместо страницы.
+  var dragDepth = 0;
+  function hasFiles(e) {
+    var types = e && e.dataTransfer && e.dataTransfer.types;
+    if (!types) return false;
+    for (var i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
+    return false;
+  }
+  function highlight(on) {
+    if (dataCard && dataCard.classList) dataCard.classList[on ? 'add' : 'remove']('dragover');
+  }
+  window.addEventListener('dragenter', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth += 1;
+    if (!stopped) highlight(true);
+  });
+  window.addEventListener('dragover', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = stopped ? 'none' : 'copy';
+  });
+  window.addEventListener('dragleave', function (e) {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) highlight(false);
+  });
+  window.addEventListener('drop', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    highlight(false);
+    if (dataCard && dataCard.scrollIntoView) dataCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return upload(e.dataTransfer.files);
+  });
+
   form.addEventListener('submit', ask);
   // Ctrl+Enter (Cmd+Enter на Mac) в поле вопроса: спросить.
   input.addEventListener('keydown', function (e) {
@@ -660,6 +919,64 @@
 })();
 </script>
 <script>
+// Меню слева: «Мои сервисы» из процессов кабинета (api/processes) и встроенных проектов (api/services, если такой
+// адрес есть), как на главной; ссылки ведут на главную с подробным видом (./#p=<slug>, ./#s=<slug>). Список
+// перечитывается при возврате на вкладку; после неудачи с процессами больше не спрашивает (страница остановлена,
+// ответ даёт основной скрипт). На узком экране кнопка «Меню» раскрывает список.
+(function () {
+  'use strict';
+  var R = window.CabinetRender;
+  var mine = document.getElementById('nav-mine');
+  var navList = document.getElementById('nav-list');
+  var side = document.getElementById('side');
+  var button = document.getElementById('nav-toggle');
+  if (side && button && typeof button.addEventListener === 'function') {
+    button.addEventListener('click', function () {
+      var open = button.getAttribute('aria-expanded') !== 'true';
+      side.className = open ? 'side open' : 'side';
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+  // render.js старой версии (кабинет до меню): раздела «Мои сервисы» нет, остальное меню работает.
+  if (!R || typeof R.renderNav !== 'function' || typeof R.servicesFrom !== 'function' || !mine || !navList) return;
+  var dead = false;
+  var servicesOff = false;
+  var shown = '';
+  function services() {
+    if (servicesOff) return Promise.resolve([]);
+    return fetch('api/services', { cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 404) servicesOff = true;
+        return r.ok ? r.json().then(R.servicesFrom, function () { return []; }) : [];
+      })
+      .catch(function () { return []; });
+  }
+  function load() {
+    if (dead || document.visibilityState === 'hidden') return;
+    var processes = fetch('api/processes', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    });
+    return Promise.all([processes, services()])
+      .then(function (both) {
+        if (!Array.isArray(both[0])) throw new Error('не список');
+        var list = both[0].concat(both[1]);
+        var html = R.renderNav(list, null, './');
+        if (html !== shown) {
+          shown = html;
+          navList.innerHTML = html;
+        }
+        mine.hidden = !list.length;
+      })
+      .catch(function () {
+        dead = true;
+      });
+  }
+  window.addEventListener('focus', load);
+  load();
+})();
+</script>
+<script>
 // Логотип и название компании из папки бренда (tools/brand.mjs), как на главной странице кабинета.
 (function () {
   'use strict';
@@ -667,7 +984,7 @@
   var logo = document.getElementById('brand-logo');
   var nameBox = document.getElementById('brand-name');
   if (!top || !logo || !nameBox || typeof logo.addEventListener !== 'function') return;
-  var TITLE = 'Спроси таблицу';
+  var TITLE = 'Аналитик таблиц';
   var sources = ['brand/logo.svg', 'brand/logo.png'];
   var state = { name: '', logo: false };
 

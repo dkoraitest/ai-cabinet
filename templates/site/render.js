@@ -1,5 +1,6 @@
-// Карточки процессов для страницы «Мой кабинет». Чистые функции: данные процесса на входе, HTML-строка на выходе.
-// Страница подключает файл обычным <script src="render.js"> и получает window.CabinetRender.
+// Страница «Мой кабинет»: сетка карточек сервисов, подробный вид процесса или встроенного проекта и пункты меню
+// «Мои сервисы». Чистые функции: данные на входе, HTML-строка на выходе. Страница подключает файл обычным
+// <script src="render.js"> и получает window.CabinetRender; страница «Аналитик таблиц» берёт отсюда пункты меню.
 (function (global) {
   'use strict';
 
@@ -30,13 +31,34 @@
     return v == null ? '' : String(v);
   }
 
-  // Ссылка на файл результата: только output/<slug>/..., каждая часть пути кодируется.
-  function fileHref(path, slug) {
+  // Карточки из двух источников: процессы кабинета (api/processes) и встроенные проекты сервисов (api/services,
+  // у них source: 'service'). Ключ карточки и адрес подробного вида у источников свои: '#p=<slug>' и '#s=<slug>'.
+  function isService(p) {
+    return Boolean(p) && p.source === 'service';
+  }
+
+  function itemKey(p) {
+    return (isService(p) ? 's:' : 'p:') + p.slug;
+  }
+
+  function titleOf(p) {
+    var t = p.title != null && p.title !== '' ? p.title : p.name;
+    return t != null && t !== '' ? t : p.slug;
+  }
+
+  // Ссылка на файл результата, каждая часть пути кодируется. Процесс: только output/<slug>/... кабинета.
+  // Встроенный проект: только output/... своего проекта, страница отдаёт их по адресу s/<slug>/output/...
+  function fileHref(path, p) {
     var parts = String(path).replace(/\\/g, '/').split('/');
-    if (parts.length < 3 || parts[0] !== 'output' || parts[1] !== slug) return null;
+    var slug = p.slug;
     for (var i = 0; i < parts.length; i++) {
       if (parts[i] === '' || parts[i] === '.' || parts[i] === '..' || parts[i].indexOf(':') !== -1) return null;
     }
+    if (isService(p)) {
+      if (parts.length < 2 || parts[0] !== 'output') return null;
+      return ['s', slug].concat(parts).map(encodeURIComponent).join('/');
+    }
+    if (parts.length < 3 || parts[0] !== 'output' || parts[1] !== slug) return null;
     return parts.map(encodeURIComponent).join('/');
   }
 
@@ -61,9 +83,9 @@
     return '<div class="table-wrap"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
-  function renderFiles(r, slug) {
+  function renderFiles(r, p) {
     var links = (Array.isArray(r.files) ? r.files : []).map(function (f) {
-      var href = fileHref(f, slug);
+      var href = fileHref(f, p);
       if (!href) return '';
       var name = String(f).replace(/\\/g, '/').split('/').pop();
       return '<a href="' + esc(href) + '" download>' + esc(name) + '</a>';
@@ -71,24 +93,42 @@
     return links.length ? '<p class="files">Файлы: ' + links.join(', ') + '</p>' : '';
   }
 
-  // Кнопка «Запустить» (kind script) или подсказка с фразой (kind claude): в шапке карточки, над таблицей.
+  // Кнопка «Запустить»: процесс kind script (data-run) или встроенный проект с программой (kind run или поле run,
+  // data-run-service). Пока идёт расчёт, кнопка неактивна.
+  function canRun(p) {
+    if (isService(p)) return p.kind === 'run' || Boolean(p.run);
+    return p.kind === 'script';
+  }
+
+  function runButton(p) {
+    var attr = (isService(p) ? 'data-run-service="' : 'data-run="') + esc(p.slug) + '"';
+    return p.running
+      ? '<button type="button" class="run" ' + attr + ' disabled>идёт расчёт…</button>'
+      : '<button type="button" class="run" ' + attr + '>Запустить</button>';
+  }
+
+  // Своя страница встроенного проекта (kind page): s/<slug>/, ссылка относительная.
+  function openLink(p, cls) {
+    if (!isService(p) || p.kind !== 'page') return '';
+    return '<a class="' + cls + '" href="s/' + esc(encodeURIComponent(p.slug)) + '/">Открыть</a>';
+  }
+
+  // В шапке подробной карточки: «Запустить», «Открыть» или подсказка с фразой (процесс kind claude).
   function renderActions(p) {
-    if (p.kind === 'script') {
-      return '<div class="actions">' + (p.running
-        ? '<button type="button" class="run" data-run="' + esc(p.slug) + '" disabled>идёт расчёт…</button>'
-        : '<button type="button" class="run" data-run="' + esc(p.slug) + '">Запустить</button>') + '</div>';
-    }
-    if (p.kind === 'claude') {
+    var html = (canRun(p) ? runButton(p) : '') + openLink(p, 'btn open');
+    if (html) return '<div class="actions">' + html + '</div>';
+    if (!isService(p) && p.kind === 'claude') {
       return '<div class="actions"><p class="hint">Запуск фразой в Claude: «' + esc(p.phrase) + '»</p></div>';
     }
     return '';
   }
 
-  // p: { slug, title, phrase, kind, result, error, running } из api/processes.
+  // p: { slug, title, phrase, kind, result, error, running } из api/processes или
+  // { source: 'service', slug, name, kind, result, error, running } из api/services.
   // ui.message: короткий текст об ошибке запуска с этой страницы.
   function renderCard(p, ui) {
     var r = p.result;
-    var html = '<article class="card" data-slug="' + esc(p.slug) + '"><div class="card-head"><div class="card-title"><h2>' + esc(p.title) + '</h2>';
+    var html = '<article class="card" data-slug="' + esc(p.slug) + '"><div class="card-head"><div class="card-title"><h2>' + esc(titleOf(p)) + '</h2>';
     if (r && STATUS_LABEL.hasOwnProperty(r.status)) {
       html += '<span class="badge badge-' + r.status + '">' + STATUS_LABEL[r.status] + '</span>';
     }
@@ -97,23 +137,135 @@
     if (r) {
       html += '<p class="updated">обновлено ' + esc(formatTime(r.updated_at)) + '</p>';
       if (r.summary) html += '<p class="summary">' + esc(r.summary) + '</p>';
-      html += renderTable(r) + renderFiles(r, p.slug);
+      html += renderTable(r) + renderFiles(r, p);
     } else if (!p.error) {
-      html += '<p class="updated">ещё не запускался</p>';
+      html += '<p class="updated">' + (isService(p) && !canRun(p) ? 'результата пока нет' : 'ещё не запускался') + '</p>';
     }
     if (p.error) html += '<p class="error">Ошибка: ' + esc(p.error) + '</p>';
     return html + '</article>';
   }
 
-  // messages: { slug: текст } для карточек, где запуск не удался.
-  function renderPage(list, messages) {
-    if (!list || !list.length) {
-      return '';  // своих сервисов пока нет: на странице только «Спроси таблицу» (решение Дмитрия 29.10)
+  // ---------- сетка сервисов и меню ----------
+
+  // Подробный вид открывается хешем в адресе (#p=<slug> процесс, #s=<slug> встроенный проект), без перезагрузки.
+  // Адрес страницы содержит секретную часть, поэтому ссылки только относительные: base '' на главной,
+  // './' на других страницах.
+  function detailHref(p, base) {
+    return (base || '') + (isService(p) ? '#s=' : '#p=') + encodeURIComponent(p.slug);
+  }
+
+  // '#p=svetofor-dogovorov' → 'p:svetofor-dogovorov', '#s=svodka' → 's:svodka'; другой хеш → null.
+  function keyFromHash(hash) {
+    var h = String(hash == null ? '' : hash);
+    var m = /^#([ps])=(.+)$/.exec(h);
+    if (!m) return null;
+    try {
+      return m[1] + ':' + decodeURIComponent(m[2]);
+    } catch (e) {
+      return null;
     }
-    return list.map(function (p) {
-      return renderCard(p, { message: messages && messages[p.slug] });
+  }
+
+  function findItem(list, key) {
+    if (!Array.isArray(list) || key == null) return null;
+    for (var i = 0; i < list.length; i++) if (list[i] && itemKey(list[i]) === key) return list[i];
+    return null;
+  }
+
+  function statusOf(p) {
+    var r = p && p.result;
+    return r && STATUS_LABEL.hasOwnProperty(r.status) ? r.status : null;
+  }
+
+  var ICON_TABLE = '<svg width="24" height="24" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="20" height="18" rx="3"/><path d="M3 10h20M10 10v12"/><path d="M14.5 18.5v-3M17.5 18.5v-5M20.5 18.5v-2"/></svg>';
+  var ICON_PROCESS = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.5"/><circle cx="4.5" cy="12" r="1.5"/><circle cx="4.5" cy="18" r="1.5"/></svg>';
+  var ICON_PAGE = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><circle cx="6.5" cy="6.5" r="0.6"/><path d="M8 14h8M8 17h5"/></svg>';
+
+  // Карточка сервиса «Аналитик таблиц» (страница analiz.html): в сетке всегда первая.
+  function renderServiceTile() {
+    return '<a class="tile tile-service" href="analiz.html">' +
+      '<span class="tile-top"><span class="tile-icon" aria-hidden="true">' + ICON_TABLE + '</span></span>' +
+      '<span class="tile-title">Аналитик таблиц</span>' +
+      '<span class="tile-desc">Вопрос своим таблицам словами, строки не уходят с компьютера</span>' +
+      '<span class="tile-actions"><span class="btn">Открыть</span></span></a>';
+  }
+
+  // Компактная карточка процесса или встроенного проекта: название, статус цветом, время запуска, итог в две
+  // строки (без итога: описание проекта), «Запустить», «Открыть» (своя страница) и «Подробнее».
+  function renderTile(p, ui) {
+    var r = p.result;
+    var st = statusOf(p);
+    var href = esc(detailHref(p));
+    var page = isService(p) && p.kind === 'page';
+    var html = '<article class="tile" data-slug="' + esc(p.slug) + '"' + (isService(p) ? ' data-source="service"' : '') + '><div class="tile-top">' +
+      '<span class="tile-icon tile-icon-' + (st || 'none') + '" aria-hidden="true">' + (page ? ICON_PAGE : ICON_PROCESS) + '</span>';
+    if (st) html += '<span class="badge badge-' + st + '">' + STATUS_LABEL[st] + '</span>';
+    html += '</div><h2 class="tile-title"><a href="' + href + '">' + esc(titleOf(p)) + '</a></h2>';
+    if (r) html += '<p class="tile-when">обновлено ' + esc(formatTime(r.updated_at)) + '</p>';
+    else if (!p.error && canRun(p)) html += '<p class="tile-when">ещё не запускался</p>';
+    if (r && r.summary) html += '<p class="tile-sum" title="' + esc(r.summary) + '">' + esc(r.summary) + '</p>';
+    else if (isService(p) && p.about) html += '<p class="tile-sum tile-about">' + esc(p.about) + '</p>';
+    if (p.error) html += '<p class="tile-error">Ошибка: ' + esc(p.error) + '</p>';
+    if (ui && ui.message) html += '<p class="run-error tile-msg" role="alert">' + esc(ui.message) + '</p>';
+    html += '<div class="tile-actions">' + (canRun(p) ? runButton(p) : '') + openLink(p, 'btn open');
+    if (!isService(p) && p.kind === 'claude') html += '<p class="hint tile-hint">Запуск фразой в Claude: «' + esc(p.phrase) + '»</p>';
+    return html + '<a class="btn more" href="' + href + '">Подробнее</a></div></article>';
+  }
+
+  // Пункты меню «Мои сервисы»: название и цветная точка статуса (идёт расчёт: точка цвета компании).
+  // activeKey: ключ карточки, открытой справа ('p:<slug>' или 's:<slug>'); base: '' на главной, './' на других.
+  function renderNav(list, activeKey, base) {
+    return (Array.isArray(list) ? list : []).map(function (p) {
+      var st = p.running ? 'run' : statusOf(p);
+      var label = p.running ? 'идёт расчёт' : st ? STATUS_LABEL[st] : 'ещё нет результата';
+      return '<a class="nav-item" href="' + esc(detailHref(p, base)) + '"' + (itemKey(p) === activeKey ? ' aria-current="page"' : '') + '>' +
+        '<span class="dot dot-' + (st || 'none') + '" aria-hidden="true"></span>' +
+        '<span class="nav-label">' + esc(titleOf(p)) + '<span class="sr-only">, ' + label + '</span></span></a>';
     }).join('');
   }
 
-  global.CabinetRender = { renderCard: renderCard, renderPage: renderPage, formatTime: formatTime };
+  // Список встроенных проектов из api/services (список или объект со списком services/items) с пометкой
+  // source: 'service'; записи без строки slug пропускаются.
+  function servicesFrom(data) {
+    var list = Array.isArray(data) ? data : data && typeof data === 'object' ? data.services || data.items : null;
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (!s || typeof s !== 'object' || typeof s.slug !== 'string' || !s.slug) continue;
+      var copy = {};
+      for (var k in s) if (Object.prototype.hasOwnProperty.call(s, k)) copy[k] = s[k];
+      copy.source = 'service';
+      out.push(copy);
+    }
+    return out;
+  }
+
+  // Правая часть главной. view.key: карточка из адреса ('p:<slug>', 's:<slug>') → её подробный вид со ссылкой
+  // «← Все сервисы»; иначе сетка: «Аналитик таблиц», процессы и встроенные проекты. Своих сервисов нет: в сетке
+  // только «Аналитик таблиц» (без подсказки, решение Дмитрия 29.10). messages: { ключ: текст } для карточек, где
+  // запуск не удался.
+  function renderPage(list, messages, view) {
+    var items = Array.isArray(list) ? list : [];
+    var open = findItem(items, view && view.key);
+    if (open) {
+      return '<div class="detail"><p class="crumbs"><a class="back" href="#">← Все сервисы</a></p>' +
+        renderCard(open, { message: messages && messages[itemKey(open)] }) + '</div>';
+    }
+    return '<div class="grid">' + renderServiceTile() + items.map(function (p) {
+      return renderTile(p, { message: messages && messages[itemKey(p)] });
+    }).join('') + '</div>';
+  }
+
+  global.CabinetRender = {
+    renderCard: renderCard,
+    renderTile: renderTile,
+    renderNav: renderNav,
+    renderPage: renderPage,
+    formatTime: formatTime,
+    keyFromHash: keyFromHash,
+    itemKey: itemKey,
+    findItem: findItem,
+    servicesFrom: servicesFrom,
+  };
 })(window);
