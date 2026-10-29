@@ -1386,7 +1386,7 @@ export function compareProcess(root, slug) {
 // ---------- свои скиллы человека ----------
 
 // Скиллы курса: их кабинет привозит сам, «своими» они не считаются.
-export const COURSE_SKILLS = ['about-me', 'setup-check', 'update-cabinet', 'add-process', 'run-process', 'demo-process'];
+export const COURSE_SKILLS = ['about-me', 'setup-check', 'update-cabinet', 'add-process', 'run-process', 'demo-process', 'find-process'];
 
 // Список своих скиллов из .claude/skills для операции «добавить процесс». Командой курса, без окна:
 // ls или find с папкой .claude спрашивают окно разрешения, а поиска файлов без команды может не быть.
