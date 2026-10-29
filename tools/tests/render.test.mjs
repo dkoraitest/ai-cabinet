@@ -150,8 +150,8 @@ test('текст из данных экранируется, ссылки тол
   assert.doesNotMatch(run, /<script>/);
 });
 
-test('renderPage: пустое состояние и список карточек', () => {
-  assert.match(renderPage([]), /Процессов пока нет\. Скажите Claude «добавь процесс»/);
+test('renderPage: без процессов пусто (без подсказки), список карточек', () => {
+  assert.equal(renderPage([]), '');
   const two = renderPage([demo, { ...demo, slug: 'vtoroi', title: 'Второй' }], { vtoroi: 'ошибка второго' });
   assert.equal((two.match(/<article/g) ?? []).length, 2);
   assert.match(two, /ошибка второго/);

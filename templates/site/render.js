@@ -108,7 +108,7 @@
   // messages: { slug: текст } для карточек, где запуск не удался.
   function renderPage(list, messages) {
     if (!list || !list.length) {
-      return '<p class="empty">Процессов пока нет. Скажите Claude «добавь процесс»</p>';
+      return '';  // своих сервисов пока нет: на странице только «Спроси таблицу» (решение Дмитрия 29.10)
     }
     return list.map(function (p) {
       return renderCard(p, { message: messages && messages[p.slug] });
