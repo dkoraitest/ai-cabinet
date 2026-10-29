@@ -216,6 +216,19 @@ function plural(n, one, few, many) {
 // Служебные файлы систем и программ: не рабочие файлы человека (.gitkeep, .DS_Store, блокировки Excel).
 const isJunk = (name) => name.startsWith('.') || name.startsWith('~$') || /^(desktop\.ini|thumbs\.db)$/i.test(name);
 
+// Настройки кабинета (сторож, разрешения, модель) Claude Code берёт из папки, где открыт разговор, и только
+// при его начале. Разговор, где кабинет поставили по ссылке, открыт в другой папке и работает без них.
+// Метку AI_CABINET ставит .claude/settings.json; проверяем её, только когда проверку запустил Claude.
+export function checkSession(env) {
+  if (env.CLAUDECODE !== '1') return null;
+  if (env.AI_CABINET === '1') return ok('session', 'Разговор открыт в папке кабинета');
+  return fail(
+    'session',
+    'Разговор открыт не в папке кабинета: правила и настройки кабинета не действуют',
+    'начните новый разговор в папке ai-cabinet и скажите «начнём»',
+  );
+}
+
 async function checkInput(cwd) {
   const dir = join(cwd, 'input');
   let names;
@@ -307,10 +320,13 @@ export async function runChecks({
   exec = defaultExec,
   platform = process.platform,
   nodeVersion = process.version,
+  env = process.env,
 } = {}) {
   cwd = resolve(cwd);
   const py = await detectPython(exec, platform);
+  const session = checkSession(env);
   const results = [
+    ...(session ? [session] : []),
     checkNode(nodeVersion),
     await checkGit(exec),
     pythonResult(py),

@@ -590,6 +590,7 @@ test('settings.json: сторож без оболочки (exec) на Bash, Powe
   assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
   assert.ok(s.permissions.allow.includes('Bash(py tools/read_table.py*)'), 'нужно разрешение Bash(py tools/read_table.py*)');
   assert.ok(s.permissions.allow.includes('Bash(python3 tools/read_table.py*)'), 'нужно разрешение Bash(python3 tools/read_table.py*)');
+  assert.equal(s.env?.AI_CABINET, '1', 'нужна метка env.AI_CABINET: по ней проверка сетапа видит разговор в папке кабинета');
 });
 
 // Встроенные команды в скиллах: !`команда` и блок ```! выполняются при запуске скилла без вопроса.
