@@ -239,12 +239,12 @@ export function createProcessApi(root, { python, timeoutMs } = {}) {
 }
 
 // Файлы результатов, которые страница отдаёт на скачивание: output/<slug>/ процесса и файлы Excel сервиса
-// «Аналитик таблиц» прямо в output/analiz/ (история и прочее оттуда не отдаются).
+// «Аналитика таблиц» прямо в output/analiz/ (история и прочее оттуда не отдаются).
 const outputAllowed = (root) => (slug, parts) =>
   hasProcess(root, slug) || (slug === ANALIZ && parts.length === 1 && EXCEL_NAME_RE.test(parts[0]));
 
 // Страница кабинета целиком: site/ (с ней и страница сервиса analiz.html), API процессов и сервиса
-// «Аналитик таблиц» (api/analiz/...), файлы результатов из output/ и бренд.
+// «Аналитика таблиц» (api/analiz/...), файлы результатов из output/ и бренд.
 // Папка бренда ищется при каждом запросе: её можно положить, не перезапуская страницу.
 // analiz: параметры API сервиса для тестов (tools/analiz-api.mjs).
 export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {} } = {}) {

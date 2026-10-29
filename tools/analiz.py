@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""«Аналитик таблиц»: ответы на вопросы к своим таблицам. Считает программа на этом компьютере,
+"""«Аналитика таблиц»: ответы на вопросы к своим таблицам. Считает программа на этом компьютере,
 строки файлов в модель не уходят никогда.
 
     python tools/analiz.py passport [--dir input/analiz] [--text]   паспорт данных: файлы, листы, столбцы
@@ -12,7 +12,7 @@
 Читает только таблицы из input/analiz/ (xlsx, csv, txt; через read_table.py), пишет только в output/analiz/
 (история history.json и файлы Excel). Исключение одно: demo кладёт копию учебной выгрузки в input/analiz/,
 если такой копии там ещё нет, и чужие файлы не перезаписывает. В модель (только ask, только через llm.py
-с проверкой данных) уходят паспорт и вопрос. Запрос JSON описан в плане «Аналитик таблиц»: table, sheet,
+с проверкой данных) уходят паспорт и вопрос. Запрос JSON описан в плане «Аналитика таблиц»: table, sheet,
 filters, group_by, measures, compare, join, sort, limit.
 
 Вывод для программ: JSON в stdout. Ошибка: одна строка по-русски в stderr и {"error": ...} в stdout.
@@ -329,7 +329,7 @@ def input_dir(root, sub=None):
     p = Path(sub)
     p = (p if p.is_absolute() else root / p).resolve()
     if p != base and base not in p.parents:
-        raise Stop(f"Таблицы для «Аналитик таблиц» читаются только из папки input/analiz, а не из «{sub}».")
+        raise Stop(f"Таблицы для «Аналитика таблиц» читаются только из папки input/analiz, а не из «{sub}».")
     return p
 
 
@@ -1232,7 +1232,7 @@ def for_chat(entry):
         rows = [[("скрыто" if i in idx and v is not None else v) for i, v in enumerate(r)] for r in rows]
         e["notes"] = e["notes"] + [
             "Значения «" + "», «".join(sorted(hidden)) + "» здесь скрыты: похожи на персональные данные. "
-            "Полный ответ на странице «Аналитик таблиц»."]
+            "Полный ответ на странице «Аналитика таблиц»."]
     e["rows"] = rows
     e["rows_shown"] = len(rows)
     e["rows_in_history"] = len(entry["rows"])
@@ -1248,7 +1248,7 @@ def text_answer(e):
     for r in e["rows"]:
         out.append(" | ".join(fmt_cell(v) for v in r))
     if e["rows_in_history"] < e["total_rows"] or e["rows_shown"] < e["rows_in_history"]:
-        out.append(f"... строк в ответе {e['total_rows']}, на странице «Аналитик таблиц» до {MAX_LIMIT}.")
+        out.append(f"... строк в ответе {e['total_rows']}, на странице «Аналитика таблиц» до {MAX_LIMIT}.")
     for n in e["notes"]:
         out.append(f"Заметка: {n}")
     out.append(f"Ответ {e['id']} записан в историю.")
@@ -1355,7 +1355,7 @@ def make_excel(root, qid):
 
 # ---------- вопрос словами ----------
 
-PROMPT = """Ты помогаешь программе «Аналитик таблиц». Человек задал вопрос о своих таблицах. Переведи его в запрос JSON, по которому программа сама посчитает ответ на компьютере человека.
+PROMPT = """Ты помогаешь программе «Аналитика таблиц». Человек задал вопрос о своих таблицах. Переведи его в запрос JSON, по которому программа сама посчитает ответ на компьютере человека.
 Ты видишь только паспорт данных: файлы, листы, столбцы, их типы, диапазоны и значения коротких справочников. Строк таблиц ты не видишь и ничего не выдумываешь.
 
 Ответь одним объектом JSON, без пояснений вокруг. Поля запроса:
@@ -1557,7 +1557,7 @@ def main(argv=None, root=None):
             emit(read_history(output_dir(root))[:max(0, a.limit)])
         elif a.cmd == "demo":
             e, name = demo(root)
-            print("Готово: пример ответа на странице «Аналитик таблиц».")
+            print("Готово: пример ответа на странице «Аналитика таблиц».")
             print(e["summary"])
         else:
             raise Stop("Не понял команду. Так: python tools/analiz.py passport | run <запрос.json> | "

@@ -1,4 +1,4 @@
-// API сервиса «Аналитик таблиц» (tools/analiz-api.mjs) через сервер кабинета. Движок tools/analiz.py подменён:
+// API сервиса «Аналитика таблиц» (tools/analiz-api.mjs) через сервер кабинета. Движок tools/analiz.py подменён:
 // во временном кабинете (путь с кириллицей и пробелом) лежит маленькая программа на Python, она отвечает по
 // контракту и записывает, с какими аргументами её позвали. Python настоящий, как у кнопки «Запустить».
 import test, { after, before } from 'node:test';
@@ -333,7 +333,7 @@ test('страница сервиса и её скрипт отдаются по
   const page = await get(`${T}/analiz.html`, {});
   assert.equal(page.status, 200);
   assert.match(page.headers['content-type'], /^text\/html/);
-  assert.match(page.body, /<h1>Аналитик таблиц<\/h1>/);
+  assert.match(page.body, /<h1>Аналитика таблиц<\/h1>/);
   const js = await get(`${T}/analiz.js`, {});
   assert.equal(js.status, 200);
   assert.match(js.headers['content-type'], /^text\/javascript/);

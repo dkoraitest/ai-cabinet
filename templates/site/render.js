@@ -1,6 +1,6 @@
 // Страница «Мой кабинет»: сетка карточек сервисов, подробный вид процесса или встроенного проекта и пункты меню
 // «Мои сервисы». Чистые функции: данные на входе, HTML-строка на выходе. Страница подключает файл обычным
-// <script src="render.js"> и получает window.CabinetRender; страница «Аналитик таблиц» берёт отсюда пункты меню.
+// <script src="render.js"> и получает window.CabinetRender; страница «Аналитика таблиц» берёт отсюда пункты меню.
 (function (global) {
   'use strict';
 
@@ -181,11 +181,11 @@
   var ICON_PROCESS = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.5"/><circle cx="4.5" cy="12" r="1.5"/><circle cx="4.5" cy="18" r="1.5"/></svg>';
   var ICON_PAGE = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><circle cx="6.5" cy="6.5" r="0.6"/><path d="M8 14h8M8 17h5"/></svg>';
 
-  // Карточка сервиса «Аналитик таблиц» (страница analiz.html): в сетке всегда первая.
+  // Карточка сервиса «Аналитика таблиц» (страница analiz.html): в сетке всегда первая.
   function renderServiceTile() {
     return '<a class="tile tile-service" href="analiz.html">' +
       '<span class="tile-top"><span class="tile-icon" aria-hidden="true">' + ICON_TABLE + '</span></span>' +
-      '<span class="tile-title">Аналитик таблиц</span>' +
+      '<span class="tile-title">Аналитика таблиц</span>' +
       '<span class="tile-desc">Вопрос своим таблицам словами, строки не уходят с компьютера</span>' +
       '<span class="tile-actions"><span class="btn">Открыть</span></span></a>';
   }
@@ -242,8 +242,8 @@
   }
 
   // Правая часть главной. view.key: карточка из адреса ('p:<slug>', 's:<slug>') → её подробный вид со ссылкой
-  // «← Все сервисы»; иначе сетка: «Аналитик таблиц», процессы и встроенные проекты. Своих сервисов нет: в сетке
-  // только «Аналитик таблиц» (без подсказки, решение Дмитрия 29.10). messages: { ключ: текст } для карточек, где
+  // «← Все сервисы»; иначе сетка: «Аналитика таблиц», процессы и встроенные проекты. Своих сервисов нет: в сетке
+  // только «Аналитика таблиц» (без подсказки, решение Дмитрия 29.10). messages: { ключ: текст } для карточек, где
   // запуск не удался.
   function renderPage(list, messages, view) {
     var items = Array.isArray(list) ? list : [];

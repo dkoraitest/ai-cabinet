@@ -150,17 +150,17 @@ test('текст из данных экранируется, ссылки тол
   assert.doesNotMatch(run, /<script>/);
 });
 
-test('renderPage: сетка, первая карточка «Аналитик таблиц»; без процессов только она, без подсказки', () => {
+test('renderPage: сетка, первая карточка «Аналитика таблиц»; без процессов только она, без подсказки', () => {
   for (const empty of [[], null, undefined]) {
     const html = renderPage(empty);
     assert.match(html, /^<div class="grid"><a class="tile tile-service" href="analiz\.html">/);
-    assert.match(html, /<span class="tile-title">Аналитик таблиц<\/span>/);
+    assert.match(html, /<span class="tile-title">Аналитика таблиц<\/span>/);
     assert.match(html, /<span class="tile-desc">Вопрос своим таблицам словами, строки не уходят с компьютера<\/span>/);
     assert.match(html, /<span class="btn">Открыть<\/span>/);
     assert.doesNotMatch(html, /<article|Процессов пока нет|добавь процесс/);
   }
   const two = renderPage([demo, { ...demo, slug: 'vtoroi', title: 'Второй' }], { 'p:vtoroi': 'ошибка второго' });
-  assert.ok(two.indexOf('tile-service') < two.indexOf('<article'), '«Аналитик таблиц» первой');
+  assert.ok(two.indexOf('tile-service') < two.indexOf('<article'), '«Аналитика таблиц» первой');
   assert.equal((two.match(/<article class="tile"/g) ?? []).length, 2);
   assert.match(two, /<article class="tile" data-slug="vtoroi">[\s\S]*class="run-error tile-msg" role="alert">ошибка второго</);
   // В сетке таблицы нет: она в подробном виде.
@@ -247,10 +247,10 @@ test('страница: маркер, заголовок, render.js по отн�
   assert.match(html, /<title>Мой кабинет<\/title>/);
   assert.match(html, /<h1>Мой кабинет<\/h1>/);
   assert.match(html, /<script src="render\.js"><\/script>/);
-  // Каркас: меню слева (все сервисы, «Аналитик таблиц», «Мои сервисы», как добавить сервис), справа сервисы.
+  // Каркас: меню слева (все сервисы, «Аналитика таблиц», «Мои сервисы», как добавить сервис), справа сервисы.
   assert.match(html, /<nav class="side" id="side" aria-label="Меню кабинета">/);
   assert.match(html, /<a class="nav-item" id="nav-all" href="#" aria-current="page">[\s\S]*?Все сервисы<\/span><\/a>/);
-  assert.match(html, /<a class="nav-item" href="analiz\.html">[\s\S]*?Аналитик таблиц<\/span><\/a>/);
+  assert.match(html, /<a class="nav-item" href="analiz\.html">[\s\S]*?Аналитика таблиц<\/span><\/a>/);
   assert.match(html, /<div class="nav-group" id="nav-mine" hidden>\s*<p class="nav-title">Мои сервисы<\/p>\s*<div id="nav-list"><\/div>/);
   assert.match(html, /<details class="nav-help">[\s\S]*Как добавить сервис[\s\S]*Откройте Claude во вкладке <b>Code<\/b> в новой папке и скажите <b>«новый сервис»<\/b>: Claude создаст проект\. Когда сервис готов, скажите <b>«добавь в кабинет»<\/b>\./);
   for (const needle of ["fetch('api/services'", "fetch('api/services/run'", 'JSON.stringify({ slug: slug })', 'button[data-run-service]']) assert.ok(html.includes(needle), needle);

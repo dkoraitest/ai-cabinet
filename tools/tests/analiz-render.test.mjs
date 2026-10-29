@@ -1,4 +1,4 @@
-// Страница сервиса «Аналитик таблиц»: analiz.js (паспорт, ответы, график SVG) в песочнице, как render.js,
+// Страница сервиса «Аналитика таблиц»: analiz.js (паспорт, ответы, график SVG) в песочнице, как render.js,
 // разметка analiz.html и карточка-ссылка на главной странице.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -301,15 +301,15 @@ test('проверка ПД (код 4): причина от движка и по
 
 test('analiz.html: заголовок, бренд как на главной, ссылка на кабинет, только относительные ссылки, без интернета', () => {
   assert.match(PAGE, /data-cabinet="ok"/);
-  assert.match(PAGE, /<title>Аналитик таблиц<\/title>/);
-  assert.match(PAGE, /<h1>Аналитик таблиц<\/h1>/);
-  // Каркас как на главной: меню слева, пункт «Аналитик таблиц» подсвечен, «Все сервисы» ведёт на главную.
+  assert.match(PAGE, /<title>Аналитика таблиц<\/title>/);
+  assert.match(PAGE, /<h1>Аналитика таблиц<\/h1>/);
+  // Каркас как на главной: меню слева, пункт «Аналитика таблиц» подсвечен, «Все сервисы» ведёт на главную.
   assert.match(PAGE, /<nav class="side" id="side" aria-label="Меню кабинета">/);
   assert.match(PAGE, /<a class="nav-item" id="nav-all" href="\.\/">[\s\S]*?Все сервисы<\/span><\/a>/);
-  assert.match(PAGE, /<a class="nav-item" href="analiz\.html" aria-current="page">[\s\S]*?Аналитик таблиц<\/span><\/a>/);
+  assert.match(PAGE, /<a class="nav-item" href="analiz\.html" aria-current="page">[\s\S]*?Аналитика таблиц<\/span><\/a>/);
   assert.match(PAGE, /<div class="nav-group" id="nav-mine" hidden>/);
   assert.match(PAGE, /Как добавить сервис[\s\S]*Откройте Claude во вкладке <b>Code<\/b> в новой папке и скажите <b>«новый сервис»<\/b>: Claude создаст проект\. Когда сервис готов, скажите <b>«добавь в кабинет»<\/b>\./);
-  assert.match(PAGE, /<span class="nav-current" id="nav-current">Аналитик таблиц<\/span>/);
+  assert.match(PAGE, /<span class="nav-current" id="nav-current">Аналитика таблиц<\/span>/);
   assert.doesNotMatch(PAGE, /class="back"/);
   assert.ok(PAGE.indexOf('id="side"') < PAGE.indexOf('id="data-card"'), 'меню слева от содержимого');
   // Меню и раскладка такие же, как на главной: одни и те же правила CSS.
@@ -346,7 +346,7 @@ test('analiz.html: заголовок, бренд как на главной, с
   assert.doesNotMatch(js, /https?:\/\/|fetch\(|import\s/);
 });
 
-test('главная: «Аналитик таблиц» в меню и первой карточкой в сетке, ссылки относительные', () => {
+test('главная: «Аналитика таблиц» в меню и первой карточкой в сетке, ссылки относительные', () => {
   const html = readFileSync(join(SITE, 'index.html'), 'utf8');
   assert.match(html, /<a class="nav-item" href="analiz\.html">/);
   const w = {};
@@ -562,7 +562,7 @@ test('загрузка: не те файлы и больше 50 МБ не отп
   assert.equal(prevented, false);
 });
 
-// ---------- меню на странице «Аналитик таблиц» ----------
+// ---------- меню на странице «Аналитика таблиц» ----------
 
 const NOT_FOUND = () => json(404, { error: 'Такого адреса у страницы нет.' });
 
@@ -581,7 +581,7 @@ function menuSandbox(respond, services = NOT_FOUND) {
   return { el, calls, w };
 }
 
-test('«Аналитик таблиц»: меню «Мои сервисы» из api/processes, ссылки на главную с подробным видом', async () => {
+test('«Аналитика таблиц»: меню «Мои сервисы» из api/processes, ссылки на главную с подробным видом', async () => {
   const list = [{ slug: 'svetofor-dogovorov', title: 'Светофор договоров', kind: 'script', result: { status: 'green' } }];
   const m = menuSandbox(() => json(200, list));
   await settle();
