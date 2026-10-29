@@ -295,7 +295,9 @@ test('run: по имени из реестра и по папке; PYTHONPATH = 
   const r2 = cli(['run', '.'], { cwd: libDir });
   assert.equal(r2.code, 0, r2.out);
   const res = JSON.parse(readFileSync(join(libDir, 'output', 'result.json'), 'utf8'));
-  assert.equal(res.summary, realpathSync(join(libDir, 'lib')), 'llm и read_table из lib проекта');
+  // Windows: один путь бывает в короткой форме (RUNNER~1) и в полной; сравниваем настоящие пути без учёта регистра.
+  const same = (a, b) => realpathSync.native(a).toLowerCase() === realpathSync.native(b).toLowerCase();
+  assert.ok(same(res.summary, join(libDir, 'lib')), `llm и read_table из lib проекта: ${res.summary}`);
   assert.ok(existsSync(join(libDir, 'lib', 'llm.py')), 'run кладёт lib сам');
   assert.equal(cli(['run', 'net-takogo']).code, 2);
 });

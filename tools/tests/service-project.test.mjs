@@ -253,7 +253,7 @@ test('каркас main.py: нет файла, нет lib, сбой програ
     assert.match(r.stderr, /В папке lib нет файла read_table\.py/);
 
     writeFileSync(join(p.dir, 'input', 'x.csv'), 'a;b\n1;2\n');
-    const main = readFileSync(join(p.dir, 'main.py'), 'utf8').replace('    src = newest_input()\n', '    src = newest_input()\n    {}["Литры"]\n');
+    const main = readFileSync(join(p.dir, 'main.py'), 'utf8').replace(/\r\n/g, '\n').replace('    src = newest_input()\n', '    src = newest_input()\n    {}["Литры"]\n');
     writeFileSync(join(p.dir, 'main.py'), main);
     r = runMain(p.dir);
     assert.equal(r.status, 1);

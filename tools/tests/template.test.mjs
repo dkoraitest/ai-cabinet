@@ -354,7 +354,7 @@ test('шаблон проекта сервиса: .gitignore закрывает 
 });
 
 test('шаблон проекта сервиса: правила проекта (данные, секреты, модель, известный ответ, уроки, «добавь в кабинет»)', () => {
-  const rules = read('templates/service-project/CLAUDE.md');
+  const rules = read('templates/service-project/CLAUDE.md').replace(/\r\n/g, '\n');  // git на Windows: CRLF
   for (const must of ['## Уроки', 'Уроков пока нет.', 'известный ответ', 'до слова «готово»', '`python lib/read_table.py "input/<файл>" --rows 5`',
     'Строки файла целиком в разговор не бери', '`.env`', 'не открываешь', 'lib/llm.py', 'output/result.json', '«добавь в кабинет»',
     'kabinet-dobav-v-kabinet', 'subprocess', 'eval', 'PYTHONPATH=lib']) {

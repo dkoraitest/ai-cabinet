@@ -290,7 +290,10 @@ test('CLI через символическую ссылку из другого
     assert.ok(existsSync(join(real, 'site', 'index.html')), 'CLI создаёт site/ из шаблонов');
     // Проверка сетапа ставит скиллы для проектов сервисов, путь к кабинету подставлен.
     const skill = readFileSync(join(config, 'skills', 'kabinet-novyi-servis', 'SKILL.md'), 'utf8');
-    assert.ok(skill.includes(realpathSync.native(real)) && !skill.includes('{{KABINET}}'), 'путь к кабинету в скилле');
+    // Windows: путь к кабинету может прийти в короткой форме (8.3), через ссылку или с другим регистром.
+    const low = skill.toLowerCase();
+    const forms = [real, link, realpathSync(real), realpathSync.native(real)].map((x) => String(x).toLowerCase());
+    assert.ok(forms.some((f) => low.includes(f)) && !skill.includes('{{KABINET}}'), 'путь к кабинету в скилле');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

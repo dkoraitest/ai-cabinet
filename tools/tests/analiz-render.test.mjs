@@ -157,17 +157,13 @@ test('паспорт: файлов нет → подсказка, куда по�
 
 // ---------- ответ ----------
 
-test('ответ: вопрос, время, итог, таблица с числами по-русски, строка «Итого», примечания, кнопки', () => {
+test('ответ: вопрос, время, итог без таблицы, примечания, кнопки', () => {
   const html = R.renderAnswer(ANSWER, {});
   assert.match(html, /<article class="card answer" data-key="id:otvet-1">/);
   assert.match(html, /<h3 class="question">Как изменились продажи по АЗС/);
   assert.match(html, /<span class="when">29\.10\.2026 22:15<\/span>/);
   assert.match(html, /<p class="summary">Сеть: \+0,4% за неделю/);
-  assert.match(html, /<th>АЗС<\/th><th class="num">Литры A<\/th>/);
-  assert.match(html, /<td class="num">10\u00a0500,5<\/td>/);
-  assert.match(html, /<td class="num">-6,67<\/td>/);
-  assert.match(html, /<tfoot><tr><td class="total-label">Итого<\/td><td class="num">30\u00a0700,5<\/td>/);
-  assert.match(html, /Показаны первые 3 строк из 12\./);
+  assert.doesNotMatch(html, /<table/);  // таблицу ответа не показываем (30.10), только итог, график и Excel
   assert.match(html, /<p class="notes-title">Примечания<\/p><ul class="notes"><li>пропущено 2 строки/);
   assert.match(html, /<button type="button" class="btn" data-chart="id:otvet-1" aria-expanded="false">Построить график<\/button>/);
   assert.match(html, /<button type="button" class="btn" data-excel="id:otvet-1">Скачать Excel с графиком<\/button>/);

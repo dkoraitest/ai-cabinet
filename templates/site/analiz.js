@@ -656,14 +656,8 @@
       (when ? '<span class="when">' + esc(formatTime(when)) + '</span>' : '') + '</div>');
     if (typeof a.error === 'string' && a.error) parts.push('<p class="run-error">' + esc(a.error) + '</p>');
     if (a.summary) parts.push('<p class="summary">' + esc(a.summary) + '</p>');
-    parts.push(renderTable(a));
-    var total = typeof a.total_rows === 'number' ? a.total_rows : null;
-    // Движок сам пишет в примечаниях «Показаны первые N строк ответа из M»: второй раз не повторяем.
-    var saidRows = asList(a.notes).some(function (n) { return typeof n === 'string' && /^Показаны первые/.test(n); });
-    if (total !== null && total > rows.length && !saidRows) {
-      parts.push('<p class="rows-note">Показаны первые ' + formatNumber(rows.length, 0) + ' строк из ' + formatNumber(total, 0) + '.</p>');
-    }
-    var notes = asList(a.notes).filter(function (n) { return typeof n === 'string' && n; });
+    // Таблицу ответа на странице не показываем (Дмитрий 30.10): итог, график по кнопке, Excel с таблицей.
+    var notes = asList(a.notes).filter(function (n) { return typeof n === 'string' && n && !/^Показаны первые/.test(n); });
     if (notes.length) {
       parts.push('<div class="notes-box"><p class="notes-title">Примечания</p><ul class="notes">' + notes.map(function (n) {
         return '<li>' + esc(n) + '</li>';
