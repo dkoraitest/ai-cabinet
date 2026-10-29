@@ -324,6 +324,53 @@
   }
 
   /* Ответы. */
+  /* Корзина у файла в «Ваших данных» (Дмитрий 30.10). */
+  details.file > summary { align-items: center; }
+  .file-del {
+    margin-left: auto;
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .file-del:hover { color: var(--red); border-color: var(--line-strong); background: var(--red-bg); }
+  .file-del:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 2px; }
+  .file-del:disabled { opacity: 0.5; cursor: default; }
+  .skipped { list-style: none; margin: 8px 0 12px; padding: 0; }
+  .skipped li { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+
+  /* Ответы: последний целиком, прошлые компактным списком с прокруткой и поиском (Дмитрий 30.10). */
+  .answers-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; margin: 34px 0 14px; }
+  .answers-head .section-title { margin: 0; }
+  .history-search { font: inherit; font-size: 15px; color: var(--text); background: var(--card); width: min(340px, 100%); padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 10px; }
+  .history-search:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: 1px; }
+  .history { margin-top: 18px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .history-title { margin: 0; padding: 14px 20px; font-size: 17px; font-weight: 650; border-bottom: 1px solid var(--line); }
+  .history-count { margin-left: 6px; padding: 1px 9px; border-radius: 999px; background: var(--th-bg); color: var(--muted); font-size: 14px; font-weight: 600; }
+  .history-list { max-height: 520px; overflow-y: auto; }
+  .hist-item { border-bottom: 1px solid var(--line); }
+  .hist-item:last-child { border-bottom: 0; }
+  .hist-row { list-style: none; cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 16px; padding: 12px 20px; }
+  .hist-row::-webkit-details-marker { display: none; }
+  .hist-row:hover { background: var(--th-bg); }
+  .hist-row:focus-visible { outline: 3px solid var(--accent-dark); outline-offset: -3px; }
+  .hist-q { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist-when { color: var(--muted); font-size: 14px; white-space: nowrap; }
+  .hist-sum { grid-column: 1 / -1; color: var(--muted); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist-err { color: var(--red); }
+  .hist-item[open] > .hist-row { background: var(--th-bg); }
+  .hist-item[open] .hist-q, .hist-item[open] .hist-sum { white-space: normal; }
+  .hist-item > .answer { margin: 0; border: 0; border-radius: 0; box-shadow: none; padding: 4px 20px 18px; }
+  .hist-item > .answer .answer-head { display: none; }
+  .history-none { padding: 12px 20px; margin: 0; }
+
   .answer-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 20px; margin-bottom: 12px; }
   .question { font-size: 20px; line-height: 1.3; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
   .when { color: var(--muted); font-size: 15px; white-space: nowrap; }
@@ -506,7 +553,10 @@
     <div id="ask-msg" aria-live="polite"></div>
   </section>
 
-  <h2 class="section-title" id="answers-title">Ответы</h2>
+  <div class="answers-head">
+    <h2 class="section-title" id="answers-title">Ответы</h2>
+    <input type="search" class="history-search" id="history-search" placeholder="Найти по вопросу" aria-label="Найти среди прошлых вопросов" autocomplete="off" hidden>
+  </div>
   <div id="answers" aria-live="polite" aria-labelledby="answers-title"><p class="loading">Загружаю ответы…</p></div>
   </main>
 </div>
@@ -546,6 +596,9 @@
   var total = 0;
   var shownItems = '';
   var states = {};
+  // Поиск по прошлым вопросам: поле над ответами появляется, когда прошлых вопросов больше пяти.
+  var searchBox = byId('history-search');
+  var filter = '';
   var asking = false;
   var clock = null;
   var passportOnFocus = false;
@@ -610,7 +663,8 @@
   // Перерисовываем ответы, только если что-то поменялось: иначе сбивалась бы прокрутка таблиц.
   function draw() {
     if (stopped) return;
-    answersBox.innerHTML = R.renderAnswers(items, states, total);
+    answersBox.innerHTML = R.renderAnswers(items, states, total, filter);
+    if (searchBox) searchBox.hidden = items.length <= 6 && !filter;
   }
 
   function setItems(list, count) {
@@ -888,6 +942,40 @@
     }
     b = e.target.closest('button[data-excel]');
     if (b && !b.disabled) excel(b.getAttribute('data-excel'));
+  });
+  // Раскрытая строка прошлого ответа остаётся раскрытой после перерисовки (график, Excel, новые ответы).
+  answersBox.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (!d || !d.classList || !d.classList.contains('hist-item')) return;
+    stateOf(d.getAttribute('data-key')).open = d.open;
+  }, true);
+  if (searchBox) {
+    searchBox.addEventListener('input', function () {
+      filter = searchBox.value;
+      draw();
+    });
+  }
+  // Корзина у файла: подтверждение, удаление, паспорт перечитывается.
+  passportBox.addEventListener('click', function (e) {
+    if (!e.target || !e.target.closest) return;
+    var b = e.target.closest('button[data-delete]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var file = b.getAttribute('data-delete');
+    if (!window.confirm('Удалить файл «' + file + '» из данных? Он удалится с компьютера, вернуть его не получится.')) return;
+    b.disabled = true;
+    call('delete', { file: file })
+      .then(function (r) {
+        if (r.status === 200) say('Файл «' + file + '» удалён.');
+        else say(r.data.error || 'Не получилось удалить файл.');
+        passportBox.innerHTML = '<p class="loading">Смотрю файлы…</p>';
+        return loadPassport();
+      })
+      .catch(function () {
+        b.disabled = false;
+        say(OFFLINE);
+      });
   });
   answersBox.addEventListener('change', function (e) {
     var s = e.target;

@@ -565,3 +565,50 @@ test('cleanFileName: последняя часть пути, без управл
   assert.ok(cleanFileName('я'.repeat(300) + '.xlsx').endsWith('.xlsx'));
   for (const bad of ['', '..', '.', '/', '~$', '.csv', null, 5]) assert.equal(cleanFileName(bad), bad === '.csv' ? 'csv' : '', String(bad));
 });
+
+test('delete: корзина удаляет таблицу из input/analiz и подпапки; чужие пути, скрытые, ссылки и не таблицы нельзя', async () => {
+  mkdirSync(join(dataDir(), 'arhiv'), { recursive: true });
+  writeFileSync(join(dataDir(), 'udalit.csv'), 'a;b\n1;2\n');
+  writeFileSync(join(dataDir(), 'arhiv', 'staryi.xlsx'), 'x');
+  writeFileSync(join(dataDir(), '.skrytyi.csv'), 'x');
+  writeFileSync(join(cab, 'input', 'ryadom.csv'), 'x');
+  const del = (file, headers = WRITE) => post(`${T}/api/analiz/delete`, { file }, headers);
+  // Только со страницы: без X-Cabinet или не JSON 403, GET 405.
+  assert.equal((await del('udalit.csv', { 'Content-Type': 'application/json' })).status, 403);
+  assert.equal((await request('POST', `${T}/api/analiz/delete`, { 'X-Cabinet': '1', 'Content-Type': 'text/plain' }, '{"file":"udalit.csv"}')).status, 403);
+  assert.equal((await get(`${T}/api/analiz/delete`)).status, 405);
+  for (const file of ['../ryadom.csv', 'arhiv/../../ryadom.csv', '/etc/passwd.csv', 'C:\\x.csv', 'arhiv\\staryi.xlsx', '.skrytyi.csv', 'arhiv/.x.csv', '~$Книга.xlsx', 'CLAUDE.md', 'arhiv', '', 'a//b.csv']) {
+    const r = await del(file);
+    assert.equal(r.status, 400, file);
+    assert.equal(r.json.code, 'ENAME', file);
+  }
+  assert.equal((await post(`${T}/api/analiz/delete`, { file: 5 })).status, 400, 'не строка');
+  assert.ok(existsSync(join(cab, 'input', 'ryadom.csv')), 'файл рядом с папкой цел');
+  assert.ok(existsSync(join(dataDir(), '.skrytyi.csv')), 'скрытый файл цел');
+  const ok = await del('udalit.csv');
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { ok: true, file: 'udalit.csv' });
+  assert.ok(!existsSync(join(dataDir(), 'udalit.csv')));
+  assert.equal((await del('arhiv/staryi.xlsx')).status, 200, 'файл в подпапке, как в паспорте');
+  assert.ok(existsSync(join(dataDir(), 'arhiv')), 'подпапка остаётся');
+  const again = await del('udalit.csv');
+  assert.equal(again.status, 404);
+  assert.equal(again.json.code, 'ENOFILE');
+  rmSync(join(dataDir(), 'arhiv'), { recursive: true, force: true });
+  rmSync(join(dataDir(), '.skrytyi.csv'), { force: true });
+  rmSync(join(cab, 'input', 'ryadom.csv'), { force: true });
+});
+
+test('delete: ссылка (symlink) из input/analiz на файл вне папки не удаляется', { skip: process.platform === 'win32' }, async () => {
+  const { symlinkSync } = await import('node:fs');
+  writeFileSync(join(cab, 'vne.csv'), 'x');
+  symlinkSync(join(cab, 'vne.csv'), join(dataDir(), 'ssylka.csv'));
+  try {
+    const r = await post(`${T}/api/analiz/delete`, { file: 'ssylka.csv' });
+    assert.equal(r.status, 400);
+    assert.ok(existsSync(join(cab, 'vne.csv')), 'файл вне папки цел');
+  } finally {
+    rmSync(join(dataDir(), 'ssylka.csv'), { force: true });
+    rmSync(join(cab, 'vne.csv'), { force: true });
+  }
+});

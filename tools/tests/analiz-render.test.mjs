@@ -123,15 +123,15 @@ test('паспорт: файлы есть, но ни один не прочит�
     warnings: ['Файл «Продажи октябрь.xlsx» не прочитан: файл не читается (ValueError).', 'Файл «старый.csv» не прочитан: ссылка на файл вне папки input/analiz, не читается'],
   });
   assert.doesNotMatch(html, /Папка с данными пока пустая/);
-  assert.match(
-    html,
-    /<p class="empty-title">Файлы есть, но не читаются: Продажи октябрь\.xlsx: файл не читается \(ValueError\); старый\.csv: ссылка на файл вне папки input\/analiz, не читается\.<\/p><p>Откройте файл в Excel и сохраните как \.xlsx, затем «Обновить»\.<\/p>/,
-  );
+  assert.match(html, /<p class="empty-title">Файлы есть, но не читаются\.<\/p><ul class="skipped">/);
+  assert.match(html, /<li><span>Продажи октябрь\.xlsx: файл не читается \(ValueError\)<\/span><button type="button" class="file-del" data-delete="Продажи октябрь\.xlsx" title="Удалить файл"/);
+  assert.match(html, /<li><span>старый\.csv: ссылка на файл вне папки input\/analiz, не читается<\/span><button type="button" class="file-del" data-delete="старый\.csv"/);
+  assert.match(html, /<p>Откройте файл в Excel и сохраните как \.xlsx, затем «Обновить»\. Ненужный файл удалите корзиной\.<\/p>/);
   assert.doesNotMatch(html, /не прочитан:/, 'причина не повторяется строкой движка');
   // Имя из данных экранируется.
-  assert.match(R.renderPassport({ files: [], skipped: [{ file: '<b>.csv', reason: 'x' }] }), /&lt;b&gt;\.csv: x\./);
+  assert.match(R.renderPassport({ files: [], skipped: [{ file: '<b>.csv', reason: 'x' }] }), /&lt;b&gt;\.csv: x/);
   // Строка вместо объекта и пропуск без причины.
-  assert.match(R.renderPassport({ files: [], skipped: ['a.csv'] }), /не читаются: a\.csv\./);
+  assert.match(R.renderPassport({ files: [], skipped: ['a.csv'] }), /<li><span>a\.csv<\/span><button type="button" class="file-del" data-delete="a\.csv"/);
 });
 
 test('паспорт: файлов нет → подсказка, куда положить; другие написания полей тоже понимаются', () => {
@@ -613,4 +613,25 @@ test('«Аналитика таблиц»: меню «Мои сервисы» и
   await settle();
   assert.equal(down.calls.filter((u) => u === 'api/processes').length, 1, 'после неудачи меню больше не спрашивает');
   assert.equal(down.el['nav-mine'].hidden, true);
+});
+
+test('ответы: последний целиком, прошлые строками списка с прокруткой, раскрытие и поиск по вопросу', () => {
+  const items = [1, 2, 3, 4].map((i) => ({ id: String(i), question: i === 3 ? 'Сколько <АИ-95>?' : `Вопрос ${i}`, time: `2026-10-30T0${i}:00:00`, summary: `Итог ${i}`, columns: ['A'], rows: [[i]] }));
+  const html = R.renderAnswers(items, {}, 4);
+  assert.equal((html.match(/<article class="card answer"/g) || []).length, 4, 'у каждой строки весь ответ внутри');
+  assert.ok(html.indexOf('<article class="card answer" data-key="id:1">') < html.indexOf('<section class="history"'), 'последний ответ сверху, целиком');
+  assert.match(html, /<h3 class="history-title" id="history-title">Прошлые вопросы <span class="history-count">3<\/span><\/h3>/);
+  assert.match(html, /<details class="hist-item" data-key="id:2"><summary class="hist-row"><span class="hist-q">Вопрос 2<\/span><span class="hist-when">[^<]+<\/span><span class="hist-sum">Итог 2<\/span><\/summary>/);
+  assert.match(html, /<span class="hist-q">Сколько &lt;АИ-95&gt;\?<\/span>/, 'вопрос экранируется');
+  // Раскрытая строка остаётся раскрытой.
+  assert.match(R.renderAnswers(items, { 'id:3': { open: true } }, 4), /<details class="hist-item" data-key="id:3" open>/);
+  // Поиск: без учёта регистра, только по прошлым вопросам; ничего не нашлось → подсказка.
+  const f = R.renderAnswers(items, {}, 4, 'аи-95');
+  assert.match(f, /data-key="id:2" hidden>/);
+  assert.match(f, /data-key="id:3">/);
+  assert.match(f, /data-key="id:4" hidden>/);
+  assert.match(f, /data-key="id:1">/, 'последний ответ не прячется');
+  assert.match(R.renderAnswers(items, {}, 4, 'нет такого'), /Таких вопросов нет\./);
+  // Один ответ: без списка прошлых.
+  assert.doesNotMatch(R.renderAnswers(items.slice(0, 1), {}, 1), /history/);
 });

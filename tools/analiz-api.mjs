@@ -12,13 +12,15 @@
 //   POST api/analiz/open-folder       создаёт input/analiz/ и открывает её в Проводнике (Finder на Mac)
 //   POST api/analiz/upload            файл со страницы в input/analiz/: тело файла как есть
 //                                     (application/octet-stream), имя в заголовке X-File-Name (encodeURIComponent)
+//   POST api/analiz/delete {file}     удалить таблицу из input/analiz/ (кнопка-корзина в «Ваших данных»):
+//                                     путь как в паспорте, только внутри папки, без скрытых частей и ссылок
 //
 // Защита как у кнопки «Запустить»: токен в адресе (проверяет serve.mjs), заголовок X-Cabinet: 1 на всех
 // запросах, у POST ещё тип JSON (у upload application/octet-stream). Чужая страница или ссылка без разрешения
 // браузера такой запрос не пришлёт.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { constants, copyFileSync, createWriteStream, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { constants, copyFileSync, createWriteStream, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { findPython, isInside, killTree, openFolder as openInExplorer } from './processes.mjs';
 
@@ -579,6 +581,41 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
     return sendJson(res, 200, { ok: true, file: saved, renamed: saved !== name, size: got.size });
   }
 
+  // Кнопка-корзина у файла в «Ваших данных» (Дмитрий 30.10): file как в паспорте (путь от input/analiz через «/»).
+  // Удаляется только таблица (тип как у загрузки и .xls) внутри input/analiz: без «..», скрытых частей пути
+  // и ссылок (symlink) за пределы папки.
+  function removeDataFile(res, body) {
+    const rel = body && typeof body.file === 'string' ? body.file : '';
+    const parts = rel.split('/');
+    const bad = !rel || rel.length > 400 || parts.some((p) => !p || p === '.' || p === '..' || p.startsWith('.') || p.startsWith('~$') || /[\\:\u0000-\u001f]/.test(p));
+    if (bad || ![...UPLOAD_EXT, '.xls'].includes(extname(rel).toLowerCase())) {
+      return sendJson(res, 400, { code: 'ENAME', error: 'Такой файл со страницы удалить нельзя.' });
+    }
+    const dir = dataFolder();
+    if (!dir) return sendJson(res, 500, { code: 'EFOLDER', error: 'Не получилось открыть папку input/analiz в кабинете.' });
+    const path = join(dir, ...parts);
+    let real;
+    try {
+      if (!lstatSync(path).isFile()) throw Object.assign(new Error('не файл'), { code: 'ENOTFILE' });
+      real = realpathSync(path);
+    } catch (e) {
+      if (e.code === 'ENOENT') return sendJson(res, 404, { code: 'ENOFILE', error: `Файла «${rel}» уже нет. Нажмите «Обновить».`, file: rel });
+      return sendJson(res, 400, { code: 'ENAME', error: 'Такой файл со страницы удалить нельзя.' });
+    }
+    if (!isInside(real, dir)) return sendJson(res, 400, { code: 'ENAME', error: 'Такой файл со страницы удалить нельзя.' });
+    try {
+      unlinkSync(real);
+    } catch (e) {
+      const busy = e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES';
+      return sendJson(res, 409, {
+        code: 'EBUSY',
+        error: busy ? `Файл «${rel}» не удалился: он открыт в Excel или другой программе. Закройте его и попробуйте снова.` : `Файл «${rel}» не удалился (${e.code ?? e.message}).`,
+        file: rel,
+      });
+    }
+    return sendJson(res, 200, { ok: true, file: rel });
+  }
+
   function openDataFolder(res) {
     const dir = join(root, 'input', ANALIZ);
     try {
@@ -599,7 +636,7 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
   async function handle(req, res, sub) {
     const route = sub.replace(/\/+$/, '');
     const reads = { passport: true, history: true };
-    const posts = { ask: true, excel: true, 'open-folder': true, upload: true };
+    const posts = { ask: true, excel: true, 'open-folder': true, upload: true, delete: true };
     if (!reads[route] && !posts[route]) {
       req.resume();
       return sendJson(res, 404, { error: 'Такого адреса у страницы нет.' });
@@ -621,6 +658,7 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
     if (route === 'upload') return upload(req, res);
     if (route === 'ask') return ask(req, res);
     if (route === 'excel') return excel(req, res);
+    if (route === 'delete') return removeDataFile(res, (await readBody(req)).body);
     req.resume();
     return openDataFolder(res);
   }

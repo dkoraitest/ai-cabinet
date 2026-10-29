@@ -264,11 +264,20 @@
     'Можно и через папку <b>input/analiz</b> в кабинете: нажмите «Открыть папку с данными», скопируйте туда файлы и нажмите «Обновить». ' +
     'Файлов и листов может быть сколько угодно.</p></div>';
 
-  // Файлы есть, но ни один не прочитан: имя и причина, что сделать.
+  // Кнопка-корзина у файла (Дмитрий 30.10): удалить файл из данных прямо со страницы. file: путь как в паспорте.
+  var ICON_TRASH = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
+  function deleteButton(file) {
+    if (!file) return '';
+    return '<button type="button" class="file-del" data-delete="' + esc(file) + '" title="Удалить файл" aria-label="Удалить файл «' + esc(file) + '»">' + ICON_TRASH + '</button>';
+  }
+
+  // Файлы есть, но ни один не прочитан: имя и причина, что сделать, и корзина у каждого.
   function renderUnreadable(skipped) {
-    return '<div class="empty-data"><p class="empty-title">Файлы есть, но не читаются: ' +
-      skipped.map(function (k) { return esc(skippedText(k)); }).join('; ') + '.</p>' +
-      '<p>Откройте файл в Excel и сохраните как .xlsx, затем «Обновить».</p></div>';
+    return '<div class="empty-data"><p class="empty-title">Файлы есть, но не читаются.</p>' +
+      '<ul class="skipped">' + skipped.map(function (k) {
+        return '<li><span>' + esc(skippedText(k)) + '</span>' + deleteButton(k.file) + '</li>';
+      }).join('') + '</ul>' +
+      '<p>Откройте файл в Excel и сохраните как .xlsx, затем «Обновить». Ненужный файл удалите корзиной.</p></div>';
   }
 
   function renderPassport(p) {
@@ -313,7 +322,7 @@
             return title + above + (s.error ? '<p class="error">' + esc(s.error) + '</p>' : renderColumns(s.columns, s.note));
           }).join('');
       return '<details class="file"' + (open ? ' open' : '') + '><summary><span class="file-name">' + esc(f.name || 'файл') + '</span>' +
-        (meta.length ? '<span class="file-meta">' + esc(meta.join(', ')) + '</span>' : '') + '</summary>' + inner + '</details>';
+        (meta.length ? '<span class="file-meta">' + esc(meta.join(', ')) + '</span>' : '') + deleteButton(f.name) + '</summary>' + inner + '</details>';
     }).join('');
     return head + notes + files;
   }
@@ -679,14 +688,35 @@
     return '<article class="card answer" data-key="' + esc(key) + '">' + parts.join('') + '</article>';
   }
 
-  function renderAnswers(items, states, total) {
+  // Последний ответ целиком, прошлые компактным списком с прокруткой (Дмитрий 30.10): строка с вопросом, временем
+  // и итогом, по щелчку раскрывается весь ответ (state.open). filter: часть вопроса из поля поиска над ответами,
+  // строки без совпадения скрыты.
+  function renderAnswers(items, states, total, filter) {
     var list = Array.isArray(items) ? items.filter(isObj) : [];
     if (!list.length) return '<p class="empty">Ответов пока нет. Задайте первый вопрос выше.</p>';
     var s = states || {};
     var more = typeof total === 'number' && total > list.length
       ? '<p class="hint">Показаны последние ' + list.length + ' ответов из ' + total + '. Все ответы лежат в output/analiz/history.json.</p>'
       : '';
-    return list.map(function (a) { return renderAnswer(a, s[answerKey(a)]); }).join('') + more;
+    var html = renderAnswer(list[0], s[answerKey(list[0])]);
+    var rest = list.slice(1);
+    if (!rest.length) return html + more;
+    var needle = typeof filter === 'string' ? filter.trim().toLowerCase() : '';
+    var found = 0;
+    var rows = rest.map(function (a) {
+      var key = answerKey(a);
+      var st = s[key] || {};
+      var hit = !needle || String(a.question || '').toLowerCase().indexOf(needle) !== -1;
+      if (hit) found += 1;
+      var when = a.time || a.created;
+      return '<details class="hist-item" data-key="' + esc(key) + '"' + (st.open ? ' open' : '') + (hit ? '' : ' hidden') + '>' +
+        '<summary class="hist-row"><span class="hist-q">' + esc(a.question || 'Вопрос без текста') + '</span>' +
+        (when ? '<span class="hist-when">' + esc(formatTime(when)) + '</span>' : '') +
+        (a.summary ? '<span class="hist-sum">' + esc(a.summary) + '</span>' : a.error ? '<span class="hist-sum hist-err">' + esc(a.error) + '</span>' : '') +
+        '</summary>' + renderAnswer(a, st) + '</details>';
+    }).join('');
+    return html + '<section class="history" aria-labelledby="history-title"><h3 class="history-title" id="history-title">Прошлые вопросы <span class="history-count">' + rest.length + '</span></h3>' +
+      '<div class="history-list">' + rows + (needle && !found ? '<p class="hint history-none">Таких вопросов нет.</p>' : '') + '</div></section>' + more;
   }
 
   // Что сказать, если на вопрос не ответили. status и body: ответ сервера на api/analiz/ask.
