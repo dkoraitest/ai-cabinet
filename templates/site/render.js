@@ -113,9 +113,19 @@
     return '<a class="' + cls + '" href="s/' + esc(encodeURIComponent(p.slug)) + '/">Открыть</a>';
   }
 
-  // В шапке подробной карточки: «Запустить», «Открыть» или подсказка с фразой (процесс kind claude).
-  function renderActions(p) {
-    var html = (canRun(p) ? runButton(p) : '') + openLink(p, 'btn open');
+  // «Редактировать»: ссылка из ui.edit(p) (страница строит её через prefs.js: новый разговор во вкладке Code
+  // приложения Claude в папке сервиса или папка в VS Code). Нет ссылки: кнопки нет.
+  function editLink(p, ui, cls, inner) {
+    var href = ui && typeof ui.edit === 'function' ? ui.edit(p) : null;
+    if (!href) return '';
+    return '<a class="' + cls + '" href="' + esc(href) + '" title="Редактировать в Claude" aria-label="Редактировать «' + esc(titleOf(p)) + '»">' + inner + '</a>';
+  }
+
+  var ICON_EDIT = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+
+  // В шапке подробной карточки: «Запустить», «Открыть», «Редактировать» или подсказка с фразой (процесс kind claude).
+  function renderActions(p, ui) {
+    var html = (canRun(p) ? runButton(p) : '') + openLink(p, 'btn open') + editLink(p, ui, 'btn edit', ICON_EDIT + '<span>Редактировать</span>');
     if (html) return '<div class="actions">' + html + '</div>';
     if (!isService(p) && p.kind === 'claude') {
       return '<div class="actions"><p class="hint">Запуск фразой в Claude: «' + esc(p.phrase) + '»</p></div>';
@@ -124,15 +134,15 @@
   }
 
   // p: { slug, title, phrase, kind, result, error, running } из api/processes или
-  // { source: 'service', slug, name, kind, result, error, running } из api/services.
-  // ui.message: короткий текст об ошибке запуска с этой страницы.
+  // { source: 'service', slug, name, kind, result, error, running, path } из api/services.
+  // ui.message: короткий текст об ошибке запуска с этой страницы; ui.edit(p): ссылка «Редактировать» или null.
   function renderCard(p, ui) {
     var r = p.result;
     var html = '<article class="card" data-slug="' + esc(p.slug) + '"><div class="card-head"><div class="card-title"><h2>' + esc(titleOf(p)) + '</h2>';
     if (r && STATUS_LABEL.hasOwnProperty(r.status)) {
       html += '<span class="badge badge-' + r.status + '">' + STATUS_LABEL[r.status] + '</span>';
     }
-    html += '</div>' + renderActions(p) + '</div>';
+    html += '</div>' + renderActions(p, ui) + '</div>';
     if (ui && ui.message) html += '<p class="run-error" role="alert">' + esc(ui.message) + '</p>';
     if (r) {
       html += '<p class="updated">обновлено ' + esc(formatTime(r.updated_at)) + '</p>';
@@ -200,6 +210,7 @@
     var html = '<article class="tile" data-slug="' + esc(p.slug) + '"' + (isService(p) ? ' data-source="service"' : '') + '><div class="tile-top">' +
       '<span class="tile-icon tile-icon-' + (st || 'none') + '" aria-hidden="true">' + (page ? ICON_PAGE : ICON_PROCESS) + '</span>';
     if (st) html += '<span class="badge badge-' + st + '">' + STATUS_LABEL[st] + '</span>';
+    html += editLink(p, ui, 'tile-edit', ICON_EDIT);
     html += '</div><h2 class="tile-title"><a href="' + href + '">' + esc(titleOf(p)) + '</a></h2>';
     if (r) html += '<p class="tile-when">обновлено ' + esc(formatTime(r.updated_at)) + '</p>';
     else if (!p.error && canRun(p)) html += '<p class="tile-when">ещё не запускался</p>';
@@ -244,16 +255,16 @@
   // Правая часть главной. view.key: карточка из адреса ('p:<slug>', 's:<slug>') → её подробный вид со ссылкой
   // «← Все сервисы»; иначе сетка: «Аналитика таблиц», процессы и встроенные проекты. Своих сервисов нет: в сетке
   // только «Аналитика таблиц» (без подсказки, решение Дмитрия 29.10). messages: { ключ: текст } для карточек, где
-  // запуск не удался.
+  // запуск не удался. view.edit(p): ссылка «Редактировать» (Дмитрий 30.10) или null.
   function renderPage(list, messages, view) {
     var items = Array.isArray(list) ? list : [];
     var open = findItem(items, view && view.key);
     if (open) {
       return '<div class="detail"><p class="crumbs"><a class="back" href="#">← Все сервисы</a></p>' +
-        renderCard(open, { message: messages && messages[itemKey(open)] }) + '</div>';
+        renderCard(open, { message: messages && messages[itemKey(open)], edit: view && view.edit }) + '</div>';
     }
     return '<div class="grid">' + renderServiceTile() + items.map(function (p) {
-      return renderTile(p, { message: messages && messages[itemKey(p)] });
+      return renderTile(p, { message: messages && messages[itemKey(p)], edit: view && view.edit });
     }).join('') + '</div>';
   }
 

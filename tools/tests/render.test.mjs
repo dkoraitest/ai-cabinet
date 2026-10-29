@@ -333,6 +333,7 @@ function pageSandbox(respond, brandRespond = NO_BRAND, servicesRespond = NO_SERV
   const calls = [];
   const brandCalls = [];
   const serviceCalls = [];
+  const cabinetCalls = [];
   let nextId = 1;
   const document = {
     title: 'Мой кабинет',
@@ -362,6 +363,11 @@ function pageSandbox(respond, brandRespond = NO_BRAND, servicesRespond = NO_SERV
         serviceCalls.push({ url, opts });
         return servicesRespond(url, opts);
       }
+      // Папка кабинета для «Редактировать» (api/cabinet): один запрос при загрузке, в счёт опроса не идёт.
+      if (String(url).startsWith('api/cabinet')) {
+        cabinetCalls.push({ url, opts });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ root: 'C:\\Users\\u\\Documents\\ai-cabinet' }) });
+      }
       calls.push(url);
       return respond(url, opts);
     },
@@ -388,6 +394,7 @@ function pageSandbox(respond, brandRespond = NO_BRAND, servicesRespond = NO_SERV
     calls,
     brandCalls,
     serviceCalls,
+    cabinetCalls,
     timeouts,
     elements,
     document,

@@ -33,7 +33,7 @@ test('init: создаёт отсутствующие, не трогает су�
     writeFileSync(join(dir, 'me', 'rules.md'), 'мои правила участника');
 
     const created = ensureParticipantFiles(dir);
-    assert.deepEqual(created.sort(), ['me/about-me.md', 'site/analiz.html', 'site/analiz.js', 'site/index.html', 'site/render.js']);
+    assert.deepEqual(created.sort(), ['me/about-me.md', 'site/analiz.html', 'site/analiz.js', 'site/dark.css', 'site/index.html', 'site/nastroiki.html', 'site/prefs.js', 'site/render.js']);
     assert.equal(readFileSync(join(dir, 'me', 'rules.md'), 'utf8'), 'мои правила участника');
     for (const { from, to } of MANIFEST.filter((m) => m.to !== 'me/rules.md')) {
       assert.equal(readFileSync(join(dir, to), 'utf8'), readFileSync(join(dir, from), 'utf8'), to);
@@ -55,6 +55,9 @@ test('init: MANIFEST берёт шаблоны из templates и кладёт в
     { from: 'templates/site/render.js', to: 'site/render.js' },
     { from: 'templates/site/analiz.html', to: 'site/analiz.html' },
     { from: 'templates/site/analiz.js', to: 'site/analiz.js' },
+    { from: 'templates/site/nastroiki.html', to: 'site/nastroiki.html' },
+    { from: 'templates/site/prefs.js', to: 'site/prefs.js' },
+    { from: 'templates/site/dark.css', to: 'site/dark.css' },
   ]);
   for (const { from } of MANIFEST) assert.ok(existsSync(join(ROOT, from)), from);
 });
@@ -101,7 +104,7 @@ test('init: кабинет, поставленный до сервиса «Ан�
     writeFileSync(join(dir, 'me', 'rules.md'), 'мои правила');
     writeFileSync(join(dir, 'site', 'index.html'), '<p>моя страница</p>');
     writeFileSync(join(dir, 'site', 'render.js'), '// мой render');
-    assert.deepEqual(ensureParticipantFiles(dir).sort(), ['site/analiz.html', 'site/analiz.js']);
+    assert.deepEqual(ensureParticipantFiles(dir).sort(), ['site/analiz.html', 'site/analiz.js', 'site/dark.css', 'site/nastroiki.html', 'site/prefs.js']);
     assert.equal(readFileSync(join(dir, 'site', 'index.html'), 'utf8'), '<p>моя страница</p>');
     assert.equal(readFileSync(join(dir, 'site', 'render.js'), 'utf8'), '// мой render');
     assert.equal(readFileSync(join(dir, 'site', 'analiz.html'), 'utf8'), readFileSync(join(ROOT, 'templates', 'site', 'analiz.html'), 'utf8'));

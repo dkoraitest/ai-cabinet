@@ -24,6 +24,9 @@ export const MANIFEST = [
   { from: 'templates/site/render.js', to: 'site/render.js' },
   { from: 'templates/site/analiz.html', to: 'site/analiz.html' },
   { from: 'templates/site/analiz.js', to: 'site/analiz.js' },
+  { from: 'templates/site/nastroiki.html', to: 'site/nastroiki.html' },
+  { from: 'templates/site/prefs.js', to: 'site/prefs.js' },
+  { from: 'templates/site/dark.css', to: 'site/dark.css' },
 ];
 
 export function ensureParticipantFiles(root) {

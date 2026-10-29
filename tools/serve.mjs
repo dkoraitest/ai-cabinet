@@ -14,6 +14,7 @@ import { BRAND_EXT, findBrandDir } from './brand.mjs';
 import { SLUG_RE, hasProcess, isInside, listProcesses, processStatus, startRun } from './processes.mjs';
 import { ANALIZ, EXCEL_NAME_RE, createAnalizApi } from './analiz-api.mjs';
 import { attachServices } from './services-api.mjs';
+import { createCabinetApi } from './cabinet-api.mjs';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -246,15 +247,22 @@ const outputAllowed = (root) => (slug, parts) =>
 // Страница кабинета целиком: site/ (с ней и страница сервиса analiz.html), API процессов и сервиса
 // «Аналитика таблиц» (api/analiz/...), файлы результатов из output/ и бренд.
 // Папка бренда ищется при каждом запросе: её можно положить, не перезапуская страницу.
-// analiz: параметры API сервиса для тестов (tools/analiz-api.mjs).
-export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {} } = {}) {
+// analiz: параметры API сервиса для тестов (tools/analiz-api.mjs); cabinet: то же для api/cabinet
+// (tools/cabinet-api.mjs: папки, версия, проверки для страницы «Настройки»).
+export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {}, cabinet = {} } = {}) {
   const root = resolve(cabinetRoot);
   const processApi = createProcessApi(root, { python, timeoutMs });
   const analizApi = createAnalizApi(root, { python, ...analiz });
+  const cabinetApi = createCabinetApi(root, { python, ...cabinet });
   const prefix = `${ANALIZ}/`;
+  const api = (req, res, sub) => {
+    if (sub.startsWith(prefix)) return analizApi(req, res, sub.slice(prefix.length));
+    if (sub === 'cabinet' || sub.startsWith('cabinet/')) return cabinetApi(req, res, sub.slice('cabinet'.length).replace(/^\//, ''));
+    return processApi(req, res, sub);
+  };
   const server = createSiteServer(resolve(root, 'site'), {
     token,
-    api: (req, res, sub) => (sub.startsWith(prefix) ? analizApi(req, res, sub.slice(prefix.length)) : processApi(req, res, sub)),
+    api,
     output: { root, allow: outputAllowed(root) },
     brand: brand ?? (() => findBrandDir(root)),
   });
