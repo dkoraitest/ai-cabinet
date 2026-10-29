@@ -117,6 +117,16 @@ jobs:
           cat output/svetofor-dogovorov/last-run.log
           node -e "const fs=require('fs');const r=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const s=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));const c={};for(const x of r.row_status)c[x]=(c[x]||0)+1;const got=[r.rows.length,c.red,c.yellow,c.grey,c.info,c.green].join('/');console.log('rows/red/yellow/grey/info/green:',got);if(!s.lastRun||!s.lastRun.ok||got!=='25/3/3/2/1/16')process.exit(1)" output/svetofor-dogovorov/result.json "$RUNNER_TEMP/status.json"
 
+      - name: macOS, самопроверка кабинета (весь путь участника)
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          export HOME="$PROFILE_DIR"
+          export TMPDIR="$PROFILE_DIR/tmp"
+          mkdir -p "$TMPDIR"
+          cd "$HOME/ai-cabinet"
+          node tools/selftest.mjs
+
       - name: macOS, check --net (справочно)
         if: runner.os == 'macOS'
         continue-on-error: true
@@ -162,6 +172,23 @@ jobs:
           Write-Host $json
           $bad = @(($json | ConvertFrom-Json) | Where-Object { $_.status -eq 'fail' })
           if ($bad.Count -gt 0) { throw "check: fail items present ($($bad.Count))" }
+          exit 0
+
+      # Весь путь участника на копии кабинета: установка, демо, сервис-проект, git проекта, проверка перед моделью,
+      # страница и её API. Временная папка в профиле с кириллицей и пробелом, как на терминале клиента.
+      - name: Windows (PowerShell 5.1), самопроверка кабинета (весь путь участника)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:USERPROFILE = $env:PROFILE_DIR
+          $env:HOME = $env:PROFILE_DIR
+          $env:TEMP = "$env:PROFILE_DIR\AppData\Local\Temp"
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+          Set-Location -LiteralPath "$env:PROFILE_DIR\ai-cabinet"
+          node tools/selftest.mjs
+          if ($LASTEXITCODE -ne 0) { throw "selftest failed ($LASTEXITCODE)" }
           exit 0
 
       - name: Windows (PowerShell 5.1), страница на localhost
