@@ -11,12 +11,15 @@
 В программе процесса: `import llm` (как `read_table`), затем `llm.ask(инструкция, данные)`.
 Строки файлов человека в модель не отправляйте: передавайте устройство данных и итоги.
 """
+import getpass
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 __all__ = ["check", "ask", "available", "LLMBlocked", "LLMUnavailable"]
 
@@ -67,6 +70,28 @@ def check(text):
     return found
 
 
+def _journal(ok, chars, reason=""):
+    """Строка в журнал кабинета (файл даёт кабинет переменной CABINET_JOURNAL): было ли обращение к модели,
+    прошла ли проверка и сколько знаков. Сам текст в журнал не пишется. Нет переменной или не записалось: молча."""
+    path = os.environ.get("CABINET_JOURNAL")
+    if not path:
+        return
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    line = {"at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), "user": user,
+            "service": os.environ.get("CABINET_SERVICE", ""), "event": "model", "ok": ok, "chars": chars}
+    if reason:
+        line["reason"] = reason
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def _find_claude():
     path = os.environ.get("AI_CABINET_CLAUDE")
     if path and os.path.isfile(path):
@@ -86,11 +111,14 @@ def available():
 def ask(prompt, payload="", model="sonnet", timeout=TIMEOUT):
     """Ответ модели текстом. Сначала проверка инструкции и данных; нашлось что-то: LLMBlocked, ничего не отправлено."""
     found = check(f"{prompt}\n{payload}")
+    chars = len(prompt or "") + len(payload or "")
     if found:
+        _journal(False, chars, "проверка: " + "; ".join(found))
         raise LLMBlocked("В модель ушли бы персональные или чувствительные данные: " + "; ".join(found)
                          + ". Ничего не отправлено. Обезличьте данные анонимайзером или отправьте только итоги.")
     exe = _find_claude()
     if not exe:
+        _journal(False, chars, "нет Claude для сервисов")
         raise LLMUnavailable("На этом компьютере нет Claude командной строки для сервисов. "
                              "Задайте вопрос Claude во вкладке Code.")
     args = [exe, "-p", "--model", model, "--output-format", "text", "--tools", "", "--strict-mcp-config",
@@ -98,6 +126,7 @@ def ask(prompt, payload="", model="sonnet", timeout=TIMEOUT):
     if exe.lower().endswith((".cmd", ".bat")):
         args = [os.environ.get("COMSPEC", "cmd.exe"), "/c"] + args
     text = prompt if not payload else f"{prompt}\n\n{payload}"
+    _journal(True, chars)
     with tempfile.TemporaryDirectory(prefix="cabinet-llm-") as empty:
         try:
             r = subprocess.run(args, input=text, capture_output=True, encoding="utf-8", errors="replace",

@@ -20,7 +20,10 @@
       "Bash(python3 lib/read_table.py*)",
       "Bash(python lib/llm.py*)",
       "Bash(py lib/llm.py*)",
-      "Bash(python3 lib/llm.py*)"
+      "Bash(python3 lib/llm.py*)",
+      "Bash(python api.py*)",
+      "Bash(py api.py*)",
+      "Bash(python3 api.py*)"
     ],
     "deny": [
       "Read(./.env)",

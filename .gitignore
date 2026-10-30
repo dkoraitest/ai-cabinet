@@ -9,6 +9,7 @@ output/*
 /me/
 /site/
 /processes/
+/journal/
 .claude/settings.local.json
 /.claude/worktrees/
 __pycache__/

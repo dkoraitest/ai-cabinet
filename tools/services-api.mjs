@@ -7,6 +7,8 @@
 //   GET  s/<slug>/                  своя страница сервиса kind page: переход на s/<slug>/page/
 //   GET  s/<slug>/page/<файл>       файлы папки page проекта (.html .js .css .json .png .svg), только у kind page
 //   GET  s/<slug>/output/<файл>     файлы папки output проекта (.json .xlsx .docx .png .csv), на скачивание
+//   POST s/<slug>/api/<действие>    серверная часть своей страницы (поле api в service.json): кабинет запускает
+//                                   её в папке проекта и отдаёт её ответ JSON (tools/service-calls.mjs)
 //
 // Адрес s/<slug>/ повторяет устройство проекта: страница page/index.html берёт данные по ../output/<файл>,
 // как и на диске (output/<файл> от папки страницы тоже работает, если в page нет своей папки output).
@@ -22,6 +24,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { extname, join, resolve } from 'node:path';
 import { SLUG_RE, isInside } from './processes.mjs';
 import { OUTPUT_DIR, OUTPUT_EXT, PAGE_DIR, PAGE_EXT, findEntry, listServices, readServiceInfo, serviceStatus, startServiceRun } from './services.mjs';
+import { createServiceCalls } from './service-calls.mjs';
 
 const BODY_LIMIT = 4 * 1024;
 const JSON_TYPE = 'application/json; charset=utf-8';
@@ -288,16 +291,45 @@ export function serviceRoute(url, token) {
   return null;
 }
 
+// s/<slug>/api/<действие>: только POST со страницы кабинета (заголовок X-Cabinet: 1; тип JSON или файл
+// проверяет сам вызов). raw: части пути после «s», как пришли.
+async function serveApiCall(calls, req, res, raw) {
+  if (req.method !== 'POST') {
+    req.resume();
+    return notAllowed(res, 'POST');
+  }
+  if (req.headers['x-cabinet'] !== '1') {
+    req.resume();
+    return sendJson(res, 403, { error: 'Действие сервиса вызывается только с его страницы в кабинете.' });
+  }
+  let slug = '';
+  let route = '';
+  try {
+    slug = decodeURIComponent(raw[0] ?? '');
+    route = decodeURIComponent(raw[2] ?? '');
+  } catch {
+    slug = '';
+  }
+  if (raw.length !== 3 || !SLUG_RE.test(slug)) {
+    req.resume();
+    return sendJson(res, 404, { code: 'ENOROUTE', error: 'Такого действия у сервиса нет.' });
+  }
+  const r = await calls(req, slug, route);
+  return sendJson(res, r.status, r.body);
+}
+
 const ATTACHED = Symbol('services');
 
 // Подключение к серверу страницы (createCabinetServer в serve.mjs): адреса сервисов обрабатывает этот модуль,
 // остальное прежний обработчик. Повторный вызов на том же сервере ничего не меняет. Возвращает server.
-export function attachServices(server, root, { token, python, timeoutMs } = {}) {
+// api: параметры вызовов серверной части для тестов (createServiceCalls в tools/service-calls.mjs).
+export function attachServices(server, root, { token, python, timeoutMs, api: apiOptions = {} } = {}) {
   if (server[ATTACHED]) return server;
   if (typeof token !== 'string' || token.length < 8) throw new Error('Для страницы нужен токен (личная часть адреса).');
   server[ATTACHED] = true;
   const cabinet = resolve(root);
   const api = createServicesApi(cabinet, { python, timeoutMs });
+  const calls = createServiceCalls(cabinet, { python, ...apiOptions });
   const previous = server.listeners('request');
   server.removeAllListeners('request');
   server.on('request', (req, res) => {
@@ -307,6 +339,12 @@ export function attachServices(server, root, { token, python, timeoutMs } = {}) 
       return;
     }
     if (route.api !== undefined) return api(req, res, route.api);
+    if (route.static[1] === 'api') {
+      serveApiCall(calls, req, res, route.static).catch(() => {
+        if (!res.headersSent) sendJson(res, 500, { error: 'Сервис не ответил. Попробуйте ещё раз.' });
+      });
+      return;
+    }
     serveServiceFile(cabinet, req, res, route.static, { token }).catch(() => {
       if (!res.headersSent) send(res, 500, TEXT_TYPE, 'Не удалось отдать файл.');
     });

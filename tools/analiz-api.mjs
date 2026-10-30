@@ -23,6 +23,7 @@ import { randomBytes } from 'node:crypto';
 import { constants, copyFileSync, createWriteStream, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { findPython, isInside, killTree, openFolder as openInExplorer } from './processes.mjs';
+import { journalFile } from './journal.mjs';
 
 export const ANALIZ = 'analiz';
 export const ASK_TIMEOUT_MS = 3 * 60 * 1000;
@@ -102,7 +103,7 @@ const numbered = (name, n) => {
 
 // Временный файл под постоянным именем: ссылкой (link) или копией с запретом перезаписи. Файл с таким именем уже
 // есть (и на Windows и Mac без учёта регистра букв): следующий номер. Ответ: итоговое имя.
-function placeFile(tmp, dir, name) {
+export function placeFile(tmp, dir, name) {
   for (let n = 1; n <= 999; n++) {
     const target = join(dir, numbered(name, n));
     try {
@@ -121,7 +122,7 @@ function placeFile(tmp, dir, name) {
   throw Object.assign(new Error('слишком много файлов с таким именем'), { code: 'EMANY' });
 }
 
-const removeQuietly = (p) => {
+export const removeQuietly = (p) => {
   try {
     unlinkSync(p);
   } catch {
@@ -132,7 +133,7 @@ const removeQuietly = (p) => {
 // Тело запроса во временный файл, не больше limit байт: { size } или { over } или { error }. Тело больше limit
 // дочитывается без записи, чтобы страница получила ответ, а не оборванное соединение.
 // Ответ только после закрытия записи: файл создаётся не сразу, и удалённый раньше времени .part появился бы снова.
-function receiveFile(req, tmp, limit) {
+export function receiveFile(req, tmp, limit) {
   return new Promise((done) => {
     let size = 0;
     let over = false;
@@ -239,7 +240,7 @@ export function engineMessage(json, stderr) {
 
 // Запуск движка: { code, stdout, stderr, timedOut, tooBig, spawnError }. Никогда не отклоняется.
 // Остановка (время вышло, слишком большой вывод): всё дерево процессов (у ask внутри работает claude).
-export function runEngine(exe, script, args, { cwd, timeoutMs, stopTree = killTree, killGraceMs = KILL_GRACE_MS }) {
+export function runEngine(exe, script, args, { cwd, timeoutMs, stopTree = killTree, killGraceMs = KILL_GRACE_MS, env = {} }) {
   return new Promise((done) => {
     const out = [];
     const err = [];
@@ -286,7 +287,7 @@ export function runEngine(exe, script, args, { cwd, timeoutMs, stopTree = killTr
         windowsHide: true,
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' },
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1', ...env },
       });
     } catch (e) {
       return finish(null, e.code ?? e.message);
@@ -413,7 +414,9 @@ export function createAnalizApi(root, { python, openFolder = openInExplorer, ask
     if (!isFile(script)) return { fail: [500, { code: 'ENOENGINE', error: NO_ENGINE }] };
     const exe = python ?? (await findPython(root));
     if (!exe) return { fail: [500, { code: 'ENOPYTHON', error: NO_PYTHON }] };
-    const r = await runEngine(exe, script, args, { cwd: root, timeoutMs, ...(stopTree ? { stopTree } : {}) });
+    // Обращения движка к модели (через tools/llm.py) пишутся в журнал кабинета как сервис analiz.
+    const env = { CABINET_JOURNAL: journalFile(root), CABINET_SERVICE: ANALIZ };
+    const r = await runEngine(exe, script, args, { cwd: root, timeoutMs, env, ...(stopTree ? { stopTree } : {}) });
     if (r.spawnError) return { fail: [500, { code: 'ENOPYTHON', error: `Не удалось запустить Python (${r.spawnError}). Скажите Claude «проверь сетап».` }] };
     const json = parseEngineJson(r.stdout);
     return { ok: r.code === 0 && !r.timedOut && !r.tooBig, code: r.code, json, message: engineMessage(json, r.stderr), timedOut: r.timedOut, tooBig: r.tooBig };

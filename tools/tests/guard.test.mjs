@@ -586,7 +586,7 @@ test('settings.json: сторож без оболочки (exec) на Bash, Powe
   assert.equal(hook.command, 'node');
   assert.deepEqual(hook.args, ['${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.mjs']);
   assert.ok(s.permissions.deny.includes('Edit(./.claude/hooks/**)'), 'нужен запрет Edit(./.claude/hooks/**)');
-  for (const d of ['Edit(./input/**)', 'Edit(./tools/**)', 'Edit(./templates/**)']) assert.ok(s.permissions.deny.includes(d), d);
+  for (const d of ['Edit(./input/**)', 'Edit(./tools/**)', 'Edit(./templates/**)', 'Edit(./journal/**)']) assert.ok(s.permissions.deny.includes(d), d);
   assert.ok((s.permissions.ask ?? []).includes('Edit(./processes/**)'), 'нужен вопрос Edit(./processes/**)');
   assert.ok(s.permissions.allow.includes('Bash(py tools/read_table.py*)'), 'нужно разрешение Bash(py tools/read_table.py*)');
   assert.ok(s.permissions.allow.includes('Bash(python3 tools/read_table.py*)'), 'нужно разрешение Bash(python3 tools/read_table.py*)');

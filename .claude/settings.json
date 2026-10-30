@@ -35,6 +35,7 @@
       "Edit(./input/**)",
       "Edit(./tools/**)",
       "Edit(./templates/**)",
+      "Edit(./journal/**)",
       "Edit(./.claude/hooks/**)",
       "Bash(rm -rf *)",
       "Bash(git push *)",

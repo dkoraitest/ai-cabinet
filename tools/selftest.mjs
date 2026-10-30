@@ -167,7 +167,43 @@ async function runAndWait(start, status) {
   return { ok: false, detail: 'расчёт не закончился за 3 минуты' };
 }
 
-async function pageChecks(cab, url, slugService) {
+// Серверная часть своей страницы сервиса (Дмитрий 30.10): как её пишет Claude по правилам проекта сервиса.
+const SELFTEST_API = `import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from service_api import serve, save_upload, remove_file
+
+
+def upload(data, file):
+    return {"file": save_upload(file)}
+
+
+def delete(data, file):
+    remove_file(data.get("name", ""))
+    return {"ok": True}
+
+
+serve({"upload": upload, "delete": delete})
+`;
+
+function readJournal(cab) {
+  const dir = join(cab, 'journal');
+  if (!existsSync(dir)) return [];
+  const lines = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.jsonl')) continue;
+    for (const l of readFileSync(join(dir, f), 'utf8').split('\n')) {
+      try {
+        if (l.trim()) lines.push(JSON.parse(l));
+      } catch {
+        // строка повреждена: пропускаем
+      }
+    }
+  }
+  return lines;
+}
+
+async function pageChecks(cab, url, slugService, proj) {
   const base = new URL(url);
   const at = (p) => new URL(p, base).toString();
   const root = `${base.protocol}//${base.host}/`;
@@ -246,6 +282,31 @@ async function pageChecks(cab, url, slugService) {
   const xl = await request(at('output/svetofor-dogovorov/svetofor.xlsx'));
   if (xl.status === 200 && xl.size > 1000) ok('Скачивание результата (svetofor.xlsx)');
   else fail('Результат не скачивается', `ответ ${xl.status}`);
+
+  // Своя страница сервиса и её серверная часть: загрузка и удаление файла кодом самого сервиса.
+  if (slugService && proj) {
+    const sp = await request(at(`s/${encodeURIComponent(slugService)}/page/`));
+    if (sp.status === 200 && sp.text.includes('Проверка своей страницы')) ok('Своя страница сервиса открывается в кабинете');
+    else fail('Своя страница сервиса не открывается', `ответ ${sp.status}`);
+    const fname = 'Проверка действия (1).csv';
+    const u = await request(at(`s/${encodeURIComponent(slugService)}/api/upload`), {
+      method: 'POST',
+      headers: { 'X-Cabinet': '1', 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(fname) },
+      body: Buffer.from('АЗС;Литры\nАЗС-01;10\n', 'utf8'),
+    });
+    const got = u.json?.file;
+    if (u.status === 200 && got && existsSync(join(proj, 'input', got))) ok('Серверная часть сервиса: загрузка файла со своей страницы', got);
+    else fail('Серверная часть сервиса не принимает файл', u.json?.error ?? `ответ ${u.status}`);
+    if (got) {
+      const d = await request(at(`s/${encodeURIComponent(slugService)}/api/delete`), { method: 'POST', headers: JSON_POST, body: JSON.stringify({ name: got }) });
+      if (d.status === 200 && !existsSync(join(proj, 'input', got))) ok('Серверная часть сервиса: удаление файла');
+      else fail('Серверная часть сервиса не удаляет файл', d.json?.error ?? `ответ ${d.status}`);
+    }
+    const j = readJournal(cab);
+    const has = (e) => j.some((l) => l.event === e && l.service === slugService);
+    if (has('run') && has('upload') && has('api')) ok('Журнал кабинета: запуск, загрузка и действие записаны', `событий: ${j.length}`);
+    else fail('Журнал кабинета неполный', `событий: ${j.length}, ${[...new Set(j.map((l) => l.event))].join(', ')}`);
+  }
 }
 
 // ---------- основное ----------
@@ -314,6 +375,12 @@ export async function selftest({ keep = false } = {}) {
       const sales = findFile(join(cab, 'input', 'case-azs'), 'sales_azs_1c.csv');
       if (sales) copyFileSync(sales, join(proj, 'input', 'sales_azs_1c.csv'));
       writeFileSync(join(proj, '.env'), 'PROVERKA_KEY=ne-sekret\n');
+      // Своя страница и серверная часть, как их делает Claude по правилам проекта сервиса.
+      mkdirSync(join(proj, 'page'), { recursive: true });
+      writeFileSync(join(proj, 'page', 'index.html'), '<!doctype html><meta charset="utf-8"><h1>Проверка своей страницы</h1>');
+      writeFileSync(join(proj, 'api.py'), SELFTEST_API);
+      const sj = JSON.parse(readFileSync(join(proj, 'service.json'), 'utf8'));
+      writeFileSync(join(proj, 'service.json'), JSON.stringify({ ...sj, kind: 'page', page: 'page/', api: 'api.py' }, null, 2));
       const addR = run(node, [join(cab, 'tools', 'services.mjs'), 'add', proj], { cwd: cab, env });
       const m = /Имя в кабинете: ([a-z0-9-]+)/.exec(addR.out);
       slug = m ? m[1] : null;
@@ -349,7 +416,7 @@ export async function selftest({ keep = false } = {}) {
     if (!page.url) fail('Страница не запустилась', lastLine(page.text));
     else {
       ok('Страница запускается', page.url.replace(/[0-9a-f]{32}/, '…'));
-      await pageChecks(cab, page.url, slug);
+      await pageChecks(cab, page.url, slug, proj);
     }
   } catch (e) {
     fail('Проверка прервалась', e.stack ?? String(e));

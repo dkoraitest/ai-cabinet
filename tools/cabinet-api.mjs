@@ -1,7 +1,8 @@
 // API страницы «Настройки» (site/nastroiki.html) и кнопки «Редактировать» на главной. Без зависимостей.
 //
-//   GET  api/cabinet                 { root, services, analiz, version: { commit, date } | null }: папки кабинета
-//                                    (абсолютные пути) и версия кабинета из git
+//   GET  api/cabinet                 { root, services, analiz, version: { commit, date } | null, journal }: папки
+//                                    кабинета (абсолютные пути), версия кабинета из git, журнал за месяц
+//                                    ({ folder, file, events }, tools/journal.mjs)
 //   GET  api/cabinet/checks          { checks: [{ id, ok, title, detail }] }: Python и Claude для сервисов
 //   POST api/cabinet/open {folder}   открыть папку в Проводнике (Finder): cabinet, services или analiz
 //
@@ -10,6 +11,7 @@
 import { execFile } from 'node:child_process';
 import { mkdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { journalStats } from './journal.mjs';
 import { findPython, openFolder as openInExplorer } from './processes.mjs';
 import { servicesHome } from './services.mjs';
 
@@ -115,7 +117,7 @@ export function createCabinetApi(root, { python, openFolder = openInExplorer, ve
       if (!isRead(req)) return sendJson(res, 405, { error: 'Так обратиться к кабинету нельзя.' }, { Allow: 'GET, HEAD' });
       if (!hasHeader(req)) return sendJson(res, 403, { error: ONLY_PAGE });
       if (route === 'checks') return sendJson(res, 200, { checks: await cabinetChecks(root, { python }) });
-      return sendJson(res, 200, { ...cabinetFolders(root), version: await version(root).catch(() => null) });
+      return sendJson(res, 200, { ...cabinetFolders(root), version: await version(root).catch(() => null), journal: journalStats(root) });
     }
     if (route === 'open') {
       if (req.method !== 'POST') {

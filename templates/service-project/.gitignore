@@ -11,6 +11,7 @@ output/*
 !output/.gitkeep
 
 # Служебное
+.cabinet-upload/
 __pycache__/
 *.pyc
 *.tmp

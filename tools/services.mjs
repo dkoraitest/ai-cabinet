@@ -51,12 +51,13 @@ import {
   programProblems,
   validateResult,
 } from './processes.mjs';
+import { appendJournal, folderSnapshot, journalFile, snapshotDiff } from './journal.mjs';
 
 export const SERVICE_FILE = 'service.json';
 export const REGISTRY = ['me', 'servisy.json'];
 export const SERVICES_DIR_NAME = 'Сервисы';
 export const TEMPLATE = ['templates', 'service-project'];
-export const LIB_FILES = ['llm.py', 'read_table.py'];
+export const LIB_FILES = ['llm.py', 'read_table.py', 'service_api.py'];
 export const KINDS = ['run', 'page'];
 export const PAGE_DIR = 'page';
 export const OUTPUT_DIR = 'output';
@@ -253,6 +254,18 @@ export function readServiceInfo(dir) {
     else if (!/\.py$/i.test(run[run.length - 1])) p('run: программа должна быть файлом .py');
     else if (run[0].toLowerCase() === 'lib') p('run: программа не может лежать в папке lib (её кладёт кабинет)');
   } else if (kind === 'run') p('run: нужна программа .py, например "main.py"');
+  // Серверная часть своей страницы (Дмитрий 30.10): страница зовёт ../api/<действие>, кабинет запускает этот файл.
+  let api = null;
+  if (data.api !== undefined && data.api !== null && data.api !== '') {
+    api = relParts(data.api);
+    if (!api || !/\.py$/i.test(api[api.length - 1])) {
+      p('api: серверная часть своей страницы, файл .py внутри проекта, например "api.py"');
+      api = null;
+    } else if (api[0].toLowerCase() === 'lib') {
+      p('api: серверная часть не может лежать в папке lib (её кладёт кабинет)');
+      api = null;
+    }
+  }
   let result = null;
   if (data.result !== undefined && data.result !== null && data.result !== '') {
     result = relParts(data.result);
@@ -273,7 +286,7 @@ export function readServiceInfo(dir) {
   } else if (kind === 'run' && pageSet) {
     p('page: своя страница только у kind "page"; у kind "run" поставьте "page": null');
   }
-  const info = { name: name || basename(dir), about: typeof data.about === 'string' ? data.about.trim() : '', kind, run, result, input: data.input ?? null, page };
+  const info = { name: name || basename(dir), about: typeof data.about === 'string' ? data.about.trim() : '', kind, run, result, input: data.input ?? null, page, api };
   return { info, problems };
 }
 
@@ -372,8 +385,8 @@ export function checkProject(root, dirArg, { cwd = process.cwd() } = {}) {
   try {
     for (const e of readdirSync(dir)) {
       const stem = e.split('.')[0];
-      if (['llm', 'read_table'].includes(stem)) {
-        problems.push(`${e} в корне проекта: модули llm и read_table только из lib (их кладёт кабинет), переименуйте`);
+      if (['llm', 'read_table', 'service_api'].includes(stem)) {
+        problems.push(`${e} в корне проекта: модули llm, read_table и service_api только из lib (их кладёт кабинет), переименуйте`);
       } else if (/\.(pyc|pyd|so)$/i.test(e)) {
         problems.push(`${e} в корне проекта: готовые модули Python не проверить, уберите`);
       }
@@ -398,10 +411,23 @@ export function checkProject(root, dirArg, { cwd = process.cwd() } = {}) {
     else if (real && !isFile(real)) problems.push(`${info.run.join('/')} должен быть файлом`);
     else if (real) runFile = real;
   }
-  if (runFile) {
-    // Программа и свои модули, которые она (и они) импортируют: проверка как у программ процессов.
+  let apiFile = null;
+  if (info?.api) {
+    const file = join(dir, ...info.api);
+    let real = null;
+    try {
+      real = realpathSync(file);
+    } catch {
+      problems.push(`нет серверной части ${info.api.join('/')} в папке проекта`);
+    }
+    if (real && !isInside(real, dir)) problems.push(`${info.api.join('/')} ведёт за пределы папки проекта`);
+    else if (real && !isFile(real)) problems.push(`${info.api.join('/')} должен быть файлом`);
+    else if (real) apiFile = real;
+  }
+  if (runFile || apiFile) {
+    // Программа, серверная часть и свои модули, которые они импортируют: проверка как у программ процессов.
     const modules = localModules(dir);
-    const queue = [runFile];
+    const queue = [runFile, apiFile].filter(Boolean);
     const seen = new Set();
     const used = new Set();
     const texts = [];
@@ -432,15 +458,15 @@ export function checkProject(root, dirArg, { cwd = process.cwd() } = {}) {
       for (const x of programProblems(text, { allowImports: allow })) program.push({ file: relOf(dir, file), line: x.line, text: x.text, why: projectWhy(x.why) });
     }
   }
-  return { dir, info, problems, program, runFile, resultFile };
+  return { dir, info, problems, program, runFile, apiFile, resultFile };
 }
 
-const problemLines = (c) => [
+export const problemLines = (c) => [
   ...c.problems.map((x) => `  ${x}`),
   ...c.program.map((x) => `  ${x.file}, строка ${x.line}: ${x.why}: ${x.text}`),
 ];
 
-const okCheck = (c) => c.problems.length === 0 && c.program.length === 0;
+export const okCheck = (c) => c.problems.length === 0 && c.program.length === 0;
 
 // ---------- lib проекта ----------
 
@@ -661,7 +687,7 @@ function writeLine(fd, text) {
   }
 }
 
-function spawnPython(exe, runFile, fd, logPath, { cwd, timeoutMs, logLimitBytes, killGraceMs, stopTree, control }) {
+function spawnPython(exe, runFile, fd, logPath, { cwd, timeoutMs, logLimitBytes, killGraceMs, stopTree, control, env = {} }) {
   return new Promise((done) => {
     let settled = false;
     let stopped = null;
@@ -718,6 +744,7 @@ function spawnPython(exe, runFile, fd, logPath, { cwd, timeoutMs, logLimitBytes,
           PYTHONIOENCODING: 'utf-8',
           PYTHONDONTWRITEBYTECODE: '1',
           PYTHONPATH: join(cwd, 'lib'),
+          ...env,
         },
       });
     } catch (e) {
@@ -795,6 +822,8 @@ export function startServiceRun(
   }
   const control = { stop: null, cancelled: false };
   const startedAt = Date.now();
+  const slug = entry?.slug ?? basename(dir);
+  const before = folderSnapshot(join(dir, 'input'));
   const done = (async () => {
     let code = null;
     let stopped = null;
@@ -807,7 +836,7 @@ export function startServiceRun(
       } else if (!exe) {
         writeLine(fd, 'Python не найден. Скажите Claude в кабинете «проверь сетап».');
       } else {
-        ({ code, stopped } = await spawnPython(exe, c.runFile, fd, logPath, { cwd: dir, timeoutMs, logLimitBytes, killGraceMs, stopTree, control }));
+        ({ code, stopped } = await spawnPython(exe, c.runFile, fd, logPath, { cwd: dir, timeoutMs, logLimitBytes, killGraceMs, stopTree, control, env: { CABINET_JOURNAL: journalFile(root), CABINET_SERVICE: slug } }));
       }
     } catch (e) {
       writeLine(fd, `Не удалось запустить расчёт (${e.code ?? e.message}).`);
@@ -822,6 +851,7 @@ export function startServiceRun(
     const durationMs = Date.now() - startedAt;
     writeLastRun(dir, { ok, code, finishedAt: new Date().toISOString(), durationMs });
     releaseLock(dir, lock);
+    appendJournal(root, { service: slug, event: 'run', ok, code, ms: durationMs, files: snapshotDiff(before, folderSnapshot(join(dir, 'input'))) });
     return { ok, code, durationMs, logPath, startedAt };
   })();
   const cancel = () => {

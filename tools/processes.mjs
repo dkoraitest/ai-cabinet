@@ -39,6 +39,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { isMain } from './is-main.mjs';
+import { appendJournal, folderSnapshot, journalFile, snapshotDiff } from './journal.mjs';
 
 export const SLUG_RE = /^[a-z0-9-]{1,40}$/;
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -464,6 +465,9 @@ function writeLine(fd, text) {
   }
 }
 
+// processes/<slug>/run.py → <slug> (имя процесса для журнала).
+const slugOf = (runFile) => basename(dirname(runFile));
+
 function spawnRun(root, exe, runFile, fd, logPath, opts) {
   const { timeoutMs, logLimitBytes, killGraceMs, stopTree, control } = opts;
   return new Promise((done) => {
@@ -518,7 +522,7 @@ function spawnRun(root, exe, runFile, fd, logPath, opts) {
         windowsHide: true,
         detached: process.platform !== 'win32',
         stdio: ['ignore', fd, fd],
-        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' },
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1', CABINET_JOURNAL: journalFile(root), CABINET_SERVICE: slugOf(runFile) },
       });
     } catch (e) {
       spawnFailed = true;
@@ -584,6 +588,7 @@ export function startRun(
   }
   const control = { stop: null, cancelled: false };
   const started = Date.now();
+  const before = folderSnapshot(join(root, 'input', slug));
   const done = (async () => {
     let code = null;
     let stopped = null;
@@ -613,6 +618,7 @@ export function startRun(
     // Сначала итог, потом снять замок: кто увидит «не идёт», уже прочитает свежий last-run.json.
     writeLastRun(root, slug, { ok, code, finishedAt: new Date().toISOString(), durationMs });
     releaseLock(root, slug, lock);
+    appendJournal(root, { service: slug, event: 'run', ok, code, ms: durationMs, files: snapshotDiff(before, folderSnapshot(join(root, 'input', slug))) });
     return { ok, code, durationMs, logPath };
   })();
   const cancel = () => {
@@ -1274,6 +1280,8 @@ export const ALLOWED_IMPORTS = new Set([
   'gzip', 'uuid', 'random', 'smtplib', 'ftplib',
   // модель внутри сервиса (решение 29.10): только через tools/llm.py, он проверяет данные перед отправкой
   'llm',
+  // серверная часть своей страницы сервиса (Дмитрий 30.10): помощник из lib проекта (tools/service_api.py)
+  'service_api',
 ]);
 // Что можно взять из os и sys через from ... import: остальное у них запуск программ и обходы проверки.
 const FROM_LIMITS = { os: ['path'], sys: ['argv', 'exit', 'path', 'stderr', 'stdout'] };

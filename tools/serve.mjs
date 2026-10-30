@@ -249,7 +249,7 @@ const outputAllowed = (root) => (slug, parts) =>
 // Папка бренда ищется при каждом запросе: её можно положить, не перезапуская страницу.
 // analiz: параметры API сервиса для тестов (tools/analiz-api.mjs); cabinet: то же для api/cabinet
 // (tools/cabinet-api.mjs: папки, версия, проверки для страницы «Настройки»).
-export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {}, cabinet = {} } = {}) {
+export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, brand, analiz = {}, cabinet = {}, serviceApi = {} } = {}) {
   const root = resolve(cabinetRoot);
   const processApi = createProcessApi(root, { python, timeoutMs });
   const analizApi = createAnalizApi(root, { python, ...analiz });
@@ -267,7 +267,7 @@ export function createCabinetServer(cabinetRoot, { token, python, timeoutMs, bra
     brand: brand ?? (() => findBrandDir(root)),
   });
   // Сервисы-проекты (tools/services-api.mjs): api/services/..., s/<slug>/page/... и s/<slug>/output/...
-  return attachServices(server, root, { token, python, timeoutMs });
+  return attachServices(server, root, { token, python, timeoutMs, api: serviceApi });
 }
 
 function tryListen(server, host, port) {

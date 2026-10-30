@@ -533,6 +533,12 @@
     <p class="msg" id="folder-msg" aria-live="polite" hidden></p>
   </section>
 
+  <section class="card set" aria-labelledby="t-journal">
+    <h2 id="t-journal">Журнал</h2>
+    <p id="journal">Загружаю…</p>
+    <p class="hint">Кабинет записывает, какие сервисы запускались, какие файлы появлялись и пропадали в их папках и обращались ли сервисы к модели. Только имена файлов, без содержимого. Журнал лежит в папке journal кабинета.</p>
+  </section>
+
   <section class="card set" aria-labelledby="t-version">
     <h2 id="t-version">Версия кабинета</h2>
     <p id="version">Узнаю версию…</p>
@@ -627,6 +633,8 @@
       for (var i = 0; i < buttons.length; i++) {
         buttons[i].addEventListener('click', function (e) { openFolder(e.currentTarget.getAttribute('data-open')); });
       }
+      var j = d.journal;
+      byId('journal').textContent = j ? 'В этом месяце событий: ' + j.events + ' (файл ' + j.file + ').' : 'Журнала пока нет.';
       var v = d.version;
       byId('version').textContent = v ? 'Версия от ' + when(v.date) + ', номер ' + v.commit + '.' : 'Версию узнать не получилось: у кабинета нет истории версий.';
       var link = byId('update-link');
@@ -639,6 +647,7 @@
     .catch(function () {
       byId('folders').innerHTML = '<div class="msg bad">Страница не ответила. Скажите Claude в папке кабинета «открой страницу».</div>';
       byId('version').textContent = 'Нет ответа от страницы.';
+      byId('journal').textContent = 'Нет ответа от страницы.';
     });
 
   loadChecks();

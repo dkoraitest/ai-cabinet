@@ -59,7 +59,16 @@ test('api/cabinet: папки и версия только со страницы
     const r = await call(server, '/api/cabinet', { headers: HDR });
     assert.equal(r.status, 200);
     assert.equal(r.headers['cache-control'], 'no-store');
-    assert.deepEqual(r.json, { root: resolve(dir), services: servicesHome(dir), analiz: join(resolve(dir), 'input', 'analiz'), version: { commit: 'abc1234', date: '2026-10-30T01:20:00+05:00' } });
+    const now = new Date();
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    assert.deepEqual(r.json, {
+      root: resolve(dir),
+      services: servicesHome(dir),
+      analiz: join(resolve(dir), 'input', 'analiz'),
+      version: { commit: 'abc1234', date: '2026-10-30T01:20:00+05:00' },
+      // Журнал кабинета (tools/journal.mjs): папка, файл месяца и число событий; журнала нет: 0.
+      journal: { folder: 'journal', file: `journal/${month}.jsonl`, events: 0 },
+    });
     assert.equal((await call(server, '/api/cabinet', { method: 'POST', headers: POST, body: '{}' })).status, 405);
     assert.equal((await call(server, '/api/cabinet/nichego', { headers: HDR })).status, 404);
   } finally {
