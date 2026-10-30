@@ -107,10 +107,17 @@
       : '<button type="button" class="run" ' + attr + '>Запустить</button>';
   }
 
-  // Своя страница встроенного проекта (kind page): s/<slug>/, ссылка относительная.
+  // Своя страница встроенного проекта (kind page, Дмитрий 30.10): «Открыть» на карточке ведёт в подробный вид, где
+  // страница показана внутри кабинета как есть (рамку ставит index.html). В подробном виде ссылка «В новой вкладке»
+  // на саму страницу s/<slug>/. Ссылки относительные.
   function openLink(p, cls) {
     if (!isService(p) || p.kind !== 'page') return '';
-    return '<a class="' + cls + '" href="s/' + esc(encodeURIComponent(p.slug)) + '/">Открыть</a>';
+    return '<a class="' + cls + '" href="' + esc(detailHref(p)) + '">Открыть</a>';
+  }
+
+  function tabLink(p, cls) {
+    if (!isService(p) || p.kind !== 'page') return '';
+    return '<a class="' + cls + '" href="s/' + esc(encodeURIComponent(p.slug)) + '/" target="_blank" rel="noopener">В новой вкладке</a>';
   }
 
   // «Редактировать»: ссылка из ui.edit(p) (страница строит её через prefs.js: новый разговор во вкладке Code
@@ -123,9 +130,9 @@
 
   var ICON_EDIT = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
 
-  // В шапке подробной карточки: «Запустить», «Открыть», «Редактировать» или подсказка с фразой (процесс kind claude).
+  // В шапке подробной карточки: «Запустить», «В новой вкладке», «Редактировать» или подсказка с фразой (процесс kind claude).
   function renderActions(p, ui) {
-    var html = (canRun(p) ? runButton(p) : '') + openLink(p, 'btn open') + editLink(p, ui, 'btn edit', ICON_EDIT + '<span>Редактировать</span>');
+    var html = (canRun(p) ? runButton(p) : '') + tabLink(p, 'btn open') + editLink(p, ui, 'btn edit', ICON_EDIT + '<span>Редактировать</span>');
     if (html) return '<div class="actions">' + html + '</div>';
     if (!isService(p) && p.kind === 'claude') {
       return '<div class="actions"><p class="hint">Запуск фразой в Claude: «' + esc(p.phrase) + '»</p></div>';
@@ -136,9 +143,11 @@
   // p: { slug, title, phrase, kind, result, error, running } из api/processes или
   // { source: 'service', slug, name, kind, result, error, running, path } из api/services.
   // ui.message: короткий текст об ошибке запуска с этой страницы; ui.edit(p): ссылка «Редактировать» или null.
+  // Своя страница (kind page): итог и таблицу показывает сама страница под карточкой, здесь только шапка и время.
   function renderCard(p, ui) {
     var r = p.result;
-    var html = '<article class="card" data-slug="' + esc(p.slug) + '"><div class="card-head"><div class="card-title"><h2>' + esc(titleOf(p)) + '</h2>';
+    var page = isService(p) && p.kind === 'page';
+    var html = '<article class="card' + (page ? ' card-page' : '') + '" data-slug="' + esc(p.slug) + '"><div class="card-head"><div class="card-title"><h2>' + esc(titleOf(p)) + '</h2>';
     if (r && STATUS_LABEL.hasOwnProperty(r.status)) {
       html += '<span class="badge badge-' + r.status + '">' + STATUS_LABEL[r.status] + '</span>';
     }
@@ -146,8 +155,10 @@
     if (ui && ui.message) html += '<p class="run-error" role="alert">' + esc(ui.message) + '</p>';
     if (r) {
       html += '<p class="updated">обновлено ' + esc(formatTime(r.updated_at)) + '</p>';
-      if (r.summary) html += '<p class="summary">' + esc(r.summary) + '</p>';
-      html += renderTable(r) + renderFiles(r, p);
+      if (!page) {
+        if (r.summary) html += '<p class="summary">' + esc(r.summary) + '</p>';
+        html += renderTable(r) + renderFiles(r, p);
+      }
     } else if (!p.error) {
       html += '<p class="updated">' + (isService(p) && !canRun(p) ? 'результата пока нет' : 'ещё не запускался') + '</p>';
     }
@@ -230,7 +241,8 @@
     if (ui && ui.message) html += '<p class="run-error tile-msg" role="alert">' + esc(ui.message) + '</p>';
     html += '<div class="tile-actions">' + (canRun(p) ? runButton(p) : '') + openLink(p, 'btn open');
     if (!isService(p) && p.kind === 'claude') html += '<p class="hint tile-hint">Запуск фразой в Claude: «' + esc(p.phrase) + '»</p>';
-    return html + '<a class="btn more" href="' + href + '">Подробнее</a></div></article>';
+    // У своей страницы «Открыть» и есть подробный вид: «Подробнее» не дублируем.
+    return html + (page ? '' : '<a class="btn more" href="' + href + '">Подробнее</a>') + '</div></article>';
   }
 
   // Пункты меню «Мои сервисы»: название и цветная точка статуса (идёт расчёт: точка цвета компании).

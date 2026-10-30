@@ -387,6 +387,10 @@
 
   /* Подробный вид сервиса на широком экране не растягивается во всю ширину. */
   .detail { max-width: 1400px; }
+  /* Своя страница сервиса (kind page) под шапкой карточки: такой, какой её сделали, со своей прокруткой. */
+  .service-frame-box { max-width: 1400px; margin-top: 16px; }
+  .service-frame-box[hidden] { display: none; }
+  .service-frame { display: block; width: 100%; height: calc(100vh - 250px); min-height: 520px; border: 1px solid var(--line); border-radius: 16px; background: #fff; }
 
   /* Узкий экран: меню сворачивается наверх, кнопка «Меню» раскрывает его. */
   @media (max-width: 900px) {
@@ -480,6 +484,7 @@
   </nav>
   <main id="main">
     <div id="processes" aria-live="polite"><p class="loading">Загружаю сервисы…</p></div>
+    <div id="service-frame" class="service-frame-box" hidden></div>
   </main>
 </div>
 <script src="render.js"></script>
@@ -514,6 +519,10 @@
   // Маршрута api/services нет (ответ 404, кабинет до встроенных проектов): больше не спрашиваем.
   var servicesOff = false;
   var servicePoll = null;
+  // Рамка своей страницы сервиса: вне box, поэтому перерисовка карточек её не перезагружает.
+  var frameBox = byId('service-frame');
+  var frameSrc = '';
+  var frameStamp = '';
 
   // true: запросов больше не будет.
   function failed() {
@@ -523,7 +532,35 @@
     if (timer !== null) clearInterval(timer);
     shown = '';
     box.innerHTML = '<p class="empty">' + STOPPED + '</p>';
+    if (frameBox) {
+      frameBox.hidden = true;
+      frameBox.innerHTML = '';
+    }
     return true;
+  }
+
+  function escAttr(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // Своя страница сервиса (kind page, Дмитрий 30.10) в подробном виде: рамка s/<slug>/ под карточкой, страница
+  // такая, какой её сделали. Перезагружается, только когда сервис пересчитан (время результата или запуска
+  // поменялось и расчёт закончился), иначе фильтры и прокрутка на странице сбрасывались бы раз в 10 секунд.
+  function drawFrame(key) {
+    if (!frameBox) return;
+    var p = key ? find(key) : null;
+    var src = p && p.source === 'service' && p.kind === 'page' && typeof p.page === 'string' ? p.page : '';
+    if (!src && !frameSrc) return;
+    var stamp = src ? ((p.result && p.result.updated_at) || '') + '|' + ((p.lastRun && p.lastRun.finishedAt) || '') : '';
+    if (src === frameSrc && (stamp === frameStamp || p.running)) return;
+    frameSrc = src;
+    frameStamp = stamp;
+    frameBox.hidden = !src;
+    frameBox.innerHTML = src
+      ? '<iframe class="service-frame" src="' + escAttr(src) + '" title="' + escAttr(p.title || p.name || p.slug) + '"></iframe>'
+      : '';
   }
 
   function answered() {
@@ -565,6 +602,7 @@
     if (stopped || !loaded) return;
     var key = openKey();
     drawNav(key);
+    drawFrame(key);
     var html = R.renderPage(list, messages, { key: key, edit: editHref });
     if (html === shown) return;
     shown = html;

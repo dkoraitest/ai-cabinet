@@ -322,7 +322,7 @@ function pageSandbox(respond, brandRespond = NO_BRAND, servicesRespond = NO_SERV
   const html = readFileSync(join(SITE, 'index.html'), 'utf8');
   const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
   const box = { innerHTML: '', addEventListener() {} };
-  const ids = ['top', 'brand-logo', 'brand-name', 'nav-all', 'nav-mine', 'nav-list', 'nav-current', 'side', 'nav-toggle'];
+  const ids = ['top', 'brand-logo', 'brand-name', 'nav-all', 'nav-mine', 'nav-list', 'nav-current', 'side', 'nav-toggle', 'service-frame'];
   const elements = Object.fromEntries(ids.map((id) => [id, stubElement()]));
   elements['nav-all'].attrs['aria-current'] = 'page';
   elements['nav-toggle'].attrs['aria-expanded'] = 'false';
@@ -608,17 +608,27 @@ test('встроенный проект: карточка как у процес
   assert.doesNotMatch(card, /secret|input\/x\.csv/);
 });
 
-test('встроенный проект со своей страницей (kind page): «Открыть» ведёт на s/<slug>/, «Запустить» только если есть run', () => {
+test('встроенный проект со своей страницей (kind page): «Открыть» ведёт в подробный вид внутри кабинета, «Запустить» только если есть run', () => {
   const page = { ...svodka, slug: 'karta-azs', name: 'Карта АЗС', kind: 'page', result: null };
   const tile = renderTile(page);
-  assert.match(tile, /<div class="tile-actions"><a class="btn open" href="s\/karta-azs\/">Открыть<\/a><a class="btn more" href="#s=karta-azs">Подробнее<\/a>/);
-  assert.doesNotMatch(tile, /<button|ещё не запускался/);
-  assert.match(renderCard(page), /<a class="btn open" href="s\/karta-azs\/">Открыть<\/a>/);
-  assert.match(renderCard(page), /результата пока нет/);
+  assert.match(tile, /<div class="tile-actions"><a class="btn open" href="#s=karta-azs">Открыть<\/a><\/div>/);
+  assert.doesNotMatch(tile, /<button|ещё не запускался|Подробнее/);
+  // Подробный вид: ссылка на саму страницу в новой вкладке; таблицу и итог показывает страница (рамка в index.html).
+  const card = renderCard(page);
+  assert.match(card, /<article class="card card-page"/);
+  assert.match(card, /<a class="btn open" href="s\/karta-azs\/" target="_blank" rel="noopener">В новой вкладке<\/a>/);
+  assert.match(card, /результата пока нет/);
+  const done = renderCard({ ...page, run: true, result: svodka.result });
+  assert.match(done, /обновлено /);
+  assert.doesNotMatch(done, /<table|class="summary"|download>/);
   const both = renderTile({ ...page, run: 'main.py' });
-  assert.match(both, /data-run-service="karta-azs">Запустить<\/button><a class="btn open" href="s\/karta-azs\/">Открыть<\/a>/);
-  // slug кодируется и в ссылке на страницу.
-  assert.match(renderTile({ ...page, slug: 'a b' }), /href="s\/a%20b\/"/);
+  assert.match(both, /data-run-service="karta-azs">Запустить<\/button><a class="btn open" href="#s=karta-azs">Открыть<\/a>/);
+  // slug кодируется и в ссылках.
+  assert.match(renderTile({ ...page, slug: 'a b' }), /href="#s=a%20b"/);
+  assert.match(renderCard({ ...page, slug: 'a b' }), /href="s\/a%20b\/"/);
+  // Обычный проект: «Подробнее» на месте, ссылок на свою страницу нет.
+  assert.match(renderTile(svodka), /Подробнее/);
+  assert.doesNotMatch(renderCard(svodka), /В новой вкладке|card-page/);
 });
 
 test('servicesFrom: список или объект со списком, пометка source, записи без slug пропускаются', () => {
@@ -673,6 +683,48 @@ test('страница: карточки и меню из двух источн�
   }
 });
 
+test('страница: своя страница сервиса (kind page) в рамке под карточкой, перезагрузка только после пересчёта', async () => {
+  const procs = [{ slug: 'svetofor-dogovorov', title: 'Светофор договоров', kind: 'script', result: null }];
+  let karta = { slug: 'karta-azs', name: 'Карта "АЗС"', kind: 'page', page: 's/karta-azs/', run: true, result: { updated_at: '2026-10-30T10:00:00+05:00' }, lastRun: null };
+  const svodkaItem = { slug: 'svodka-azs', name: 'Сводка', kind: 'run', page: null, result: null };
+  const p = pageSandbox(listOf(procs), NO_BRAND, () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([karta, svodkaItem]) }));
+  await p.settle();
+  await p.settle();
+  const frame = p.elements['service-frame'];
+  assert.equal(frame.hidden, true, 'на сетке рамки нет');
+  assert.equal(frame.innerHTML, '');
+
+  p.location.hash = '#s=karta-azs';
+  p.fire('hashchange');
+  assert.equal(frame.hidden, false);
+  assert.equal(frame.innerHTML, '<iframe class="service-frame" src="s/karta-azs/" title="Карта &quot;АЗС&quot;"></iframe>');
+
+  // Опрос без изменений: рамка не пересоздаётся (страница не перезагружается). Проверяем по подмене innerHTML.
+  frame.innerHTML = 'та же рамка';
+  await p.tick();
+  assert.equal(frame.innerHTML, 'та же рамка');
+  // Идёт расчёт с новым временем: ждём конца.
+  karta = { ...karta, running: true, lastRun: { ok: true, code: 0, finishedAt: '2026-10-30T10:05:00+05:00' } };
+  await p.tick();
+  assert.equal(frame.innerHTML, 'та же рамка');
+  // Расчёт закончился: рамка заново, страница с новыми данными.
+  karta = { ...karta, running: false };
+  await p.tick();
+  assert.match(frame.innerHTML, /^<iframe class="service-frame" src="s\/karta-azs\/"/);
+
+  // Обычный проект и сетка: рамка убирается.
+  p.location.hash = '#s=svodka-azs';
+  p.fire('hashchange');
+  assert.equal(frame.hidden, true);
+  assert.equal(frame.innerHTML, '');
+  p.location.hash = '#s=karta-azs';
+  p.fire('hashchange');
+  assert.equal(frame.hidden, false);
+  p.location.hash = '';
+  p.fire('hashchange');
+  assert.equal(frame.hidden, true);
+});
+
 test('страница: «Запустить» у проекта → POST api/services/run {slug}; 202 → опрос списка; ошибка → текст на карточке', async () => {
   let running = false;
   let runResponse = { status: 202, body: { started: true } };
@@ -722,7 +774,7 @@ function pageSandboxWithClicks(respond, servicesRespond) {
       if (type === 'click') onClick = fn;
     },
   };
-  const ids = ['top', 'brand-logo', 'brand-name', 'nav-all', 'nav-mine', 'nav-list', 'nav-current', 'side', 'nav-toggle'];
+  const ids = ['top', 'brand-logo', 'brand-name', 'nav-all', 'nav-mine', 'nav-list', 'nav-current', 'side', 'nav-toggle', 'service-frame'];
   const elements = Object.fromEntries(ids.map((id) => [id, stubElement()]));
   const timeouts = [];
   const serviceCalls = [];
